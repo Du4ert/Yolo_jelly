@@ -1,0 +1,18 @@
+# Конфигурация датасета для YOLO
+# Путь относительно корня проекта или абсолютный
+
+path: dataset
+train: images/train
+val: images/val
+test: images/test
+
+# Количество классов
+nc: 5
+
+# Имена классов (порядок важен — соответствует class_id)
+names:
+  0: Aurelia aurita
+  1: Rhizostoma pulmo
+  2: Beroe ovata
+  3: Mnemiopsis leidyi
+  4: Pleurobrachia pileus
