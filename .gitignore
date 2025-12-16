@@ -1,4 +1,6 @@
 dataset/
 output/
 labelstudio_env/
+runs/
+/*.pt
 *.mp4

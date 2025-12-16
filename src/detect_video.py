@@ -14,10 +14,10 @@ from ultralytics import YOLO
 # Соответствие классов
 CLASS_NAMES = {
     0: 'Aurelia aurita',
-    1: 'Rhizostoma pulmo',
-    2: 'Beroe ovata',
-    3: 'Mnemiopsis leidyi',
-    4: 'Pleurobrachia pileus'
+    1: 'Beroe ovata',
+    2: 'Mnemiopsis leidyi',
+    3: 'Pleurobrachia pileus',
+    4: 'Rhizostoma pulmo'
 }
 
 
