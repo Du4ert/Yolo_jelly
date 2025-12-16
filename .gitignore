@@ -1,2 +1,4 @@
 dataset/
 output/
+labelstudio_env/
+*.mp4

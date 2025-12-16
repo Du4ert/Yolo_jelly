@@ -1,0 +1,6 @@
+@echo off
+call labelstudio_env\Scripts\activate
+set DATA_UPLOAD_MAX_MEMORY_SIZE=10737418240
+set DATA_UPLOAD_MAX_NUMBER_FILES=1000
+set LOCAL_FILES_SERVING_ENABLED=true
+label-studio start
