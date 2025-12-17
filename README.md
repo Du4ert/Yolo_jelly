@@ -23,7 +23,7 @@ yolo_jellyfish/
 │   ├── extract_frames.py     # Извлечение кадров из видео
 │   ├── augment.py            # Аугментация данных
 │   ├── train.py              # Обучение модели
-│   ├── detect_video.py       # Детекция на видео
+│   ├── detect_video.py       # Детекция на видео с трекингом
 │   ├── analyze.py            # Анализ результатов
 │   └── utils.py              # Вспомогательные функции
 ├── dataset/                  # Данные
@@ -175,7 +175,7 @@ python src/train.py --data data.yaml --epochs 150 --model yolov8m.pt
 tensorboard --logdir runs/
 ```
 
-Результаты сохраняются в `runs/jellyfish/<name>/`:
+Результаты сохраняются в `runs/jellyfish/<n>/`:
 - `weights/best.pt` — лучшая модель
 - `weights/last.pt` — последняя модель
 - `results.csv` — метрики по эпохам
@@ -191,16 +191,16 @@ tensorboard --logdir runs/
 python src/detect_video.py --video путь/к/видео.mp4 --model runs/jellyfish/best/weights/best.pt
 ```
 
-### Детекция с экспортом данных
+### Детекция с трекингом объектов
 
 ```bash
 python src/detect_video.py \
     --video путь/к/видео.mp4 \
     --model runs/jellyfish/best/weights/best.pt \
+    --track \
+    --show-trails \
     --output output/результат.mp4 \
-    --csv output/детекции.csv \
-    --conf 0.3 \
-    --depth-rate 0.5
+    --csv output/детекции.csv
 ```
 
 ### Параметры детекции
@@ -216,13 +216,134 @@ python src/detect_video.py \
 | `--ctd` | None | Путь к CSV с данными CTD |
 | `--no-video` | False | Не сохранять видео |
 
-### Формат выходного CSV
+### Параметры трекинга
+
+| Параметр | По умолчанию | Описание |
+|----------|--------------|----------|
+| `--track` | False | Включить трекинг объектов |
+| `--tracker` | `bytetrack.yaml` | Тип трекера (bytetrack.yaml / botsort.yaml) |
+| `--show-trails` | False | Показывать траектории движения |
+| `--trail-length` | 30 | Длина траектории в кадрах |
+
+### Форматы выходных данных
+
+#### 1. Основной CSV с детекциями (`detections.csv`)
 
 ```csv
-frame,timestamp_s,depth_m,class_id,class_name,confidence,x_center,y_center,width,height
-0,0.00,0.0,0,Aurelia aurita,0.89,0.453,0.621,0.124,0.098
-15,0.50,0.25,2,Beroe ovata,0.76,0.234,0.445,0.067,0.089
+frame,timestamp_s,depth_m,track_id,class_id,class_name,confidence,x_center,y_center,width,height
+0,0.00,0.0,1,0,Aurelia aurita,0.89,0.453,0.621,0.124,0.098
+15,0.50,0.25,1,0,Aurelia aurita,0.91,0.458,0.625,0.122,0.096
+30,1.00,0.50,2,2,Beroe ovata,0.76,0.234,0.445,0.067,0.089
 ```
+
+**Колонки:**
+- `frame` — номер кадра
+- `timestamp_s` — время в секундах
+- `depth_m` — глубина в метрах (если доступна)
+- `track_id` — ID трека (при включенном трекинге)
+- `class_id` — ID класса
+- `class_name` — название вида
+- `confidence` — уверенность детекции (0-1)
+- `x_center, y_center, width, height` — нормализованные координаты bbox
+
+#### 2. Статистика треков (`detections_tracks.csv`)
+
+Создается автоматически при использовании `--track`:
+
+```csv
+track_id,class_id,class_name,first_frame,last_frame,frame_span,duration_s,detections_count,avg_confidence,depth_change_m
+1,0,Aurelia aurita,0,45,46,1.50,42,0.893,0.75
+2,2,Beroe ovata,30,120,91,3.00,85,0.812,1.50
+```
+
+**Колонки:**
+- `track_id` — уникальный ID трека
+- `class_id`, `class_name` — класс объекта
+- `first_frame`, `last_frame` — первый и последний кадр трека
+- `frame_span` — продолжительность в кадрах
+- `duration_s` — длительность в секундах
+- `first_timestamp_s`, `last_timestamp_s` — временные метки
+- `first_depth_m`, `last_depth_m` — глубины начала и конца
+- `detections_count` — количество детекций в треке
+- `avg_confidence` — средняя уверенность
+- `depth_change_m` — изменение глубины (вертикальное перемещение)
+
+### Возможности трекинга
+
+#### ByteTrack (по умолчанию)
+- Быстрый и надежный
+- Хорошо работает с перекрытиями объектов
+- Рекомендуется для большинства случаев
+
+```bash
+python src/detect_video.py --video video.mp4 --model best.pt --track
+```
+
+#### BoT-SORT
+- Более точный при большом количестве объектов
+- Использует дополнительные признаки
+- Немного медленнее
+
+```bash
+python src/detect_video.py --video video.mp4 --model best.pt --track --tracker botsort.yaml
+```
+
+#### Визуализация траекторий
+
+С параметром `--show-trails` на видео отображаются:
+- Цветные траектории движения каждого объекта
+- Уникальный цвет для каждого track_id
+- Точки на траектории с градиентом (новые точки ярче)
+- Настраиваемая длина траектории (`--trail-length`)
+
+```bash
+python src/detect_video.py \
+    --video video.mp4 \
+    --model best.pt \
+    --track \
+    --show-trails \
+    --trail-length 50
+```
+
+### Примеры использования трекинга
+
+#### Анализ вертикальной миграции
+
+```bash
+python src/detect_video.py \
+    --video dive_001.mp4 \
+    --model best.pt \
+    --track \
+    --depth-rate 0.5 \
+    --csv output/migration.csv
+```
+
+Затем анализируйте `migration_tracks.csv` для определения особей, перемещающихся вверх/вниз.
+
+#### Подсчет количества особей
+
+```bash
+python src/detect_video.py \
+    --video transect.mp4 \
+    --model best.pt \
+    --track \
+    --no-video
+```
+
+Количество уникальных треков = количество отдельных особей в кадре.
+
+#### Изучение поведения
+
+```bash
+python src/detect_video.py \
+    --video behavior.mp4 \
+    --model best.pt \
+    --track \
+    --show-trails \
+    --trail-length 100
+```
+
+Длинные траектории позволяют визуализировать паттерны движения.
 
 ### Интеграция с CTD
 
@@ -236,7 +357,7 @@ time,depth,temperature,salinity
 ```
 
 ```bash
-python src/detect_video.py --video видео.mp4 --model best.pt --ctd ctd_data.csv
+python src/detect_video.py --video видео.mp4 --model best.pt --ctd ctd_data.csv --track
 ```
 
 ---
@@ -281,10 +402,12 @@ python src/augment.py --images dataset/images/train --labels dataset/labels/trai
 # 3. Обучение модели
 python src/train.py --data data.yaml --epochs 100 --model yolov8m.pt --name dive001_model
 
-# 4. Детекция на полном видео
+# 4. Детекция с трекингом на полном видео
 python src/detect_video.py \
     --video dive_001.mp4 \
     --model runs/jellyfish/dive001_model/weights/best.pt \
+    --track \
+    --show-trails \
     --csv output/dive001_detections.csv \
     --depth-rate 0.5
 
@@ -300,9 +423,25 @@ for video in videos/*.mp4; do
     python src/detect_video.py \
         --video "$video" \
         --model runs/jellyfish/best/weights/best.pt \
+        --track \
         --csv "output/${name}_detections.csv" \
         --no-video
 done
+```
+
+### Быстрая проверка на коротком фрагменте
+
+```bash
+# Создаем 30-секундный фрагмент
+ffmpeg -i full_video.mp4 -t 30 -c copy test_fragment.mp4
+
+# Тестируем с визуализацией
+python src/detect_video.py \
+    --video test_fragment.mp4 \
+    --model best.pt \
+    --track \
+    --show-trails \
+    --conf 0.3
 ```
 
 ---
@@ -337,6 +476,18 @@ done
 - Уменьшите `--batch` (8 или 4)
 - Используйте меньшую модель (yolov8s.pt)
 - Уменьшите `--imgsz` (480 или 320)
+
+### Треки обрываются слишком рано
+
+- Используйте BoT-SORT вместо ByteTrack: `--tracker botsort.yaml`
+- Уменьшите порог `--conf` для более стабильного трекинга
+- Убедитесь, что объекты не перекрываются слишком сильно
+
+### Один объект получает несколько track_id
+
+- Увеличьте порог `--conf` чтобы избежать дублирующих детекций
+- Проверьте качество модели на валидационном наборе
+- Рассмотрите возможность дообучения модели
 
 ---
 
