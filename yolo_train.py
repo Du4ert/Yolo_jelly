@@ -10,7 +10,8 @@ model = YOLO('yolov8n.pt')
 results = model.train(
    data='data.yaml',
    imgsz=640,
-   epochs=100,
+   epochs=150,
    batch=8,
-   name='delete'
+   name='yolo8n_v3'
+   resume=True
 )

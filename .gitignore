@@ -2,5 +2,7 @@ dataset/
 output/
 labelstudio_env/
 runs/
+test_video/
 /*.pt
 *.mp4
+yolo_train.py
