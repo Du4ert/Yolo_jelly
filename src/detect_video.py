@@ -27,6 +27,8 @@ def load_ctd_data(ctd_path: str) -> pd.DataFrame:
     Загружает данные CTD из CSV файла.
     
     Ожидаемые колонки: time, depth, temperature, salinity (опционально)
+    Поддерживаемые разделители: запятая, точка с запятой, табуляция, pipe (|)
+    Регистр колонок не имеет значения (Time, TIME, time все принимаются)
     
     Args:
         ctd_path: путь к CSV файлу
@@ -34,7 +36,23 @@ def load_ctd_data(ctd_path: str) -> pd.DataFrame:
     Returns:
         DataFrame с данными CTD
     """
-    df = pd.read_csv(ctd_path)
+    # Определяем разделитель автоматически
+    with open(ctd_path, 'r', encoding='utf-8') as f:
+        first_line = f.readline()
+    
+    # Проверяем возможные разделители
+    for sep in ['|', ';', '\t', ',']:
+        if sep in first_line:
+            delimiter = sep
+            break
+    else:
+        delimiter = ','  # по умолчанию
+    
+    df = pd.read_csv(ctd_path, sep=delimiter)
+    
+    # Нормализуем имена колонок к нижнему регистру
+    df.columns = df.columns.str.lower()
+    
     required_cols = ['time', 'depth']
     
     for col in required_cols:
