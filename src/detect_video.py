@@ -9,6 +9,7 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict, Counter
+import time
 from ultralytics import YOLO
 
 
@@ -213,6 +214,7 @@ def detect_on_video(
     track_class_votes = defaultdict(list)  # track_id -> [class_id, class_id, ...] для определения доминирующего класса
     
     frame_count = 0
+    start_time = time.time()
     
     while True:
         ret, frame = cap.read()
@@ -406,6 +408,12 @@ def detect_on_video(
                 print(f"  Прогресс: {progress:.1f}% ({frame_count}/{total_frames}), "
                       f"детекций: {len(detections)}")
     
+    # Замер времени
+    end_time = time.time()
+    processing_time = end_time - start_time
+    time_per_frame = processing_time / frame_count if frame_count > 0 else 0
+    fps_processing = frame_count / processing_time if processing_time > 0 else 0
+    
     # Освобождение ресурсов
     cap.release()
     if out is not None:
@@ -525,8 +533,12 @@ def detect_on_video(
     print("="*60)
     print("РЕЗУЛЬТАТЫ")
     print("="*60)
+    print(f"Время обработки: {processing_time:.1f} сек ({processing_time/60:.1f} мин)")
+    print(f"Скорость: {fps_processing:.1f} FPS ({time_per_frame*1000:.1f} мс/кадр)")
+    print()
     print(f"Всего детекций: {len(df)}")
     print(f"Кадров с детекциями: {df['frame'].nunique()}")
+    print(f"Обработано кадров: {frame_count}")
     
     if enable_tracking:
         print(f"Всего треков: {len(track_info)}")
