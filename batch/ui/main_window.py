@@ -284,7 +284,6 @@ class MainWindow(QMainWindow):
 
     def _on_queue_changed(self):
         """Обновление при изменении очереди."""
-        self.task_table.refresh()
         self.status_widget.update_stats()
 
     def _on_queue_state_changed(self, is_running: bool, is_paused: bool):

@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QProgressBar,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 
 from ...database import Repository, TaskStatus
 from ...core import TaskManager
@@ -22,14 +22,6 @@ class StatusBarWidget(QWidget):
     """
 
     def __init__(self, repository: Repository, task_manager: TaskManager, parent=None):
-        """
-        Инициализация виджета.
-        
-        Args:
-            repository: Репозиторий для работы с БД.
-            task_manager: Менеджер задач.
-            parent: Родительский виджет.
-        """
         super().__init__(parent)
         self.repo = repository
         self.task_manager = task_manager
@@ -41,6 +33,7 @@ class StatusBarWidget(QWidget):
         # Подключаем сигналы
         self.task_manager.task_progress.connect(self._on_progress)
         self.task_manager.queue_changed.connect(self.update_stats)
+        self.task_manager.queue_state_changed.connect(self._on_state_changed)
 
     def _setup_ui(self):
         """Настройка интерфейса."""
@@ -52,7 +45,6 @@ class StatusBarWidget(QWidget):
         self.label_status = QLabel("Готов")
         layout.addWidget(self.label_status)
         
-        # Разделитель
         layout.addWidget(self._create_separator())
         
         # Статистика задач
@@ -74,15 +66,21 @@ class StatusBarWidget(QWidget):
         self.label_errors = QLabel("Ошибок: 0")
         layout.addWidget(self.label_errors)
         
-        # Растягивающийся элемент
         layout.addStretch()
         
-        # Прогресс текущей задачи
+        # Информация о текущей задаче
         self.label_current = QLabel("")
         layout.addWidget(self.label_current)
         
+        # Детали прогресса
+        self.label_details = QLabel("")
+        self.label_details.setStyleSheet("color: gray;")
+        layout.addWidget(self.label_details)
+        
+        # Прогресс-бар
         self.progress_bar = QProgressBar()
-        self.progress_bar.setFixedWidth(150)
+        self.progress_bar.setFixedWidth(200)
+        self.progress_bar.setTextVisible(True)
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
 
@@ -101,23 +99,24 @@ class StatusBarWidget(QWidget):
         self.label_done.setText(f"Выполнено: {stats['tasks_done']}")
         self.label_errors.setText(f"Ошибок: {stats['tasks_error']}")
         
-        # Обновляем цвет ошибок
         if stats['tasks_error'] > 0:
-            self.label_errors.setStyleSheet("color: red;")
+            self.label_errors.setStyleSheet("color: red; font-weight: bold;")
         else:
             self.label_errors.setStyleSheet("")
-        
-        # Обновляем статус
-        if self.task_manager.is_running():
-            if self.task_manager.is_paused():
+
+    def _on_state_changed(self, is_running: bool, is_paused: bool):
+        """Обновление при изменении состояния очереди."""
+        if is_running:
+            if is_paused:
                 self.label_status.setText("⏸ Пауза")
-                self.label_status.setStyleSheet("color: orange;")
+                self.label_status.setStyleSheet("color: orange; font-weight: bold;")
             else:
-                self.label_status.setText("▶ Выполнение...")
-                self.label_status.setStyleSheet("color: blue;")
+                self.label_status.setText("▶ Выполнение")
+                self.label_status.setStyleSheet("color: green; font-weight: bold;")
         else:
             self.label_status.setText("Готов")
             self.label_status.setStyleSheet("")
+            self.clear_current_task()
 
     def set_current_task(self, task_id: int):
         """Устанавливает текущую задачу."""
@@ -130,15 +129,26 @@ class StatusBarWidget(QWidget):
             self.label_current.setText(f"📹 {video_name}")
             self.progress_bar.setValue(0)
             self.progress_bar.setVisible(True)
+            self.label_details.setText("")
 
     def clear_current_task(self):
         """Очищает текущую задачу."""
         self._current_task_id = None
         self.label_current.setText("")
+        self.label_details.setText("")
         self.progress_bar.setVisible(False)
         self.update_stats()
 
-    def _on_progress(self, task_id: int, percent: float):
+    def _on_progress(self, task_id: int, percent: float, current_frame: int, total_frames: int, detections: int, tracks: int):
         """Обработка обновления прогресса."""
         if task_id == self._current_task_id:
             self.progress_bar.setValue(int(percent))
+            
+            # Формируем детали
+            details = f"{current_frame}/{total_frames} кадров"
+            if detections > 0:
+                details += f" | {detections} дет."
+            if tracks > 0:
+                details += f" | {tracks} тр."
+            
+            self.label_details.setText(details)

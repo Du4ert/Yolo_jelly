@@ -38,16 +38,6 @@ class NewTaskDialog(QDialog):
         model_id: Optional[int] = None,
         parent=None,
     ):
-        """
-        Инициализация диалога.
-        
-        Args:
-            repository: Репозиторий для работы с БД.
-            video_id: ID видеофайла.
-            ctd_id: ID файла CTD (опционально).
-            model_id: ID модели (опционально, предвыбранная).
-            parent: Родительский виджет.
-        """
         super().__init__(parent)
         self.repo = repository
         self.video_id = video_id
@@ -61,7 +51,7 @@ class NewTaskDialog(QDialog):
     def _setup_ui(self):
         """Настройка интерфейса."""
         self.setWindowTitle("Новая задача")
-        self.setMinimumWidth(450)
+        self.setMinimumWidth(500)
         
         layout = QVBoxLayout(self)
         
@@ -73,9 +63,16 @@ class NewTaskDialog(QDialog):
         self.label_video.setWordWrap(True)
         files_layout.addRow("Видео:", self.label_video)
         
-        self.label_ctd = QLabel()
-        files_layout.addRow("CTD:", self.label_ctd)
+        # Выбор CTD
+        ctd_row = QHBoxLayout()
+        self.combo_ctd = QComboBox()
+        self.combo_ctd.setMinimumWidth(300)
+        self.combo_ctd.currentIndexChanged.connect(self._on_ctd_changed)
+        ctd_row.addWidget(self.combo_ctd)
+        ctd_row.addStretch()
+        files_layout.addRow("CTD:", ctd_row)
         
+        # Выбор модели
         self.combo_model = QComboBox()
         files_layout.addRow("Модель:", self.combo_model)
         
@@ -85,14 +82,12 @@ class NewTaskDialog(QDialog):
         detection_group = QGroupBox("Параметры детекции")
         detection_layout = QFormLayout(detection_group)
         
-        # Порог уверенности
         self.spin_conf = QDoubleSpinBox()
         self.spin_conf.setRange(0.01, 0.99)
         self.spin_conf.setSingleStep(0.05)
         self.spin_conf.setDecimals(2)
         detection_layout.addRow("Порог уверенности:", self.spin_conf)
         
-        # Скорость погружения (если нет CTD)
         self.spin_depth_rate = QDoubleSpinBox()
         self.spin_depth_rate.setRange(0.0, 10.0)
         self.spin_depth_rate.setSingleStep(0.1)
@@ -106,31 +101,25 @@ class NewTaskDialog(QDialog):
         tracking_group = QGroupBox("Трекинг")
         tracking_layout = QVBoxLayout(tracking_group)
         
-        # Включить трекинг
         self.check_tracking = QCheckBox("Включить трекинг объектов")
         self.check_tracking.toggled.connect(self._on_tracking_toggled)
         tracking_layout.addWidget(self.check_tracking)
         
-        # Параметры трекинга (в форме)
         tracking_form = QFormLayout()
         tracking_form.setContentsMargins(20, 0, 0, 0)
         
-        # Тип трекера
         self.combo_tracker = QComboBox()
         self.combo_tracker.addItem("ByteTrack (быстрый)", "bytetrack.yaml")
         self.combo_tracker.addItem("BoT-SORT (точный)", "botsort.yaml")
         tracking_form.addRow("Трекер:", self.combo_tracker)
         
-        # Показывать траектории
         self.check_trails = QCheckBox("Показывать траектории")
         tracking_form.addRow("", self.check_trails)
         
-        # Длина траектории
         self.spin_trail_length = QSpinBox()
         self.spin_trail_length.setRange(10, 200)
         tracking_form.addRow("Длина траектории (кадров):", self.spin_trail_length)
         
-        # Минимальная длина трека
         self.spin_min_track = QSpinBox()
         self.spin_min_track.setRange(1, 50)
         tracking_form.addRow("Мин. длина трека (кадров):", self.spin_min_track)
@@ -153,8 +142,6 @@ class NewTaskDialog(QDialog):
         )
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
-        
-        # Переименуем кнопку OK
         button_box.button(QDialogButtonBox.StandardButton.Ok).setText("Добавить в очередь")
         
         layout.addWidget(button_box)
@@ -170,22 +157,30 @@ class NewTaskDialog(QDialog):
                 secs = int(video.duration_s % 60)
                 info += f" ({mins}:{secs:02d})"
             self.label_video.setText(info)
+            
+            # Загружаем CTD файлы из того же погружения
+            dive_id = video.dive_id
+            ctd_files = self.repo.get_ctd_by_dive(dive_id)
+            
+            self.combo_ctd.clear()
+            self.combo_ctd.addItem("— Не использовать CTD —", None)
+            
+            for ctd in ctd_files:
+                display = ctd.filename
+                if ctd.max_depth:
+                    display += f" (до {ctd.max_depth:.1f}м)"
+                self.combo_ctd.addItem(display, ctd.id)
+            
+            # Выбираем предустановленный CTD или первый доступный
+            if self.ctd_id:
+                for i in range(self.combo_ctd.count()):
+                    if self.combo_ctd.itemData(i) == self.ctd_id:
+                        self.combo_ctd.setCurrentIndex(i)
+                        break
+            elif ctd_files:
+                self.combo_ctd.setCurrentIndex(1)
         else:
             self.label_video.setText("Файл не найден")
-        
-        # CTD
-        if self.ctd_id:
-            ctd = self.repo.get_ctd_file(self.ctd_id)
-            if ctd:
-                info = ctd.filename
-                if ctd.max_depth:
-                    info += f" (до {ctd.max_depth:.1f}м)"
-                self.label_ctd.setText(info)
-            else:
-                self.label_ctd.setText("Файл не найден")
-        else:
-            self.label_ctd.setText("Не выбран (будет использоваться скорость погружения)")
-            self.spin_depth_rate.setEnabled(True)
         
         # Модели
         models = self.repo.get_all_models()
@@ -195,7 +190,6 @@ class NewTaskDialog(QDialog):
                 display_name += f" ({model.base_model})"
             self.combo_model.addItem(display_name, model.id)
         
-        # Выбираем предустановленную модель
         if self.preselected_model_id:
             for i in range(self.combo_model.count()):
                 if self.combo_model.itemData(i) == self.preselected_model_id:
@@ -203,14 +197,13 @@ class NewTaskDialog(QDialog):
                     break
 
     def _apply_defaults(self):
-        """Применяет значения по умолчанию из конфига."""
+        """Применяет значения по умолчанию."""
         config = get_config()
         params = config.default_detection_params
         
         self.spin_conf.setValue(params.conf_threshold)
         self.check_tracking.setChecked(params.enable_tracking)
         
-        # Находим трекер в комбобоксе
         for i in range(self.combo_tracker.count()):
             if self.combo_tracker.itemData(i) == params.tracker_type:
                 self.combo_tracker.setCurrentIndex(i)
@@ -221,12 +214,18 @@ class NewTaskDialog(QDialog):
         self.spin_min_track.setValue(params.min_track_length)
         self.check_save_video.setChecked(params.save_video)
         
-        # Обновляем состояние полей трекинга
         self._on_tracking_toggled(params.enable_tracking)
-        
-        # Если есть CTD, отключаем depth_rate
-        if self.ctd_id:
-            self.spin_depth_rate.setEnabled(False)
+        self._update_depth_rate_state()
+
+    def _on_ctd_changed(self, index: int):
+        """Обработка изменения выбора CTD."""
+        self._update_depth_rate_state()
+
+    def _update_depth_rate_state(self):
+        """Обновляет состояние поля depth_rate."""
+        has_ctd = self.combo_ctd.currentData() is not None
+        self.spin_depth_rate.setEnabled(not has_ctd)
+        if has_ctd:
             self.spin_depth_rate.setValue(0)
 
     def _on_tracking_toggled(self, enabled: bool):
@@ -235,11 +234,6 @@ class NewTaskDialog(QDialog):
         self.check_trails.setEnabled(enabled)
         self.spin_trail_length.setEnabled(enabled and self.check_trails.isChecked())
         self.spin_min_track.setEnabled(enabled)
-        
-        if enabled:
-            self.check_trails.toggled.connect(
-                lambda checked: self.spin_trail_length.setEnabled(checked)
-            )
 
     def get_task_params(self) -> Dict[str, Any]:
         """Возвращает параметры для создания задачи."""
@@ -253,8 +247,8 @@ class NewTaskDialog(QDialog):
             "save_video": self.check_save_video.isChecked(),
         }
         
-        # Скорость погружения (только если нет CTD и значение задано)
-        if not self.ctd_id and self.spin_depth_rate.value() > 0:
+        # Скорость погружения только если нет CTD
+        if self.combo_ctd.currentData() is None and self.spin_depth_rate.value() > 0:
             params["depth_rate"] = self.spin_depth_rate.value()
         
         return params
@@ -265,4 +259,4 @@ class NewTaskDialog(QDialog):
 
     def get_ctd_id(self) -> Optional[int]:
         """Возвращает ID CTD файла."""
-        return self.ctd_id
+        return self.combo_ctd.currentData()

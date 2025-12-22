@@ -6,3 +6,4 @@ test_video/
 /*.pt
 *.mp4
 yolo_train.py
+batch.db

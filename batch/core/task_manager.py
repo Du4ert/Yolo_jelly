@@ -25,7 +25,7 @@ class TaskManager(QObject):
     # Сигналы
     queue_changed = pyqtSignal()
     task_started = pyqtSignal(int)  # task_id
-    task_progress = pyqtSignal(int, float)  # task_id, percent
+    task_progress = pyqtSignal(int, float, int, int, int, int)  # task_id, percent, frame, total, detections, tracks
     task_finished = pyqtSignal(int, bool, str)  # task_id, success, error_message
     queue_finished = pyqtSignal()
     queue_state_changed = pyqtSignal(bool, bool)  # is_running, is_paused
@@ -226,10 +226,9 @@ class TaskManager(QObject):
         self.task_started.emit(task_id)
         self.queue_changed.emit()
 
-    def _on_task_progress(self, task_id: int, percent: float, current_frame: int, total_frames: int) -> None:
+    def _on_task_progress(self, task_id: int, percent: float, current_frame: int, total_frames: int, detections: int, tracks: int) -> None:
         """Обработчик прогресса задачи."""
-        self.repo.update_task_progress(task_id, percent, current_frame)
-        self.task_progress.emit(task_id, percent)
+        self.task_progress.emit(task_id, percent, current_frame, total_frames, detections, tracks)
 
     def _on_task_finished(self, task_id: int, success: bool, error_message: str) -> None:
         """Обработчик завершения задачи."""

@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from .models import (
     Base,
+    Catalog,
     Dive,
     VideoFile,
     CTDFile,
@@ -47,6 +48,86 @@ class Repository:
     def get_session(self) -> Session:
         """Создаёт новую сессию."""
         return self.SessionLocal()
+
+    # ========== CATALOG OPERATIONS ==========
+
+    def create_catalog(
+        self,
+        name: str,
+        description: Optional[str] = None,
+        color: Optional[str] = None,
+    ) -> Catalog:
+        """Создаёт новый каталог (экспедицию)."""
+        with self.get_session() as session:
+            # Определяем позицию
+            stmt = select(func.max(Catalog.position))
+            max_pos = session.scalar(stmt) or 0
+            
+            catalog = Catalog(
+                name=name,
+                description=description,
+                color=color,
+                position=max_pos + 1,
+            )
+            session.add(catalog)
+            session.commit()
+            session.refresh(catalog)
+            return catalog
+
+    def get_catalog(self, catalog_id: int) -> Optional[Catalog]:
+        """Получает каталог по ID."""
+        with self.get_session() as session:
+            return session.get(Catalog, catalog_id)
+
+    def get_all_catalogs(self) -> List[Catalog]:
+        """Получает все каталоги."""
+        with self.get_session() as session:
+            stmt = select(Catalog).order_by(Catalog.position)
+            return list(session.scalars(stmt))
+
+    def update_catalog(self, catalog_id: int, **kwargs) -> Optional[Catalog]:
+        """Обновляет каталог."""
+        with self.get_session() as session:
+            catalog = session.get(Catalog, catalog_id)
+            if catalog:
+                for key, value in kwargs.items():
+                    if hasattr(catalog, key):
+                        setattr(catalog, key, value)
+                session.commit()
+                session.refresh(catalog)
+            return catalog
+
+    def delete_catalog(self, catalog_id: int) -> bool:
+        """Удаляет каталог. Погружения остаются без каталога."""
+        with self.get_session() as session:
+            catalog = session.get(Catalog, catalog_id)
+            if catalog:
+                # Отвязываем погружения
+                stmt = update(Dive).where(Dive.catalog_id == catalog_id).values(catalog_id=None)
+                session.execute(stmt)
+                session.delete(catalog)
+                session.commit()
+                return True
+            return False
+
+    def get_dives_by_catalog(self, catalog_id: Optional[int]) -> List[Dive]:
+        """Получает погружения каталога. None = погружения без каталога."""
+        with self.get_session() as session:
+            if catalog_id is None:
+                stmt = select(Dive).where(Dive.catalog_id.is_(None)).order_by(Dive.position)
+            else:
+                stmt = select(Dive).where(Dive.catalog_id == catalog_id).order_by(Dive.position)
+            return list(session.scalars(stmt))
+
+    def move_dive_to_catalog(self, dive_id: int, catalog_id: Optional[int]) -> bool:
+        """Перемещает погружение в каталог. None = без каталога."""
+        with self.get_session() as session:
+            dive = session.get(Dive, dive_id)
+            if dive:
+                dive.catalog_id = catalog_id
+                session.commit()
+                return True
+            return False
 
     # ========== DIVE OPERATIONS ==========
 

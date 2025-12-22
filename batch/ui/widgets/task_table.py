@@ -27,6 +27,7 @@ from PyQt6.QtGui import QColor, QBrush
 
 from ...database import Repository, Task, TaskStatus, VideoFile, Model
 from ...core import TaskManager
+from ..dialogs import EditTaskDialog
 
 
 class TaskTable(QWidget):
@@ -36,12 +37,12 @@ class TaskTable(QWidget):
 
     # Цвета статусов
     STATUS_COLORS = {
-        TaskStatus.PENDING: QColor(200, 200, 200),    # Серый
-        TaskStatus.RUNNING: QColor(100, 180, 255),    # Синий
-        TaskStatus.PAUSED: QColor(255, 220, 100),     # Жёлтый
-        TaskStatus.DONE: QColor(100, 220, 100),       # Зелёный
-        TaskStatus.ERROR: QColor(255, 120, 120),      # Красный
-        TaskStatus.CANCELLED: QColor(180, 180, 180),  # Тёмно-серый
+        TaskStatus.PENDING: QColor(200, 200, 200),
+        TaskStatus.RUNNING: QColor(100, 180, 255),
+        TaskStatus.PAUSED: QColor(255, 220, 100),
+        TaskStatus.DONE: QColor(100, 220, 100),
+        TaskStatus.ERROR: QColor(255, 120, 120),
+        TaskStatus.CANCELLED: QColor(180, 180, 180),
     }
     
     STATUS_ICONS = {
@@ -54,19 +55,17 @@ class TaskTable(QWidget):
     }
 
     def __init__(self, repository: Repository, task_manager: TaskManager, parent=None):
-        """
-        Инициализация таблицы.
-        
-        Args:
-            repository: Репозиторий для работы с БД.
-            task_manager: Менеджер задач.
-            parent: Родительский виджет.
-        """
         super().__init__(parent)
         self.repo = repository
         self.task_manager = task_manager
         self._setup_ui()
+        self._connect_signals()
         self.refresh()
+
+    def _connect_signals(self):
+        """Подключает сигналы."""
+        self.task_manager.task_progress.connect(self._on_task_progress)
+        self.task_manager.queue_changed.connect(self.refresh)
 
     def _setup_ui(self):
         """Настройка интерфейса."""
@@ -104,6 +103,7 @@ class TaskTable(QWidget):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._on_context_menu)
+        self.table.itemDoubleClicked.connect(self._on_double_click)
         self.table.verticalHeader().setVisible(False)
         
         group_layout.addWidget(self.table)
@@ -182,7 +182,6 @@ class TaskTable(QWidget):
         status_item = QTableWidgetItem(status_text)
         status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         
-        # Цвет фона
         color = self.STATUS_COLORS.get(task.status, QColor(255, 255, 255))
         status_item.setBackground(QBrush(color))
         
@@ -210,11 +209,26 @@ class TaskTable(QWidget):
         # Окрашиваем всю строку
         for col in range(self.table.columnCount()):
             item = self.table.item(row, col)
-            if item and col != 3:  # Кроме статуса (у него свой цвет)
+            if item and col != 3:
                 if task.status == TaskStatus.DONE:
                     item.setForeground(QBrush(QColor(0, 100, 0)))
                 elif task.status == TaskStatus.ERROR:
                     item.setForeground(QBrush(QColor(150, 0, 0)))
+
+    def _on_double_click(self, item):
+        """Двойной клик - открыть диалог редактирования."""
+        task_id = self._get_selected_task_id()
+        if task_id:
+            self._edit_task(task_id)
+
+    def _edit_task(self, task_id: int):
+        """Открывает диалог редактирования задачи."""
+        try:
+            dialog = EditTaskDialog(self.repo, task_id, parent=self)
+            if dialog.exec():
+                self.refresh()
+        except ValueError as e:
+            QMessageBox.warning(self, "Ошибка", str(e))
 
     def _get_selected_task_id(self) -> Optional[int]:
         """Возвращает ID выбранной задачи."""
@@ -240,6 +254,12 @@ class TaskTable(QWidget):
             return
         
         menu = QMenu(self)
+        
+        # Просмотр/редактирование
+        action_edit = menu.addAction("✏ Просмотр/редактировать...")
+        action_edit.triggered.connect(lambda: self._edit_task(task_id))
+        
+        menu.addSeparator()
         
         # Открыть результаты
         if task.status == TaskStatus.DONE:
@@ -298,7 +318,7 @@ class TaskTable(QWidget):
             return
         
         if self.task_manager.remove_task(task_id):
-            pass  # refresh будет вызван через сигнал queue_changed
+            pass
 
     def _retry_selected(self):
         """Повторяет выбранную задачу."""
@@ -314,11 +334,9 @@ class TaskTable(QWidget):
         
         outputs = self.repo.get_task_outputs(task_id)
         if outputs:
-            # Открываем папку первого результата
             output_dir = str(Path(outputs[0].filepath).parent)
             self._open_folder(output_dir)
         else:
-            # Пытаемся открыть папку output погружения
             video = self.repo.get_video_file(task.video_id)
             if video:
                 dive = self.repo.get_dive(video.dive_id)
@@ -335,3 +353,25 @@ class TaskTable(QWidget):
             subprocess.run(["open", path])
         else:
             subprocess.run(["xdg-open", path])
+
+    def _on_task_progress(self, task_id: int, percent: float, current_frame: int, 
+                          total_frames: int, detections: int, tracks: int):
+        """Обновляет прогресс задачи в таблице."""
+        # Ищем строку с этой задачей
+        for row in range(self.table.rowCount()):
+            id_item = self.table.item(row, 0)
+            if id_item and id_item.data(Qt.ItemDataRole.UserRole) == task_id:
+                # Обновляем прогресс
+                progress_item = self.table.item(row, 4)
+                if progress_item:
+                    progress_item.setText(f"{percent:.0f}%")
+                
+                # Обновляем результат (текущие детекции/треки)
+                result_item = self.table.item(row, 5)
+                if result_item:
+                    result_text = f"{detections} дет."
+                    if tracks > 0:
+                        result_text += f" / {tracks} тр."
+                    result_item.setText(result_text)
+                
+                break

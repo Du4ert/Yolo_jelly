@@ -4,6 +4,7 @@
 
 from .models import (
     Base,
+    Catalog,
     Dive,
     VideoFile,
     CTDFile,
@@ -17,6 +18,7 @@ from .repository import Repository
 
 __all__ = [
     "Base",
+    "Catalog",
     "Dive",
     "VideoFile",
     "CTDFile",

@@ -1,22 +1,22 @@
 {
   "database_path": "batch.db",
   "default_detection_params": {
-    "conf_threshold": 0.25,
+    "conf_threshold": 0.75,
     "enable_tracking": true,
     "tracker_type": "bytetrack.yaml",
     "show_trails": false,
     "trail_length": 30,
-    "min_track_length": 3,
+    "min_track_length": 5,
     "save_video": true
   },
   "ui": {
-    "window_geometry": "AdnQywADAAAAAAAA////+QAABbYAAANhAAAA6AAAAFMAAATPAAADDgAAAAACAAAABbcAAAAAAAAAFwAABbYAAANh",
+    "window_geometry": "AdnQywADAAAAAAAA////+QAABbYAAANhAAAAFgAAAGEAAAWKAAADNwAAAAACAAAABbcAAAAAAAAAFwAABbYAAANh",
     "window_state": null,
-    "last_browse_path": "D:\\test_video",
+    "last_browse_path": "D:\\Видео\\Выходы (прибрежка)\\Балаклава\\Балаклава 2025-12-11",
     "last_model_id": 1,
     "splitter_sizes": [
-      508,
-      943
+      449,
+      1002
     ]
   }
 }

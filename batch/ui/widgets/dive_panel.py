@@ -1,5 +1,5 @@
 """
-Панель погружений - отображение и управление погружениями и их файлами.
+Панель погружений с поддержкой каталогов (экспедиций).
 """
 
 import os
@@ -17,47 +17,34 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QMenu,
     QMessageBox,
-    QFileDialog,
-    QInputDialog,
-    QLabel,
     QGroupBox,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QAction
+from PyQt6.QtGui import QColor, QBrush
 
-from ...database import Repository, Dive, VideoFile, CTDFile
+from ...database import Repository, Catalog, Dive, VideoFile, CTDFile
 from ...core import get_config, save_config
-from ..dialogs import AddDiveDialog
+from ..dialogs import AddDiveDialog, EditDiveDialog, CatalogDialog
 
 
 class DivePanel(QWidget):
     """
-    Панель для отображения погружений и их файлов.
-    
-    Signals:
-        dive_selected: Выбрано погружение (dive_id).
-        video_selected: Выбрано видео (video_id).
-        add_to_queue_requested: Запрос на добавление в очередь (video_id, ctd_id).
+    Панель для отображения каталогов, погружений и их файлов.
     """
     
     dive_selected = pyqtSignal(int)
     video_selected = pyqtSignal(int)
-    add_to_queue_requested = pyqtSignal(int, object)  # video_id, ctd_id (может быть None)
-    quick_add_to_queue_requested = pyqtSignal(int, object)  # Быстрое добавление без диалога
+    add_to_queue_requested = pyqtSignal(int, object)
+    quick_add_to_queue_requested = pyqtSignal(int, object)
 
     # Типы элементов в дереве
-    TYPE_DIVE = 0
-    TYPE_VIDEO = 1
-    TYPE_CTD = 2
+    TYPE_CATALOG = 0
+    TYPE_DIVE = 1
+    TYPE_VIDEO = 2
+    TYPE_CTD = 3
+    TYPE_UNCATEGORIZED = 4  # Виртуальный узел "Без категории"
 
     def __init__(self, repository: Repository, parent=None):
-        """
-        Инициализация панели.
-        
-        Args:
-            repository: Репозиторий для работы с БД.
-            parent: Родительский виджет.
-        """
         super().__init__(parent)
         self.repo = repository
         self._setup_ui()
@@ -69,29 +56,37 @@ class DivePanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
         
-        # Группа
         group = QGroupBox("Погружения")
         group_layout = QVBoxLayout(group)
         group_layout.setContentsMargins(4, 4, 4, 4)
         group_layout.setSpacing(4)
         
-        # Дерево погружений
+        # Дерево
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Название", "Инфо"])
-        self.tree.setColumnWidth(0, 200)
+        self.tree.setColumnWidth(0, 220)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._on_context_menu)
         self.tree.itemSelectionChanged.connect(self._on_selection_changed)
         self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
+        self.tree.setDragDropMode(QTreeWidget.DragDropMode.InternalMove)
+        self.tree.setAcceptDrops(True)
+        self.tree.itemMoved = self._on_item_moved
         group_layout.addWidget(self.tree)
         
         # Кнопки
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(4)
         
-        self.btn_add = QPushButton("+ Добавить папку")
-        self.btn_add.clicked.connect(self.add_dive)
-        btn_layout.addWidget(self.btn_add)
+        self.btn_add_catalog = QPushButton("+ Экспедиция")
+        self.btn_add_catalog.setToolTip("Создать новую экспедицию")
+        self.btn_add_catalog.clicked.connect(self._add_catalog)
+        btn_layout.addWidget(self.btn_add_catalog)
+        
+        self.btn_add_dive = QPushButton("+ Папка")
+        self.btn_add_dive.setToolTip("Добавить папку с погружением")
+        self.btn_add_dive.clicked.connect(self.add_dive)
+        btn_layout.addWidget(self.btn_add_dive)
         
         self.btn_refresh = QPushButton("↻")
         self.btn_refresh.setFixedWidth(30)
@@ -100,37 +95,69 @@ class DivePanel(QWidget):
         btn_layout.addWidget(self.btn_refresh)
         
         group_layout.addLayout(btn_layout)
-        
         layout.addWidget(group)
 
     def _load_data(self):
         """Загружает данные из БД."""
         self.tree.clear()
         
-        dives = self.repo.get_all_dives()
+        # Загружаем каталоги
+        catalogs = self.repo.get_all_catalogs()
         
-        for dive in dives:
-            dive_item = self._create_dive_item(dive)
-            self.tree.addTopLevelItem(dive_item)
+        for catalog in catalogs:
+            catalog_item = self._create_catalog_item(catalog)
+            self.tree.addTopLevelItem(catalog_item)
             
-            # Загружаем видеофайлы
-            videos = self.repo.get_videos_by_dive(dive.id)
-            for video in videos:
-                video_item = self._create_video_item(video)
-                dive_item.addChild(video_item)
+            # Погружения в каталоге
+            dives = self.repo.get_dives_by_catalog(catalog.id)
+            for dive in dives:
+                dive_item = self._create_dive_item(dive)
+                catalog_item.addChild(dive_item)
+                self._add_dive_children(dive_item, dive.id)
             
-            # Загружаем CTD файлы
-            ctd_files = self.repo.get_ctd_by_dive(dive.id)
-            for ctd in ctd_files:
-                ctd_item = self._create_ctd_item(ctd)
-                dive_item.addChild(ctd_item)
+            if dives:
+                catalog_item.setExpanded(True)
+        
+        # Погружения без каталога
+        uncategorized_dives = self.repo.get_dives_by_catalog(None)
+        
+        if uncategorized_dives:
+            # Создаём виртуальный узел
+            uncat_item = QTreeWidgetItem()
+            uncat_item.setText(0, "📂 Без экспедиции")
+            uncat_item.setText(1, f"{len(uncategorized_dives)} погр.")
+            uncat_item.setData(0, Qt.ItemDataRole.UserRole, None)
+            uncat_item.setData(0, Qt.ItemDataRole.UserRole + 1, self.TYPE_UNCATEGORIZED)
+            uncat_item.setForeground(0, QBrush(QColor(128, 128, 128)))
+            self.tree.addTopLevelItem(uncat_item)
             
-            # Разворачиваем если есть файлы
-            if videos or ctd_files:
-                dive_item.setExpanded(True)
+            for dive in uncategorized_dives:
+                dive_item = self._create_dive_item(dive)
+                uncat_item.addChild(dive_item)
+                self._add_dive_children(dive_item, dive.id)
+            
+            uncat_item.setExpanded(True)
+
+    def _create_catalog_item(self, catalog: Catalog) -> QTreeWidgetItem:
+        """Создаёт элемент для каталога."""
+        item = QTreeWidgetItem()
+        item.setText(0, f"🗂 {catalog.name}")
+        
+        # Считаем погружения
+        dives = self.repo.get_dives_by_catalog(catalog.id)
+        item.setText(1, f"{len(dives)} погр.")
+        
+        item.setData(0, Qt.ItemDataRole.UserRole, catalog.id)
+        item.setData(0, Qt.ItemDataRole.UserRole + 1, self.TYPE_CATALOG)
+        
+        # Цвет
+        if catalog.color:
+            item.setForeground(0, QBrush(QColor(catalog.color)))
+        
+        return item
 
     def _create_dive_item(self, dive: Dive) -> QTreeWidgetItem:
-        """Создаёт элемент дерева для погружения."""
+        """Создаёт элемент для погружения."""
         item = QTreeWidgetItem()
         item.setText(0, f"📁 {dive.name}")
         item.setText(1, dive.location or "")
@@ -139,7 +166,7 @@ class DivePanel(QWidget):
         return item
 
     def _create_video_item(self, video: VideoFile) -> QTreeWidgetItem:
-        """Создаёт элемент дерева для видеофайла."""
+        """Создаёт элемент для видео."""
         item = QTreeWidgetItem()
         item.setText(0, f"📹 {video.filename}")
         
@@ -157,7 +184,7 @@ class DivePanel(QWidget):
         return item
 
     def _create_ctd_item(self, ctd: CTDFile) -> QTreeWidgetItem:
-        """Создаёт элемент дерева для CTD файла."""
+        """Создаёт элемент для CTD."""
         item = QTreeWidgetItem()
         item.setText(0, f"📊 {ctd.filename}")
         
@@ -165,23 +192,34 @@ class DivePanel(QWidget):
         if ctd.max_depth:
             info_parts.append(f"до {ctd.max_depth:.1f}м")
         if ctd.records_count:
-            info_parts.append(f"{ctd.records_count} записей")
+            info_parts.append(f"{ctd.records_count} зап.")
         
         item.setText(1, " | ".join(info_parts))
         item.setData(0, Qt.ItemDataRole.UserRole, ctd.id)
         item.setData(0, Qt.ItemDataRole.UserRole + 1, self.TYPE_CTD)
         return item
 
+    def _add_dive_children(self, dive_item: QTreeWidgetItem, dive_id: int):
+        """Добавляет дочерние элементы погружения."""
+        videos = self.repo.get_videos_by_dive(dive_id)
+        for video in videos:
+            dive_item.addChild(self._create_video_item(video))
+        
+        ctd_files = self.repo.get_ctd_by_dive(dive_id)
+        for ctd in ctd_files:
+            dive_item.addChild(self._create_ctd_item(ctd))
+        
+        if videos or ctd_files:
+            dive_item.setExpanded(True)
+
     def _get_item_type(self, item: QTreeWidgetItem) -> int:
-        """Возвращает тип элемента."""
         return item.data(0, Qt.ItemDataRole.UserRole + 1)
 
-    def _get_item_id(self, item: QTreeWidgetItem) -> int:
-        """Возвращает ID элемента."""
+    def _get_item_id(self, item: QTreeWidgetItem) -> Optional[int]:
         return item.data(0, Qt.ItemDataRole.UserRole)
 
     def _on_selection_changed(self):
-        """Обработка изменения выбора."""
+        """Обработка выбора."""
         items = self.tree.selectedItems()
         if not items:
             return
@@ -190,87 +228,232 @@ class DivePanel(QWidget):
         item_type = self._get_item_type(item)
         item_id = self._get_item_id(item)
         
-        if item_type == self.TYPE_DIVE:
+        if item_type == self.TYPE_DIVE and item_id:
             self.dive_selected.emit(item_id)
-        elif item_type == self.TYPE_VIDEO:
+        elif item_type == self.TYPE_VIDEO and item_id:
             self.video_selected.emit(item_id)
 
     def _on_item_double_clicked(self, item: QTreeWidgetItem, column: int):
-        """Двойной клик на элементе."""
+        """Двойной клик."""
         item_type = self._get_item_type(item)
         item_id = self._get_item_id(item)
         
-        if item_type == self.TYPE_VIDEO:
-            # Добавляем в очередь
+        if item_type == self.TYPE_CATALOG and item_id:
+            self._edit_catalog(item_id)
+        elif item_type == self.TYPE_DIVE and item_id:
+            self._edit_dive(item_id)
+        elif item_type == self.TYPE_VIDEO and item_id:
             self._add_video_to_queue(item)
+
+    def _on_item_moved(self, item, old_parent, new_parent):
+        """Обработка перетаскивания (TODO: реализовать drag-drop)."""
+        pass
 
     def _on_context_menu(self, position):
         """Контекстное меню."""
         item = self.tree.itemAt(position)
-        if not item:
-            return
-        
         menu = QMenu(self)
-        item_type = self._get_item_type(item)
-        item_id = self._get_item_id(item)
         
-        if item_type == self.TYPE_DIVE:
-            # Меню для погружения
-            action_open = menu.addAction("📂 Открыть в проводнике")
-            action_open.triggered.connect(lambda: self._open_dive_folder(item_id))
+        if not item:
+            # Клик на пустом месте
+            action_add_cat = menu.addAction("🗂 Новая экспедиция...")
+            action_add_cat.triggered.connect(self._add_catalog)
             
-            action_open_output = menu.addAction("📂 Открыть папку output")
-            action_open_output.triggered.connect(lambda: self._open_output_folder(item_id))
+            action_add_dive = menu.addAction("📁 Добавить папку...")
+            action_add_dive.triggered.connect(self.add_dive)
+        else:
+            item_type = self._get_item_type(item)
+            item_id = self._get_item_id(item)
             
-            menu.addSeparator()
-            
-            action_add_all = menu.addAction("📋 Добавить все видео в очередь")
-            action_add_all.triggered.connect(lambda: self._add_all_videos_to_queue(item_id))
-            
-            action_scan = menu.addAction("🔍 Сканировать папку")
-            action_scan.triggered.connect(lambda: self._scan_dive_folder(item_id))
-            
-            menu.addSeparator()
-            
-            action_delete = menu.addAction("🗑 Удалить из базы")
-            action_delete.triggered.connect(lambda: self._delete_dive(item_id))
-            
-        elif item_type == self.TYPE_VIDEO:
-            # Меню для видео
-            action_add = menu.addAction("📋 Добавить в очередь...")
-            action_add.triggered.connect(lambda: self._add_video_to_queue(item))
-            
-            action_quick_add = menu.addAction("⚡ Быстро добавить (параметры по умолчанию)")
-            action_quick_add.triggered.connect(lambda: self._quick_add_video_to_queue(item))
-            
-            menu.addSeparator()
-            
-            action_delete = menu.addAction("🗑 Удалить из базы")
-            action_delete.triggered.connect(lambda: self._delete_video(item_id))
-            
-        elif item_type == self.TYPE_CTD:
-            # Меню для CTD
-            action_delete = menu.addAction("🗑 Удалить из базы")
-            action_delete.triggered.connect(lambda: self._delete_ctd(item_id))
+            if item_type == self.TYPE_CATALOG:
+                self._build_catalog_menu(menu, item_id)
+            elif item_type == self.TYPE_UNCATEGORIZED:
+                action_add = menu.addAction("📁 Добавить папку сюда...")
+                action_add.triggered.connect(self.add_dive)
+            elif item_type == self.TYPE_DIVE:
+                self._build_dive_menu(menu, item, item_id)
+            elif item_type == self.TYPE_VIDEO:
+                self._build_video_menu(menu, item, item_id)
+            elif item_type == self.TYPE_CTD:
+                self._build_ctd_menu(menu, item_id)
         
         menu.exec(self.tree.viewport().mapToGlobal(position))
 
-    def add_dive(self):
-        """Добавляет новое погружение."""
-        dialog = AddDiveDialog(self.repo, parent=self)
+    def _build_catalog_menu(self, menu: QMenu, catalog_id: int):
+        """Меню для каталога."""
+        action_edit = menu.addAction("✏ Редактировать...")
+        action_edit.triggered.connect(lambda: self._edit_catalog(catalog_id))
         
+        menu.addSeparator()
+        
+        action_add = menu.addAction("📁 Добавить папку в экспедицию...")
+        action_add.triggered.connect(lambda: self._add_dive_to_catalog(catalog_id))
+        
+        action_add_all = menu.addAction("📋 Добавить все видео в очередь")
+        action_add_all.triggered.connect(lambda: self._add_all_catalog_videos(catalog_id))
+        
+        menu.addSeparator()
+        
+        action_delete = menu.addAction("🗑 Удалить экспедицию")
+        action_delete.triggered.connect(lambda: self._delete_catalog(catalog_id))
+
+    def _build_dive_menu(self, menu: QMenu, item: QTreeWidgetItem, dive_id: int):
+        """Меню для погружения."""
+        action_edit = menu.addAction("✏ Редактировать...")
+        action_edit.triggered.connect(lambda: self._edit_dive(dive_id))
+        
+        menu.addSeparator()
+        
+        action_open = menu.addAction("📂 Открыть в проводнике")
+        action_open.triggered.connect(lambda: self._open_dive_folder(dive_id))
+        
+        action_output = menu.addAction("📂 Открыть папку output")
+        action_output.triggered.connect(lambda: self._open_output_folder(dive_id))
+        
+        menu.addSeparator()
+        
+        # Подменю перемещения в каталог
+        move_menu = menu.addMenu("📦 Переместить в...")
+        
+        catalogs = self.repo.get_all_catalogs()
+        dive = self.repo.get_dive(dive_id)
+        
+        for cat in catalogs:
+            if dive and dive.catalog_id != cat.id:
+                action = move_menu.addAction(f"🗂 {cat.name}")
+                action.triggered.connect(lambda checked, cid=cat.id: self._move_dive_to_catalog(dive_id, cid))
+        
+        if dive and dive.catalog_id is not None:
+            move_menu.addSeparator()
+            action_uncat = move_menu.addAction("📂 Без экспедиции")
+            action_uncat.triggered.connect(lambda: self._move_dive_to_catalog(dive_id, None))
+        
+        menu.addSeparator()
+        
+        action_add_all = menu.addAction("📋 Добавить все видео в очередь")
+        action_add_all.triggered.connect(lambda: self._add_all_videos_to_queue(dive_id))
+        
+        action_scan = menu.addAction("🔍 Сканировать папку")
+        action_scan.triggered.connect(lambda: self._scan_dive_folder(dive_id))
+        
+        menu.addSeparator()
+        
+        action_delete = menu.addAction("🗑 Удалить из базы")
+        action_delete.triggered.connect(lambda: self._delete_dive(dive_id))
+
+    def _build_video_menu(self, menu: QMenu, item: QTreeWidgetItem, video_id: int):
+        """Меню для видео."""
+        action_add = menu.addAction("📋 Добавить в очередь...")
+        action_add.triggered.connect(lambda: self._add_video_to_queue(item))
+        
+        action_quick = menu.addAction("⚡ Быстро добавить")
+        action_quick.triggered.connect(lambda: self._quick_add_video_to_queue(item))
+        
+        menu.addSeparator()
+        
+        action_delete = menu.addAction("🗑 Удалить из базы")
+        action_delete.triggered.connect(lambda: self._delete_video(video_id))
+
+    def _build_ctd_menu(self, menu: QMenu, ctd_id: int):
+        """Меню для CTD."""
+        action_delete = menu.addAction("🗑 Удалить из базы")
+        action_delete.triggered.connect(lambda: self._delete_ctd(ctd_id))
+
+    # ========== ДЕЙСТВИЯ ==========
+
+    def _add_catalog(self):
+        """Создаёт новый каталог."""
+        dialog = CatalogDialog(self.repo, parent=self)
+        if dialog.exec():
+            self._load_data()
+
+    def _edit_catalog(self, catalog_id: int):
+        """Редактирует каталог."""
+        try:
+            dialog = CatalogDialog(self.repo, catalog_id, parent=self)
+            if dialog.exec():
+                self._load_data()
+        except ValueError as e:
+            QMessageBox.warning(self, "Ошибка", str(e))
+
+    def _delete_catalog(self, catalog_id: int):
+        """Удаляет каталог."""
+        catalog = self.repo.get_catalog(catalog_id)
+        if not catalog:
+            return
+        
+        dives = self.repo.get_dives_by_catalog(catalog_id)
+        
+        msg = f"Удалить экспедицию «{catalog.name}»?"
+        if dives:
+            msg += f"\n\n{len(dives)} погружений будут перемещены в «Без экспедиции»."
+        
+        reply = QMessageBox.question(
+            self, "Удалить экспедицию?", msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            self.repo.delete_catalog(catalog_id)
+            self._load_data()
+
+    def _add_all_catalog_videos(self, catalog_id: int):
+        """Добавляет все видео каталога в очередь."""
+        dives = self.repo.get_dives_by_catalog(catalog_id)
+        for dive in dives:
+            self._add_all_videos_to_queue(dive.id)
+
+    def add_dive(self):
+        """Добавляет погружение."""
+        dialog = AddDiveDialog(self.repo, parent=self)
         if dialog.exec():
             data = dialog.get_dive_data()
             dive = self.repo.create_dive(**data)
-            
+            if dive and dialog.should_scan():
+                self._scan_dive_folder(dive.id)
+            self._load_data()
+
+    def _add_dive_to_catalog(self, catalog_id: int):
+        """Добавляет погружение в каталог."""
+        dialog = AddDiveDialog(self.repo, parent=self)
+        if dialog.exec():
+            data = dialog.get_dive_data()
+            dive = self.repo.create_dive(**data)
             if dive:
-                # Сканируем папку на наличие файлов
+                self.repo.move_dive_to_catalog(dive.id, catalog_id)
                 if dialog.should_scan():
                     self._scan_dive_folder(dive.id)
+            self._load_data()
+
+    def _edit_dive(self, dive_id: int):
+        """Редактирует погружение."""
+        try:
+            dialog = EditDiveDialog(self.repo, dive_id, parent=self)
+            if dialog.exec():
                 self._load_data()
+        except ValueError as e:
+            QMessageBox.warning(self, "Ошибка", str(e))
+
+    def _move_dive_to_catalog(self, dive_id: int, catalog_id: Optional[int]):
+        """Перемещает погружение в каталог."""
+        self.repo.move_dive_to_catalog(dive_id, catalog_id)
+        self._load_data()
+
+    def _delete_dive(self, dive_id: int):
+        """Удаляет погружение."""
+        reply = QMessageBox.question(
+            self, "Удалить погружение?",
+            "Удалить погружение из базы?\n(Файлы на диске не будут удалены)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.repo.delete_dive(dive_id)
+            self._load_data()
 
     def _scan_dive_folder(self, dive_id: int):
-        """Сканирует папку погружения на наличие видео и CTD файлов."""
+        """Сканирует папку погружения."""
         dive = self.repo.get_dive(dive_id)
         if not dive:
             return
@@ -280,77 +463,58 @@ class DivePanel(QWidget):
             QMessageBox.warning(self, "Ошибка", f"Папка не найдена: {folder}")
             return
         
-        # Расширения видео
-        video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv'}
-        # Расширения CTD
-        ctd_extensions = {'.csv', '.txt', '.dat'}
+        video_ext = {'.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv'}
+        ctd_ext = {'.csv', '.txt', '.dat'}
         
-        videos_added = 0
-        ctd_added = 0
+        videos_added = ctd_added = 0
         
-        for file_path in folder.iterdir():
-            if file_path.is_file():
-                ext = file_path.suffix.lower()
-                
-                if ext in video_extensions:
-                    result = self.repo.add_video_file(dive_id, str(file_path))
-                    if result:
+        for fp in folder.iterdir():
+            if fp.is_file():
+                ext = fp.suffix.lower()
+                if ext in video_ext:
+                    if self.repo.add_video_file(dive_id, str(fp)):
                         videos_added += 1
-                        
-                elif ext in ctd_extensions:
-                    # Пропускаем файлы, которые выглядят как результаты детекции
-                    if '_detections' in file_path.name or '_tracks' in file_path.name:
-                        continue
-                    result = self.repo.add_ctd_file(dive_id, str(file_path))
-                    if result:
-                        ctd_added += 1
+                elif ext in ctd_ext:
+                    if '_detections' not in fp.name and '_tracks' not in fp.name:
+                        if self.repo.add_ctd_file(dive_id, str(fp)):
+                            ctd_added += 1
         
         if videos_added or ctd_added:
             self._load_data()
-            self.statusBar_message(f"Добавлено: {videos_added} видео, {ctd_added} CTD файлов")
-
-    def statusBar_message(self, message: str):
-        """Показывает сообщение в статусбаре (если доступен)."""
-        main_window = self.window()
-        if hasattr(main_window, 'statusBar'):
-            main_window.statusBar().showMessage(message, 3000)
+            self._show_status(f"Добавлено: {videos_added} видео, {ctd_added} CTD")
 
     def _open_dive_folder(self, dive_id: int):
-        """Открывает папку погружения в проводнике."""
+        """Открывает папку погружения."""
         dive = self.repo.get_dive(dive_id)
         if dive and os.path.exists(dive.folder_path):
             self._open_folder(dive.folder_path)
 
     def _open_output_folder(self, dive_id: int):
-        """Открывает папку output погружения."""
+        """Открывает папку output."""
         dive = self.repo.get_dive(dive_id)
         if dive:
-            output_path = os.path.join(dive.folder_path, "output")
-            if os.path.exists(output_path):
-                self._open_folder(output_path)
+            output = os.path.join(dive.folder_path, "output")
+            if os.path.exists(output):
+                self._open_folder(output)
             else:
-                QMessageBox.information(
-                    self,
-                    "Папка не найдена",
-                    "Папка output ещё не создана.\nОна появится после обработки видео."
-                )
+                QMessageBox.information(self, "Папка не найдена",
+                    "Папка output ещё не создана.")
 
     def _open_folder(self, path: str):
         """Открывает папку в проводнике."""
         if platform.system() == "Windows":
             os.startfile(path)
-        elif platform.system() == "Darwin":  # macOS
+        elif platform.system() == "Darwin":
             subprocess.run(["open", path])
-        else:  # Linux
+        else:
             subprocess.run(["xdg-open", path])
 
     def _get_video_ctd_ids(self, item: QTreeWidgetItem):
-        """Получает video_id и ctd_id для элемента видео."""
+        """Получает video_id и ctd_id."""
         video_id = self._get_item_id(item)
         
-        # Ищем CTD файл в том же погружении
         parent = item.parent()
-        if parent:
+        if parent and self._get_item_type(parent) == self.TYPE_DIVE:
             dive_id = self._get_item_id(parent)
             ctd_files = self.repo.get_ctd_by_dive(dive_id)
             ctd_id = ctd_files[0].id if ctd_files else None
@@ -360,17 +524,17 @@ class DivePanel(QWidget):
         return video_id, ctd_id
 
     def _add_video_to_queue(self, item: QTreeWidgetItem):
-        """Добавляет видео в очередь (с диалогом)."""
+        """Добавляет видео в очередь с диалогом."""
         video_id, ctd_id = self._get_video_ctd_ids(item)
         self.add_to_queue_requested.emit(video_id, ctd_id)
 
     def _quick_add_video_to_queue(self, item: QTreeWidgetItem):
-        """Быстро добавляет видео в очередь (без диалога)."""
+        """Быстро добавляет видео."""
         video_id, ctd_id = self._get_video_ctd_ids(item)
         self.quick_add_to_queue_requested.emit(video_id, ctd_id)
 
     def _add_all_videos_to_queue(self, dive_id: int):
-        """Добавляет все видео погружения в очередь."""
+        """Добавляет все видео погружения."""
         videos = self.repo.get_videos_by_dive(dive_id)
         ctd_files = self.repo.get_ctd_by_dive(dive_id)
         ctd_id = ctd_files[0].id if ctd_files else None
@@ -378,31 +542,22 @@ class DivePanel(QWidget):
         for video in videos:
             self.add_to_queue_requested.emit(video.id, ctd_id)
 
-    def _delete_dive(self, dive_id: int):
-        """Удаляет погружение из базы."""
-        reply = QMessageBox.question(
-            self,
-            "Удалить погружение?",
-            "Удалить погружение и все связанные данные из базы?\n"
-            "(Файлы на диске не будут удалены)",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
-        )
-        
-        if reply == QMessageBox.StandardButton.Yes:
-            self.repo.delete_dive(dive_id)
-            self._load_data()
-
     def _delete_video(self, video_id: int):
-        """Удаляет видео из базы."""
+        """Удаляет видео."""
         self.repo.delete_video_file(video_id)
         self._load_data()
 
     def _delete_ctd(self, ctd_id: int):
-        """Удаляет CTD файл из базы."""
+        """Удаляет CTD."""
         self.repo.delete_ctd_file(ctd_id)
         self._load_data()
 
+    def _show_status(self, message: str):
+        """Показывает сообщение в статусбаре."""
+        main = self.window()
+        if hasattr(main, 'statusBar'):
+            main.statusBar().showMessage(message, 3000)
+
     def refresh(self):
-        """Обновляет отображение."""
+        """Обновляет данные."""
         self._load_data()
