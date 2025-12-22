@@ -8,7 +8,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from collections import defaultdict
+from collections import defaultdict, Counter
 from ultralytics import YOLO
 
 
@@ -127,7 +127,9 @@ def detect_on_video(
     enable_tracking: bool = False,
     tracker_type: str = "bytetrack.yaml",
     show_trails: bool = False,
-    trail_length: int = 30
+    trail_length: int = 30,
+    min_track_length: int = 3,
+    use_dominant_class: bool = True
 ) -> pd.DataFrame:
     """
     Запускает детекцию на видео и экспортирует результаты.
@@ -145,6 +147,8 @@ def detect_on_video(
         tracker_type: тип трекера (bytetrack.yaml или botsort.yaml)
         show_trails: показывать траектории движения объектов
         trail_length: длина траектории в кадрах
+        min_track_length: минимальная длина трека в кадрах (короче игнорируются)
+        use_dominant_class: присваивать всем детекциям трека доминирующий класс
     
     Returns:
         DataFrame с детекциями
@@ -206,6 +210,7 @@ def detect_on_video(
     # Данные для трекинга
     track_history = defaultdict(list)  # track_id -> [(x, y), ...]
     track_info = {}  # track_id -> {'class_id', 'class_name', 'first_frame', 'last_frame'}
+    track_class_votes = defaultdict(list)  # track_id -> [class_id, class_id, ...] для определения доминирующего класса
     
     frame_count = 0
     
@@ -270,6 +275,8 @@ def detect_on_video(
                         track_history[track_id] = track_history[track_id][-trail_length:]
                     
                     # Сохраняем информацию о треке
+                    track_class_votes[track_id].append(class_id)  # Для голосования за класс
+                    
                     if track_id not in track_info:
                         track_info[track_id] = {
                             'class_id': class_id,
@@ -406,6 +413,63 @@ def detect_on_video(
     
     # Создание DataFrame
     df = pd.DataFrame(detections)
+    
+    # Постобработка треков
+    if enable_tracking and len(df) > 0:
+        # 1. Определяем доминирующий класс для каждого трека
+        track_dominant_class = {}
+        for track_id, class_votes in track_class_votes.items():
+            # Находим класс, который встречается чаще всего
+            class_counts = Counter(class_votes)
+            dominant_class_id = class_counts.most_common(1)[0][0]
+            track_dominant_class[track_id] = dominant_class_id
+            
+            # Обновляем track_info
+            track_info[track_id]['class_id'] = dominant_class_id
+            track_info[track_id]['class_name'] = CLASS_NAMES.get(dominant_class_id, f'unknown_{dominant_class_id}')
+        
+        # 2. Фильтруем короткие треки и обновляем классы
+        valid_tracks = set()
+        short_tracks = set()
+        
+        for track_id, info in track_info.items():
+            track_length = len(track_class_votes[track_id])
+            if track_length >= min_track_length:
+                valid_tracks.add(track_id)
+            else:
+                short_tracks.add(track_id)
+        
+        if short_tracks:
+            print(f"\nОтфильтровано коротких треков (< {min_track_length} кадров): {len(short_tracks)}")
+        
+        # 3. Применяем фильтры к DataFrame
+        # Удаляем детекции из коротких треков
+        df = df[df['track_id'].isin(valid_tracks) | df['track_id'].isna()].copy()
+        
+        # 4. Обновляем классы на доминирующие (если включено)
+        if use_dominant_class:
+            def update_class(row):
+                if pd.notna(row['track_id']) and row['track_id'] in track_dominant_class:
+                    dominant_id = track_dominant_class[row['track_id']]
+                    row['class_id'] = dominant_id
+                    row['class_name'] = CLASS_NAMES.get(dominant_id, f'unknown_{dominant_id}')
+                return row
+            
+            df = df.apply(update_class, axis=1)
+            
+            # Подсчитываем треки с изменёнными классами
+            changed_tracks = 0
+            for track_id in valid_tracks:
+                class_votes = track_class_votes[track_id]
+                if len(set(class_votes)) > 1:  # Было более одного класса
+                    changed_tracks += 1
+            
+            if changed_tracks > 0:
+                print(f"Треков с исправленным классом (доминирующий): {changed_tracks}")
+        
+        # 5. Удаляем короткие треки из track_info
+        for track_id in short_tracks:
+            del track_info[track_id]
     
     # Сохранение CSV
     if output_csv:
@@ -565,6 +629,17 @@ def main():
         default=30,
         help="Длина траектории в кадрах (по умолчанию: 30)"
     )
+    parser.add_argument(
+        "--min-track-length",
+        type=int,
+        default=3,
+        help="Минимальная длина трека в кадрах (короче игнорируются, по умолчанию: 3)"
+    )
+    parser.add_argument(
+        "--no-dominant-class",
+        action="store_true",
+        help="Не присваивать доминирующий класс детекциям трека"
+    )
     
     args = parser.parse_args()
     
@@ -581,7 +656,9 @@ def main():
             enable_tracking=args.track,
             tracker_type=args.tracker,
             show_trails=args.show_trails,
-            trail_length=args.trail_length
+            trail_length=args.trail_length,
+            min_track_length=args.min_track_length,
+            use_dominant_class=not args.no_dominant_class
         )
         return 0
     except Exception as e:
