@@ -813,6 +813,383 @@ def process_video_geometry(
     return df
 
 
+@dataclass
+class VolumeEstimate:
+    """Результат оценки осмотренного объёма воды."""
+    total_volume_m3: float           # Общий осмотренный объём (м³)
+    frustum_volume_m3: float         # Объём начального frustum (м³)
+    swept_volume_m3: float           # Объём пройденных слоёв (м³)
+    depth_range_m: Tuple[float, float]  # Диапазон глубин (мин, макс)
+    depth_traversed_m: float         # Пройденная глубина (м)
+    detection_distance_m: float      # Эффективная дистанция обнаружения (м)
+    near_distance_m: float           # Ближняя граница (м)
+    cross_section_area_m2: float     # Площадь сечения на дальней границе (м²)
+    fov_horizontal_deg: float        # Горизонтальный угол обзора
+    fov_vertical_deg: float          # Вертикальный угол обзора
+    duration_s: float                # Длительность записи (с)
+    descent_rate_m_s: float          # Скорость погружения (м/с)
+    density_by_class: Dict[str, float]  # Плотность по классам (особей/м³)
+    counts_by_class: Dict[str, int]  # Количество особей по классам
+
+
+# Дистанции обнаружения по умолчанию (из эмпирических данных)
+DEFAULT_DETECTION_DISTANCES = {
+    'Aurelia aurita': 2.0,      # крупная, хорошо заметная
+    'Rhizostoma pulmo': 2.5,    # очень крупная
+    'Mnemiopsis leidyi': 1.0,   # средняя, прозрачная
+    'Beroe ovata': 1.2,         # средняя
+    'Pleurobrachia pileus': 0.5  # мелкая
+}
+
+
+def calculate_frustum_volume(
+    d_near: float,
+    d_far: float,
+    fov_h_rad: float,
+    fov_v_rad: float
+) -> float:
+    """
+    Вычисляет объём усечённой пирамиды (frustum).
+    
+    Args:
+        d_near: ближняя граница (м)
+        d_far: дальняя граница (м)
+        fov_h_rad: горизонтальный FOV (радианы)
+        fov_v_rad: вертикальный FOV (радианы)
+    
+    Returns:
+        Объём в м³
+    """
+    # Размеры на ближней границе
+    w_near = 2 * d_near * np.tan(fov_h_rad / 2)
+    h_near = 2 * d_near * np.tan(fov_v_rad / 2)
+    A_near = w_near * h_near
+    
+    # Размеры на дальней границе
+    w_far = 2 * d_far * np.tan(fov_h_rad / 2)
+    h_far = 2 * d_far * np.tan(fov_v_rad / 2)
+    A_far = w_far * h_far
+    
+    # Объём усечённой пирамиды
+    depth = d_far - d_near
+    V = (depth / 3) * (A_near + A_far + np.sqrt(A_near * A_far))
+    
+    return V
+
+
+def calculate_cross_section_area(
+    distance: float,
+    fov_h_rad: float,
+    fov_v_rad: float
+) -> float:
+    """Вычисляет площадь поперечного сечения на заданной дистанции."""
+    w = 2 * distance * np.tan(fov_h_rad / 2)
+    h = 2 * distance * np.tan(fov_v_rad / 2)
+    return w * h
+
+
+def estimate_detection_distance(
+    tracks_df: pd.DataFrame,
+    detections_df: pd.DataFrame,
+    calibration: CameraCalibration,
+    reference_class: str = 'Aurelia aurita'
+) -> float:
+    """
+    Оценивает эффективную дистанцию обнаружения по данным треков.
+    
+    Использует максимальную дистанцию, на которой объекты были обнаружены.
+    
+    Args:
+        tracks_df: DataFrame со статистикой треков (из process_detections_with_size)
+        detections_df: DataFrame с детекциями
+        calibration: параметры калибровки
+        reference_class: референсный класс для оценки (по умолчанию Aurelia)
+    
+    Returns:
+        Эффективная дистанция обнаружения (м)
+    """
+    if tracks_df is None or len(tracks_df) == 0:
+        return DEFAULT_DETECTION_DISTANCES.get(reference_class, 1.5)
+    
+    # Фильтруем по референсному классу и методу регрессии (надёжные данные)
+    ref_tracks = tracks_df[
+        (tracks_df['class_name'] == reference_class) & 
+        (tracks_df['method'] == 'regression')
+    ]
+    
+    if len(ref_tracks) == 0:
+        # Пробуем любой класс с регрессией
+        ref_tracks = tracks_df[tracks_df['method'] == 'regression']
+    
+    if len(ref_tracks) == 0:
+        return DEFAULT_DETECTION_DISTANCES.get(reference_class, 1.5)
+    
+    # Для каждого трека вычисляем максимальную дистанцию
+    max_distances = []
+    
+    for _, track in ref_tracks.iterrows():
+        track_id = track['track_id']
+        object_depth = track['object_depth_m']
+        
+        if pd.isna(object_depth):
+            continue
+        
+        # Находим детекции этого трека
+        track_detections = detections_df[detections_df['track_id'] == track_id]
+        if len(track_detections) == 0:
+            continue
+        
+        # Минимальная глубина камеры = момент первого обнаружения (самый далёкий)
+        min_camera_depth = track_detections['depth_m'].min()
+        max_dist = abs(object_depth - min_camera_depth)
+        
+        if 0.5 < max_dist < 5.0:  # разумные пределы
+            max_distances.append(max_dist)
+    
+    if max_distances:
+        # Берём среднее + 0.5 std для консервативной оценки
+        return np.mean(max_distances) + np.std(max_distances) * 0.5
+    
+    return DEFAULT_DETECTION_DISTANCES.get(reference_class, 1.5)
+
+
+def calculate_surveyed_volume(
+    detections_df: pd.DataFrame,
+    tracks_df: Optional[pd.DataFrame] = None,
+    calibration: CameraCalibration = None,
+    fov_horizontal_deg: float = 100.0,
+    near_distance_m: float = 0.3,
+    detection_distance_m: Optional[float] = None,
+    verbose: bool = True
+) -> VolumeEstimate:
+    """
+    Вычисляет осмотренный объём воды на основе данных погружения.
+    
+    Алгоритм:
+    1. Определяет эффективную дистанцию обнаружения (из треков или по умолчанию)
+    2. Вычисляет объём начального frustum
+    3. Добавляет объём пройденных слоёв (площадь × пройденная глубина)
+    4. Рассчитывает плотность по классам
+    
+    Args:
+        detections_df: DataFrame с детекциями
+        tracks_df: DataFrame со статистикой треков (опционально)
+        calibration: параметры калибровки
+        fov_horizontal_deg: горизонтальный угол обзора камеры
+        near_distance_m: ближняя граница обнаружения
+        detection_distance_m: дистанция обнаружения (если None — оценивается автоматически)
+        verbose: выводить детали
+    
+    Returns:
+        VolumeEstimate с результатами
+    """
+    if calibration is None:
+        calibration = CameraCalibration()
+    
+    # Параметры поля зрения
+    fov_h_deg = fov_horizontal_deg
+    aspect_ratio = calibration.frame_width / calibration.frame_height
+    fov_v_deg = fov_h_deg / aspect_ratio
+    
+    fov_h_rad = np.radians(fov_h_deg)
+    fov_v_rad = np.radians(fov_v_deg)
+    
+    # Данные о глубине
+    depths = detections_df['depth_m'].dropna()
+    if len(depths) == 0:
+        raise ValueError("Нет данных о глубине в детекциях")
+    
+    depth_min = depths.min()
+    depth_max = depths.max()
+    depth_traversed = depth_max - depth_min
+    
+    # Время записи
+    timestamps = detections_df['timestamp_s'].dropna()
+    if len(timestamps) > 1:
+        duration = timestamps.max() - timestamps.min()
+        descent_rate = depth_traversed / duration if duration > 0 else 0
+    else:
+        duration = 0
+        descent_rate = 0
+    
+    # Эффективная дистанция обнаружения
+    if detection_distance_m is None:
+        d_far = estimate_detection_distance(tracks_df, detections_df, calibration)
+    else:
+        d_far = detection_distance_m
+    
+    d_near = near_distance_m
+    
+    if verbose:
+        print(f"=== РАСЧЁТ ОСМОТРЕННОГО ОБЪЁМА ===")
+        print(f"Диапазон глубин: {depth_min:.1f} - {depth_max:.1f} м")
+        print(f"Пройденная глубина: {depth_traversed:.2f} м")
+        print(f"Длительность: {duration:.1f} с")
+        print(f"Скорость погружения: {descent_rate:.3f} м/с")
+        print(f"FOV: {fov_h_deg:.0f}° × {fov_v_deg:.0f}°")
+        print(f"Дистанция обнаружения: {d_near:.1f} - {d_far:.2f} м")
+    
+    # Объём начального frustum
+    V_frustum = calculate_frustum_volume(d_near, d_far, fov_h_rad, fov_v_rad)
+    
+    # Площадь сечения на дальней границе
+    A_far = calculate_cross_section_area(d_far, fov_h_rad, fov_v_rad)
+    
+    # Объём пройденных слоёв
+    V_swept = A_far * depth_traversed
+    
+    # Общий объём
+    V_total = V_frustum + V_swept
+    
+    if verbose:
+        print(f"\nОбъём frustum: {V_frustum:.2f} м³")
+        print(f"Площадь сечения: {A_far:.2f} м²")
+        print(f"Объём слоёв: {V_swept:.2f} м³")
+        print(f"ИТОГО: {V_total:.1f} м³")
+    
+    # Подсчёт особей по классам
+    counts_by_class = {}
+    density_by_class = {}
+    
+    for class_name in detections_df['class_name'].unique():
+        if class_name in SKIP_SIZE_CLASSES:
+            continue
+        
+        # Считаем уникальные треки
+        class_df = detections_df[detections_df['class_name'] == class_name]
+        n_tracks = class_df['track_id'].nunique()
+        
+        # Если track_id пустой, считаем детекции
+        if n_tracks == 0 or class_df['track_id'].isna().all():
+            n_tracks = len(class_df)
+        
+        counts_by_class[class_name] = n_tracks
+        density_by_class[class_name] = n_tracks / V_total if V_total > 0 else 0
+    
+    if verbose:
+        print(f"\n=== ПЛОТНОСТЬ ПО КЛАССАМ ===")
+        for class_name, count in counts_by_class.items():
+            density = density_by_class[class_name]
+            print(f"{class_name}: {count} особей, {density:.4f} ос./м³ ({density*1000:.1f} ос./1000м³)")
+    
+    return VolumeEstimate(
+        total_volume_m3=round(V_total, 2),
+        frustum_volume_m3=round(V_frustum, 2),
+        swept_volume_m3=round(V_swept, 2),
+        depth_range_m=(round(depth_min, 2), round(depth_max, 2)),
+        depth_traversed_m=round(depth_traversed, 2),
+        detection_distance_m=round(d_far, 2),
+        near_distance_m=round(d_near, 2),
+        cross_section_area_m2=round(A_far, 2),
+        fov_horizontal_deg=fov_h_deg,
+        fov_vertical_deg=round(fov_v_deg, 1),
+        duration_s=round(duration, 1),
+        descent_rate_m_s=round(descent_rate, 3),
+        density_by_class=density_by_class,
+        counts_by_class=counts_by_class
+    )
+
+
+def process_volume_estimation(
+    detections_csv: str,
+    tracks_csv: Optional[str] = None,
+    output_csv: Optional[str] = None,
+    fov_horizontal: float = 100.0,
+    near_distance: float = 0.3,
+    detection_distance: Optional[float] = None,
+    frame_width: int = 1920,
+    frame_height: int = 1080,
+    verbose: bool = True
+) -> VolumeEstimate:
+    """
+    Обрабатывает файлы и вычисляет осмотренный объём.
+    
+    Args:
+        detections_csv: путь к CSV с детекциями
+        tracks_csv: путь к CSV со статистикой треков (опционально)
+        output_csv: путь для сохранения результатов
+        fov_horizontal: горизонтальный FOV камеры (градусы)
+        near_distance: ближняя граница обнаружения (м)
+        detection_distance: дистанция обнаружения (м), None для автоматической
+        frame_width: ширина кадра
+        frame_height: высота кадра
+        verbose: выводить детали
+    
+    Returns:
+        VolumeEstimate
+    """
+    calibration = CameraCalibration()
+    calibration.frame_width = frame_width
+    calibration.frame_height = frame_height
+    
+    detections_df = pd.read_csv(detections_csv)
+    
+    tracks_df = None
+    if tracks_csv and Path(tracks_csv).exists():
+        tracks_df = pd.read_csv(tracks_csv)
+    
+    result = calculate_surveyed_volume(
+        detections_df=detections_df,
+        tracks_df=tracks_df,
+        calibration=calibration,
+        fov_horizontal_deg=fov_horizontal,
+        near_distance_m=near_distance,
+        detection_distance_m=detection_distance,
+        verbose=verbose
+    )
+    
+    # Сохранение результатов
+    if output_csv:
+        output_data = {
+            'parameter': [
+                'total_volume_m3',
+                'frustum_volume_m3',
+                'swept_volume_m3',
+                'depth_min_m',
+                'depth_max_m',
+                'depth_traversed_m',
+                'detection_distance_m',
+                'near_distance_m',
+                'cross_section_area_m2',
+                'fov_horizontal_deg',
+                'fov_vertical_deg',
+                'duration_s',
+                'descent_rate_m_s'
+            ],
+            'value': [
+                result.total_volume_m3,
+                result.frustum_volume_m3,
+                result.swept_volume_m3,
+                result.depth_range_m[0],
+                result.depth_range_m[1],
+                result.depth_traversed_m,
+                result.detection_distance_m,
+                result.near_distance_m,
+                result.cross_section_area_m2,
+                result.fov_horizontal_deg,
+                result.fov_vertical_deg,
+                result.duration_s,
+                result.descent_rate_m_s
+            ]
+        }
+        
+        # Добавляем данные по классам
+        for class_name, count in result.counts_by_class.items():
+            output_data['parameter'].append(f'count_{class_name.replace(" ", "_")}')
+            output_data['value'].append(count)
+            output_data['parameter'].append(f'density_{class_name.replace(" ", "_")}_per_m3')
+            output_data['value'].append(result.density_by_class[class_name])
+        
+        output_df = pd.DataFrame(output_data)
+        Path(output_csv).parent.mkdir(parents=True, exist_ok=True)
+        output_df.to_csv(output_csv, index=False)
+        
+        if verbose:
+            print(f"\nРезультаты сохранены: {output_csv}")
+    
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description="Оценка геометрии и размеров")
     subparsers = parser.add_subparsers(dest='command')
@@ -836,10 +1213,22 @@ def main():
     size.add_argument('--min-r-squared', type=float, default=0.5)
     size.add_argument('--min-size-change', type=float, default=0.3)
     
+    # volume
+    vol = subparsers.add_parser('volume', help='Расчёт осмотренного объёма воды')
+    vol.add_argument('--detections', '-d', required=True, help='CSV с детекциями')
+    vol.add_argument('--tracks', '-t', help='CSV со статистикой треков')
+    vol.add_argument('--output', '-o', help='Выходной CSV')
+    vol.add_argument('--fov', type=float, default=100.0, help='Горизонтальный FOV камеры (градусы)')
+    vol.add_argument('--near-distance', type=float, default=0.3, help='Ближняя граница (м)')
+    vol.add_argument('--detection-distance', type=float, help='Дистанция обнаружения (м)')
+    vol.add_argument('--width', type=int, default=1920, help='Ширина кадра')
+    vol.add_argument('--height', type=int, default=1080, help='Высота кадра')
+    
     args = parser.parse_args()
     
     if args.command == 'geometry':
         process_video_geometry(args.video, args.output, args.interval)
+    
     elif args.command == 'size':
         output = args.output or args.detections.replace('.csv', '_with_size.csv')
         tracks = args.tracks or args.detections.replace('.csv', '_track_sizes.csv')
@@ -851,6 +1240,20 @@ def main():
             min_r_squared=args.min_r_squared,
             min_size_change_ratio=args.min_size_change
         )
+    
+    elif args.command == 'volume':
+        output = args.output or args.detections.replace('.csv', '_volume.csv')
+        process_volume_estimation(
+            detections_csv=args.detections,
+            tracks_csv=args.tracks,
+            output_csv=output,
+            fov_horizontal=args.fov,
+            near_distance=args.near_distance,
+            detection_distance=args.detection_distance,
+            frame_width=args.width,
+            frame_height=args.height
+        )
+    
     else:
         parser.print_help()
 
