@@ -5,108 +5,109 @@
 ## Возможности
 
 1. **Оценка наклона камеры** — по движению морского снега (Focus of Expansion)
-2. **Расчёт реального размера объектов** — по калибровочным данным и дистанции
-3. **Интеграция с детекциями** — добавление оценок размера к результатам YOLO
+2. **Расчёт реального размера объектов** — по динамике изменения размера в треке
+3. **Определение абсолютной глубины объекта** — на какой глубине находится объект в толще воды
 
 ## Калибровка
 
 Калибровочные данные получены для **GoPro 12 Wide 4K**:
-- Константа k = 156.1 пиксель·м (по среднему диаметру Ферета)
+- Константа k = 156.1 пиксель·м
 - Коэффициент K = 2365 пикс/м на 1м дистанции
-- Оптимальный диапазон измерений: 1.0 - 2.5 м
-- Точность в оптимальном диапазоне: ~2.3% СКО
+- Точность: ~2-3% в диапазоне 1-2.5 м
 
 ## Использование
 
-### 1. Оценка наклона камеры
+### 1. Оценка размеров объектов по трекам
+
+```bash
+python src/camera_geometry.py size --detections output/detections.csv
+```
+
+Параметры:
+- `--detections`, `-d` — CSV с детекциями (из detect_video.py)
+- `--output`, `-o` — выходной CSV с детекциями (по умолчанию: *_with_size.csv)
+- `--tracks`, `-t` — выходной CSV со статистикой треков (по умолчанию: *_track_sizes.csv)
+- `--width` — ширина кадра (по умолчанию: 1920)
+- `--height` — высота кадра (по умолчанию: 1080)
+- `--min-depth-change` — мин. изменение глубины камеры для оценки (по умолчанию: 0.3 м)
+- `--min-track-points` — мин. точек в треке (по умолчанию: 5)
+
+### 2. Оценка наклона камеры
 
 ```bash
 python src/camera_geometry.py geometry --video видео.mp4 --output output/geometry.csv
 ```
 
-Параметры:
-- `--video`, `-v` — путь к видео
-- `--output`, `-o` — выходной CSV (по умолчанию: output/geometry.csv)
-- `--interval`, `-i` — интервал оценки в кадрах (по умолчанию: 30)
+## Алгоритм оценки размера
 
-Выходной CSV содержит:
-- `frame_start`, `frame_end` — диапазон кадров
-- `timestamp_s` — время
-- `foe_x`, `foe_y` — координаты Focus of Expansion
-- `tilt_horizontal_deg` — наклон по горизонтали (+ вправо)
-- `tilt_vertical_deg` — наклон по вертикали (+ вниз)
-- `confidence` — уверенность оценки (0-1)
+Для неподвижного объекта при погружении камеры:
 
-### 2. Добавление размеров к детекциям
-
-```bash
-python src/camera_geometry.py size --detections output/detections.csv --output output/detections_with_size.csv
+```
+size(t) = K × real_size / distance(t)
+distance(t) = |object_depth - camera_depth(t)|
 ```
 
-Параметры:
-- `--detections`, `-d` — CSV с детекциями (из detect_video.py)
-- `--output`, `-o` — выходной CSV
-- `--geometry`, `-g` — CSV с геометрией камеры (опционально, для коррекции)
-- `--width` — ширина кадра (по умолчанию: 1920)
-- `--height` — высота кадра (по умолчанию: 1080)
+По треку строится регрессия `1/size` от `camera_depth`:
+- Наклон даёт реальный размер объекта
+- Пересечение даёт глубину объекта
 
-Добавляемые колонки:
-- `estimated_size_m` — оценка размера в метрах
-- `estimated_distance_m` — оценка дистанции
-- `size_confidence` — уверенность оценки
+**Размер берётся в кадре с максимальным bbox** (объект ближе всего к камере), исключая последние кадры где объект может уходить за границы.
 
-### 3. Использование как библиотеки
+## Выходные файлы
 
-```python
-from camera_geometry import (
-    CameraCalibration,
-    estimate_foe_from_frames,
-    estimate_object_size,
-    process_video_geometry,
-    add_size_estimates_to_detections
-)
+### detections_with_size.csv
 
-# Калибровка (можно изменить параметры)
-calibration = CameraCalibration(
-    k=156.1,  # константа калибровки
-    frame_width=1920,
-    frame_height=1080
-)
+К исходным детекциям добавляются колонки:
+- `estimated_size_cm` — размер объекта в см
+- `estimated_size_m` — размер объекта в м  
+- `object_depth_m` — абсолютная глубина объекта
+- `distance_to_object_m` — дистанция от камеры до объекта
+- `size_confidence` — уверенность оценки (0-1)
 
-# Оценка размера объекта
-from camera_geometry import estimate_object_size
-result = estimate_object_size(
-    bbox_size_pixels=100,  # размер bbox в пикселях
-    distance_m=1.5,        # дистанция в метрах
-    calibration=calibration
-)
-print(f"Размер: {result.size_m * 100:.1f} см")
-print(f"Уверенность: {result.confidence:.0%}")
+### track_sizes.csv
 
-# Обработка видео
-df = process_video_geometry("video.mp4", frame_interval=60)
-```
-
-## Формулы
-
-**Размер объекта:**
-```
-размер_реальный (м) = размер_пикс × дистанция (м) / 2365
-```
-
-**Дистанция по известному размеру:**
-```
-дистанция (м) = 156.1 × (известный_размер / 0.066) / размер_пикс
-```
+Статистика по каждому треку:
+- `track_id`, `class_name` — идентификация
+- `real_size_cm`, `real_size_m` — оценённый размер
+- `object_depth_m` — глубина объекта в воде
+- `distance_at_max_m` — дистанция в момент макс. размера
+- `camera_depth_at_max_m` — глубина камеры в этот момент
+- `max_size_frame` — номер кадра с макс. размером
+- `max_size_pixels` — размер в пикселях
+- `confidence` — уверенность
+- `fit_r_squared` — R² линейной регрессии
+- `warnings` — предупреждения
 
 ## Ограничения
 
-1. Калибровка выполнена для GoPro 12 Wide — для других камер нужна перекалибровка
-2. Дистанция берётся из глубины CTD — это приближение (не учитывает горизонтальное смещение)
-3. При сильном наклоне камеры (>30°) точность снижается
-4. Оптимальный диапазон 1-2.5 м — за его пределами ошибка растёт
+1. **Требуется трекинг** — нужны данные track_id из detect_video.py с флагом `--track`
+2. **Требуются данные глубины** — из CTD или `--depth-rate`
+3. **Мин. изменение глубины** — для надёжной оценки нужно Δdepth ≥ 0.3 м
+4. **Pleurobrachia pileus** — слишком мелкий вид, размер не оценивается
+5. **Объект должен быть неподвижен** — активно плавающие объекты дадут ошибку
 
-## Типичные размеры видов (для справки)
+## Пример полного пайплайна
+
+```bash
+# 1. Детекция с трекингом
+python src/detect_video.py \
+    --video dive.mp4 \
+    --model best.pt \
+    --track \
+    --ctd ctd_data.csv \
+    --csv output/detections.csv
+
+# 2. Оценка размеров
+python src/camera_geometry.py size \
+    --detections output/detections.csv \
+    --output output/detections_with_size.csv \
+    --tracks output/track_sizes.csv
+
+# 3. Анализ
+python src/analyze.py --csv output/detections_with_size.csv
+```
+
+## Типичные размеры видов (для валидации)
 
 | Вид | Типичный размер (см) |
 |-----|---------------------|
@@ -114,4 +115,4 @@ df = process_video_geometry("video.mp4", frame_interval=60)
 | Rhizostoma pulmo | 20-60 (купол) |
 | Beroe ovata | 5-15 |
 | Mnemiopsis leidyi | 3-12 |
-| Pleurobrachia pileus | 1-3 |
+| Pleurobrachia pileus | 1-3 (не оценивается) |
