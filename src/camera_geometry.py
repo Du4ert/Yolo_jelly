@@ -956,28 +956,38 @@ def estimate_detection_distance(
 def calculate_surveyed_volume(
     detections_df: pd.DataFrame,
     tracks_df: Optional[pd.DataFrame] = None,
+    ctd_df: Optional[pd.DataFrame] = None,
     calibration: CameraCalibration = None,
     fov_horizontal_deg: float = 100.0,
     near_distance_m: float = 0.3,
     detection_distance_m: Optional[float] = None,
+    depth_range: Optional[Tuple[float, float]] = None,
+    total_duration_s: Optional[float] = None,
+    fps: float = 60.0,
     verbose: bool = True
 ) -> VolumeEstimate:
     """
     Вычисляет осмотренный объём воды на основе данных погружения.
     
-    Алгоритм:
-    1. Определяет эффективную дистанцию обнаружения (из треков или по умолчанию)
-    2. Вычисляет объём начального frustum
-    3. Добавляет объём пройденных слоёв (площадь × пройденная глубина)
-    4. Рассчитывает плотность по классам
+    ВАЖНО: Объём считается по ВСЕМУ диапазону погружения, а не только там,
+    где есть детекции. Пустая вода тоже учитывается!
+    
+    Приоритет источников данных о глубине:
+    1. depth_range — если задан явно
+    2. ctd_df — если передан файл CTD
+    3. detections_df — fallback на данные из детекций
     
     Args:
         detections_df: DataFrame с детекциями
         tracks_df: DataFrame со статистикой треков (опционально)
+        ctd_df: DataFrame с данными CTD (опционально, приоритетный источник)
         calibration: параметры калибровки
         fov_horizontal_deg: горизонтальный угол обзора камеры
         near_distance_m: ближняя граница обнаружения
         detection_distance_m: дистанция обнаружения (если None — оценивается автоматически)
+        depth_range: (min_depth, max_depth) — явно заданный диапазон глубин
+        total_duration_s: общая длительность записи (если известна)
+        fps: частота кадров видео
         verbose: выводить детали
     
     Returns:
@@ -994,23 +1004,44 @@ def calculate_surveyed_volume(
     fov_h_rad = np.radians(fov_h_deg)
     fov_v_rad = np.radians(fov_v_deg)
     
-    # Данные о глубине
-    depths = detections_df['depth_m'].dropna()
-    if len(depths) == 0:
-        raise ValueError("Нет данных о глубине в детекциях")
+    # Определяем диапазон глубин (приоритет: явный > CTD > детекции)
+    if depth_range is not None:
+        depth_min, depth_max = depth_range
+        source = "явно задан"
+    elif ctd_df is not None and 'depth_m' in ctd_df.columns:
+        depths = ctd_df['depth_m'].dropna()
+        if len(depths) > 0:
+            depth_min = depths.min()
+            depth_max = depths.max()
+            source = "CTD"
+        else:
+            raise ValueError("Нет данных о глубине в CTD")
+    else:
+        depths = detections_df['depth_m'].dropna()
+        if len(depths) == 0:
+            raise ValueError("Нет данных о глубине")
+        depth_min = depths.min()
+        depth_max = depths.max()
+        source = "детекции (ВНИМАНИЕ: может быть неполный диапазон!)"
     
-    depth_min = depths.min()
-    depth_max = depths.max()
     depth_traversed = depth_max - depth_min
     
-    # Время записи
-    timestamps = detections_df['timestamp_s'].dropna()
-    if len(timestamps) > 1:
-        duration = timestamps.max() - timestamps.min()
-        descent_rate = depth_traversed / duration if duration > 0 else 0
+    # Определяем длительность записи
+    if total_duration_s is not None:
+        duration = total_duration_s
+    elif ctd_df is not None and 'timestamp_s' in ctd_df.columns:
+        timestamps = ctd_df['timestamp_s'].dropna()
+        duration = timestamps.max() - timestamps.min() if len(timestamps) > 1 else 0
     else:
-        duration = 0
-        descent_rate = 0
+        # Оцениваем по номерам кадров
+        frames = detections_df['frame'].dropna()
+        if len(frames) > 1:
+            duration = (frames.max() - frames.min()) / fps
+        else:
+            timestamps = detections_df['timestamp_s'].dropna()
+            duration = timestamps.max() - timestamps.min() if len(timestamps) > 1 else 0
+    
+    descent_rate = depth_traversed / duration if duration > 0 else 0
     
     # Эффективная дистанция обнаружения
     if detection_distance_m is None:
@@ -1022,6 +1053,7 @@ def calculate_surveyed_volume(
     
     if verbose:
         print(f"=== РАСЧЁТ ОСМОТРЕННОГО ОБЪЁМА ===")
+        print(f"Источник данных о глубине: {source}")
         print(f"Диапазон глубин: {depth_min:.1f} - {depth_max:.1f} м")
         print(f"Пройденная глубина: {depth_traversed:.2f} м")
         print(f"Длительность: {duration:.1f} с")
@@ -1093,10 +1125,15 @@ def calculate_surveyed_volume(
 def process_volume_estimation(
     detections_csv: str,
     tracks_csv: Optional[str] = None,
+    ctd_csv: Optional[str] = None,
     output_csv: Optional[str] = None,
     fov_horizontal: float = 100.0,
     near_distance: float = 0.3,
     detection_distance: Optional[float] = None,
+    depth_min: Optional[float] = None,
+    depth_max: Optional[float] = None,
+    total_duration: Optional[float] = None,
+    fps: float = 60.0,
     frame_width: int = 1920,
     frame_height: int = 1080,
     verbose: bool = True
@@ -1107,10 +1144,15 @@ def process_volume_estimation(
     Args:
         detections_csv: путь к CSV с детекциями
         tracks_csv: путь к CSV со статистикой треков (опционально)
+        ctd_csv: путь к CSV с данными CTD (приоритетный источник глубины)
         output_csv: путь для сохранения результатов
         fov_horizontal: горизонтальный FOV камеры (градусы)
         near_distance: ближняя граница обнаружения (м)
         detection_distance: дистанция обнаружения (м), None для автоматической
+        depth_min: минимальная глубина (если задана явно)
+        depth_max: максимальная глубина (если задана явно)
+        total_duration: общая длительность записи (с)
+        fps: частота кадров видео
         frame_width: ширина кадра
         frame_height: высота кадра
         verbose: выводить детали
@@ -1128,13 +1170,26 @@ def process_volume_estimation(
     if tracks_csv and Path(tracks_csv).exists():
         tracks_df = pd.read_csv(tracks_csv)
     
+    ctd_df = None
+    if ctd_csv and Path(ctd_csv).exists():
+        ctd_df = pd.read_csv(ctd_csv)
+    
+    # Диапазон глубин
+    depth_range = None
+    if depth_min is not None and depth_max is not None:
+        depth_range = (depth_min, depth_max)
+    
     result = calculate_surveyed_volume(
         detections_df=detections_df,
         tracks_df=tracks_df,
+        ctd_df=ctd_df,
         calibration=calibration,
         fov_horizontal_deg=fov_horizontal,
         near_distance_m=near_distance,
         detection_distance_m=detection_distance,
+        depth_range=depth_range,
+        total_duration_s=total_duration,
+        fps=fps,
         verbose=verbose
     )
     
@@ -1217,10 +1272,15 @@ def main():
     vol = subparsers.add_parser('volume', help='Расчёт осмотренного объёма воды')
     vol.add_argument('--detections', '-d', required=True, help='CSV с детекциями')
     vol.add_argument('--tracks', '-t', help='CSV со статистикой треков')
+    vol.add_argument('--ctd', '-c', help='CSV с данными CTD (полный диапазон глубин)')
     vol.add_argument('--output', '-o', help='Выходной CSV')
     vol.add_argument('--fov', type=float, default=100.0, help='Горизонтальный FOV камеры (градусы)')
     vol.add_argument('--near-distance', type=float, default=0.3, help='Ближняя граница (м)')
     vol.add_argument('--detection-distance', type=float, help='Дистанция обнаружения (м)')
+    vol.add_argument('--depth-min', type=float, help='Минимальная глубина (м)')
+    vol.add_argument('--depth-max', type=float, help='Максимальная глубина (м)')
+    vol.add_argument('--duration', type=float, help='Длительность записи (с)')
+    vol.add_argument('--fps', type=float, default=60.0, help='Частота кадров')
     vol.add_argument('--width', type=int, default=1920, help='Ширина кадра')
     vol.add_argument('--height', type=int, default=1080, help='Высота кадра')
     
@@ -1246,10 +1306,15 @@ def main():
         process_volume_estimation(
             detections_csv=args.detections,
             tracks_csv=args.tracks,
+            ctd_csv=args.ctd,
             output_csv=output,
             fov_horizontal=args.fov,
             near_distance=args.near_distance,
             detection_distance=args.detection_distance,
+            depth_min=args.depth_min,
+            depth_max=args.depth_max,
+            total_duration=args.duration,
+            fps=args.fps,
             frame_width=args.width,
             frame_height=args.height
         )
