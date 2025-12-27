@@ -125,10 +125,27 @@ def estimate_foe(
     points: np.ndarray,
     vectors: np.ndarray,
     frame_size: Tuple[int, int] = (1920, 1080),
-    min_vector_length: float = 0.5
+    min_vector_length: float = 0.5,
+    max_tilt_deg: float = 60.0
 ) -> FOEResult:
-    """Оценивает Focus of Expansion по точкам и векторам движения."""
+    """
+    Оценивает Focus of Expansion по точкам и векторам движения.
+    
+    При малом движении камеры FOE уходит в бесконечность, что даёт
+    нефизичные значения наклона. Фильтруем такие случаи.
+    
+    Args:
+        points: координаты точек (N, 2)
+        vectors: векторы смещения (N, 2)
+        frame_size: размер кадра (width, height)
+        min_vector_length: минимальная длина вектора для учёта
+        max_tilt_deg: максимальный допустимый наклон (градусы)
+    
+    Returns:
+        FOEResult с оценкой FOE и наклона
+    """
     width, height = frame_size
+    cx, cy = width / 2, height / 2
     
     vec_lengths = np.linalg.norm(vectors, axis=1)
     mask = vec_lengths > min_vector_length
@@ -136,7 +153,7 @@ def estimate_foe(
     vectors_filt = vectors[mask]
     
     if len(points_filt) < 10:
-        return FOEResult(width/2, height/2, 0, 0, 0, len(points_filt))
+        return FOEResult(cx, cy, 0, 0, 0, len(points_filt))
     
     def foe_error(foe):
         fx, fy = foe
@@ -146,12 +163,40 @@ def estimate_foe(
         dot = np.sum(radial_norm * vec_norm, axis=1)
         return np.mean(1 - np.abs(dot))
     
-    result = minimize(foe_error, [width/2, height/2], method='Nelder-Mead')
+    result = minimize(foe_error, [cx, cy], method='Nelder-Mead')
     foe_x, foe_y = result.x
     confidence = 1 - result.fun
+    
+    # Вычисляем наклон
     pixels_per_degree = width / 100.0
-    tilt_h = (foe_x - width/2) / pixels_per_degree
-    tilt_v = (foe_y - height/2) / pixels_per_degree
+    tilt_h = (foe_x - cx) / pixels_per_degree
+    tilt_v = (foe_y - cy) / pixels_per_degree
+    
+    # Проверяем на выбросы: если FOE слишком далеко от кадра или наклон нереален
+    # FOE дальше 3 диагоналей от центра — признак малого движения
+    diagonal = np.sqrt(width**2 + height**2)
+    foe_distance = np.sqrt((foe_x - cx)**2 + (foe_y - cy)**2)
+    max_foe_distance = 3 * diagonal
+    
+    is_outlier = (
+        foe_distance > max_foe_distance or
+        abs(tilt_h) > max_tilt_deg or
+        abs(tilt_v) > max_tilt_deg or
+        not np.isfinite(foe_x) or
+        not np.isfinite(foe_y)
+    )
+    
+    if is_outlier:
+        # Возвращаем центр кадра с нулевым наклоном и низкой уверенностью
+        # Это означает "камера не двигалась достаточно для определения наклона"
+        return FOEResult(
+            foe_x=cx,
+            foe_y=cy,
+            tilt_horizontal=0.0,
+            tilt_vertical=0.0,
+            confidence=0.0,  # Нулевая уверенность — признак невалидного результата
+            n_vectors=len(points_filt)
+        )
     
     return FOEResult(foe_x, foe_y, tilt_h, tilt_v, confidence, len(points_filt))
 
@@ -506,13 +551,39 @@ def load_geometry_data(geometry_csv: str) -> Optional[pd.DataFrame]:
     return None
 
 
-def get_camera_tilt_for_frame(geometry_df: Optional[pd.DataFrame], frame: int) -> float:
-    """Получает наклон камеры для заданного кадра."""
+def get_camera_tilt_for_frame(
+    geometry_df: Optional[pd.DataFrame], 
+    frame: int,
+    min_confidence: float = 0.5
+) -> float:
+    """
+    Получает наклон камеры для заданного кадра.
+    
+    Игнорирует записи с низкой уверенностью (выбросы).
+    
+    Args:
+        geometry_df: DataFrame с данными геометрии
+        frame: номер кадра
+        min_confidence: минимальная уверенность для учёта записи
+    
+    Returns:
+        Общий наклон камеры в градусах
+    """
     if geometry_df is None or len(geometry_df) == 0:
         return 0.0
     
-    idx = (geometry_df['frame_end'] - frame).abs().argmin()
-    row = geometry_df.iloc[idx]
+    # Фильтруем невалидные записи (выбросы)
+    if 'confidence' in geometry_df.columns:
+        valid_df = geometry_df[geometry_df['confidence'] >= min_confidence]
+    else:
+        valid_df = geometry_df
+    
+    if len(valid_df) == 0:
+        return 0.0
+    
+    # Находим ближайший валидный кадр
+    idx = (valid_df['frame_end'] - frame).abs().argmin()
+    row = valid_df.iloc[idx]
     
     tilt_h = row.get('tilt_horizontal_deg', 0)
     tilt_v = row.get('tilt_vertical_deg', 0)
@@ -556,11 +627,22 @@ def process_detections_with_size(
         print(f"Загружено детекций: {len(df)}")
         print(f"Уникальных треков: {df['track_id'].nunique()}")
         if geometry_df is not None:
-            mean_tilt = np.sqrt(
-                geometry_df['tilt_horizontal_deg'].mean()**2 + 
-                geometry_df['tilt_vertical_deg'].mean()**2
-            )
-            print(f"Средний наклон камеры: {mean_tilt:.1f}°")
+            # Фильтруем выбросы (confidence >= 0.5)
+            if 'confidence' in geometry_df.columns:
+                valid_geom = geometry_df[geometry_df['confidence'] >= 0.5]
+            else:
+                valid_geom = geometry_df
+            
+            if len(valid_geom) > 0:
+                mean_tilt = np.sqrt(
+                    valid_geom['tilt_horizontal_deg'].mean()**2 + 
+                    valid_geom['tilt_vertical_deg'].mean()**2
+                )
+                n_outliers = len(geometry_df) - len(valid_geom)
+                outlier_info = f" (отфильтровано выбросов: {n_outliers})" if n_outliers > 0 else ""
+                print(f"Средний наклон камеры: {mean_tilt:.1f}°{outlier_info}")
+            else:
+                print("Средний наклон камеры: нет валидных данных")
     
     required_cols = ['track_id', 'frame', 'width', 'height', 'class_name', 'x_center', 'y_center']
     missing = [c for c in required_cols if c not in df.columns]
@@ -807,8 +889,22 @@ def process_video_geometry(
             print(f"Сохранено: {output_csv}")
     
     if verbose and len(df) > 0:
-        total_tilt = np.sqrt(df['tilt_horizontal_deg'].mean()**2 + df['tilt_vertical_deg'].mean()**2)
-        print(f"Средний наклон: {total_tilt:.1f}°")
+        # Фильтруем выбросы
+        if 'confidence' in df.columns:
+            valid_df = df[df['confidence'] >= 0.5]
+        else:
+            valid_df = df
+        
+        if len(valid_df) > 0:
+            total_tilt = np.sqrt(
+                valid_df['tilt_horizontal_deg'].mean()**2 + 
+                valid_df['tilt_vertical_deg'].mean()**2
+            )
+            n_outliers = len(df) - len(valid_df)
+            outlier_info = f" (отфильтровано выбросов: {n_outliers})" if n_outliers > 0 else ""
+            print(f"Средний наклон: {total_tilt:.1f}°{outlier_info}")
+        else:
+            print("Средний наклон: нет валидных данных")
     
     return df
 
