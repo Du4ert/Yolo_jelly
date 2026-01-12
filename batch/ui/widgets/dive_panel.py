@@ -561,3 +561,27 @@ class DivePanel(QWidget):
     def refresh(self):
         """Обновляет данные."""
         self._load_data()
+
+    def get_selected_dive_id(self) -> Optional[int]:
+        """
+        Возвращает ID выбранного погружения.
+        
+        Если выбрано видео или CTD, возвращает ID их родительского погружения.
+        """
+        items = self.tree.selectedItems()
+        if not items:
+            return None
+        
+        item = items[0]
+        item_type = self._get_item_type(item)
+        item_id = self._get_item_id(item)
+        
+        if item_type == self.TYPE_DIVE:
+            return item_id
+        elif item_type in (self.TYPE_VIDEO, self.TYPE_CTD):
+            # Поднимаемся к родителю
+            parent = item.parent()
+            if parent and self._get_item_type(parent) == self.TYPE_DIVE:
+                return self._get_item_id(parent)
+        
+        return None

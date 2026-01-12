@@ -704,6 +704,16 @@ class Repository:
             stmt = select(TaskOutput).where(TaskOutput.task_id == task_id)
             return list(session.scalars(stmt))
 
+    # ========== HELPER METHODS FOR UI ==========
+
+    def get_video_files_for_dive(self, dive_id: int) -> List[VideoFile]:
+        """Alias for get_videos_by_dive."""
+        return self.get_videos_by_dive(dive_id)
+
+    def get_ctd_files_for_dive(self, dive_id: int) -> List[CTDFile]:
+        """Alias for get_ctd_by_dive."""
+        return self.get_ctd_by_dive(dive_id)
+
     # ========== STATISTICS ==========
 
     def get_statistics(self) -> Dict[str, Any]:
