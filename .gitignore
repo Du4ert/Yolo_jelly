@@ -3,6 +3,8 @@ output/
 labelstudio_env/
 runs/
 test_video/
+batch/__pycache
+batch/core/__pycache
 /*.pt
 *.mp4
 yolo_train.py
