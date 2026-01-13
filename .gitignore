@@ -1,15 +1,25 @@
+# Data and output
 dataset/
 output/
-labelstudio_env/
 runs/
 test_video/
-batch/__pycache
-batch/core/__pycache
-batch/ui/__pycache
-batch/database/__pycache
-batch/ui/widgets/__pycache
-batch/ui/dialogs/__pycache
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+labelstudio_env/
+venv/
+
+# Models and video
 /*.pt
 *.mp4
-yolo_train.py
+
+# Database
 batch.db
+
+# Other
+yolo_train.py
