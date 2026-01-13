@@ -134,6 +134,16 @@ class NewTaskDialog(QDialog):
         self.check_save_video = QCheckBox("Сохранять видео с разметкой")
         output_layout.addWidget(self.check_save_video)
         
+        self.check_auto_postprocess = QCheckBox("Автоматическая постобработка после детекции")
+        self.check_auto_postprocess.setToolTip(
+            "После завершения детекции автоматически запустить:\n"
+            "• Геометрия камеры (FOE)\n"
+            "• Размеры объектов\n"
+            "• Объём воды\n"
+            "• Анализ и графики"
+        )
+        output_layout.addWidget(self.check_auto_postprocess)
+        
         layout.addWidget(output_group)
         
         # === Кнопки ===
@@ -214,6 +224,9 @@ class NewTaskDialog(QDialog):
         self.spin_min_track.setValue(params.min_track_length)
         self.check_save_video.setChecked(params.save_video)
         
+        # По умолчанию автопостобработка выключена
+        self.check_auto_postprocess.setChecked(False)
+        
         self._on_tracking_toggled(params.enable_tracking)
         self._update_depth_rate_state()
 
@@ -245,6 +258,7 @@ class NewTaskDialog(QDialog):
             "trail_length": self.spin_trail_length.value(),
             "min_track_length": self.spin_min_track.value(),
             "save_video": self.check_save_video.isChecked(),
+            "auto_postprocess": self.check_auto_postprocess.isChecked(),
         }
         
         # Скорость погружения только если нет CTD

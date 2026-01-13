@@ -1007,6 +1007,10 @@ def estimate_detection_distance(
     if tracks_df is None or len(tracks_df) == 0:
         return DEFAULT_DETECTION_DISTANCES.get(reference_class, 1.5)
     
+    # Проверяем что это правильный DataFrame с колонкой method
+    if 'method' not in tracks_df.columns:
+        return DEFAULT_DETECTION_DISTANCES.get(reference_class, 1.5)
+    
     # Фильтруем по референсному классу и методу регрессии (надёжные данные)
     ref_tracks = tracks_df[
         (tracks_df['class_name'] == reference_class) & 
@@ -1269,6 +1273,18 @@ def process_volume_estimation(
     ctd_df = None
     if ctd_csv and Path(ctd_csv).exists():
         ctd_df = pd.read_csv(ctd_csv)
+        # Нормализуем названия колонок CTD (могут быть разные варианты)
+        column_mapping = {}
+        for col in ctd_df.columns:
+            col_lower = col.lower().strip()
+            if col_lower in ('depth', 'depth_m', 'depth (m)', 'глубина'):
+                column_mapping[col] = 'depth_m'
+            elif col_lower in ('time', 'time_s', 'timestamp', 'timestamp_s', 'время'):
+                column_mapping[col] = 'timestamp_s'
+            elif col_lower in ('temperature', 'temp', 'temp_c', 'температура'):
+                column_mapping[col] = 'temperature_c'
+        if column_mapping:
+            ctd_df = ctd_df.rename(columns=column_mapping)
     
     # Диапазон глубин
     depth_range = None

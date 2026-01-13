@@ -72,24 +72,7 @@ class GeometryProcessor:
     (морской снег).
     """
     
-    def __init__(
-        self,
-        video_path: str,
-        output_csv: str,
-        frame_interval: int = 30,
-        frame_width: int = 1920,
-        frame_height: int = 1080,
-    ):
-        self.video_path = video_path
-        self.output_csv = output_csv
-        self.frame_interval = frame_interval
-        self.frame_width = frame_width
-        self.frame_height = frame_height
-        
-        # Callbacks
-        self.progress_callback: Optional[Callable[[int, int], None]] = None
-        
-        # Флаги управления
+    def __init__(self):
         self._cancelled = False
     
     def cancel(self) -> None:
@@ -99,8 +82,27 @@ class GeometryProcessor:
     def is_cancelled(self) -> bool:
         return self._cancelled
     
-    def run(self) -> GeometryResult:
-        """Запускает анализ геометрии камеры."""
+    def process(
+        self,
+        video_path: str,
+        output_csv: str,
+        frame_interval: int = 30,
+        frame_width: int = 1920,
+        frame_height: int = 1080,
+    ) -> GeometryResult:
+        """
+        Запускает анализ геометрии камеры.
+        
+        Args:
+            video_path: Путь к видеофайлу.
+            output_csv: Путь к выходному CSV.
+            frame_interval: Интервал между анализируемыми кадрами.
+            frame_width: Ширина кадра.
+            frame_height: Высота кадра.
+            
+        Returns:
+            GeometryResult с результатами анализа.
+        """
         self._cancelled = False
         start_time = time.time()
         
@@ -111,25 +113,25 @@ class GeometryProcessor:
             )
             
             # Создаём выходную директорию
-            os.makedirs(os.path.dirname(self.output_csv), exist_ok=True)
+            os.makedirs(os.path.dirname(os.path.abspath(output_csv)), exist_ok=True)
             
             # Калибровка
             calibration = CameraCalibration()
-            calibration.frame_width = self.frame_width
-            calibration.frame_height = self.frame_height
+            calibration.frame_width = frame_width
+            calibration.frame_height = frame_height
             
             # Обработка видео
             df = process_video_geometry(
-                video_path=self.video_path,
-                output_csv=self.output_csv,
-                frame_interval=self.frame_interval,
+                video_path=video_path,
+                output_csv=output_csv,
+                frame_interval=frame_interval,
                 calibration=calibration,
                 verbose=True
             )
             
             processing_time = time.time() - start_time
             
-            if len(df) == 0:
+            if df is None or len(df) == 0:
                 return GeometryResult(
                     success=False,
                     processing_time_s=processing_time,
@@ -157,7 +159,7 @@ class GeometryProcessor:
             return GeometryResult(
                 success=True,
                 processing_time_s=processing_time,
-                output_csv_path=self.output_csv,
+                output_csv_path=output_csv,
                 mean_tilt_deg=round(mean_tilt, 2) if mean_tilt else None,
                 n_intervals=len(df),
                 n_outliers=n_outliers
@@ -181,30 +183,7 @@ class SizeEstimationProcessor:
     по динамике изменения размера bbox при погружении камеры.
     """
     
-    def __init__(
-        self,
-        detections_csv: str,
-        output_csv: str,
-        tracks_output_csv: Optional[str] = None,
-        geometry_csv: Optional[str] = None,
-        frame_width: int = 1920,
-        frame_height: int = 1080,
-        min_depth_change: float = 0.3,
-        min_track_points: int = 3,
-        min_r_squared: float = 0.5,
-        min_size_change_ratio: float = 0.3,
-    ):
-        self.detections_csv = detections_csv
-        self.output_csv = output_csv
-        self.tracks_output_csv = tracks_output_csv
-        self.geometry_csv = geometry_csv
-        self.frame_width = frame_width
-        self.frame_height = frame_height
-        self.min_depth_change = min_depth_change
-        self.min_track_points = min_track_points
-        self.min_r_squared = min_r_squared
-        self.min_size_change_ratio = min_size_change_ratio
-        
+    def __init__(self):
         self._cancelled = False
     
     def cancel(self) -> None:
@@ -213,8 +192,37 @@ class SizeEstimationProcessor:
     def is_cancelled(self) -> bool:
         return self._cancelled
     
-    def run(self) -> SizeEstimationResult:
-        """Запускает оценку размеров."""
+    def process(
+        self,
+        detections_csv: str,
+        output_csv: str,
+        tracks_csv: Optional[str] = None,
+        geometry_csv: Optional[str] = None,
+        frame_width: int = 1920,
+        frame_height: int = 1080,
+        min_depth_change: float = 0.3,
+        min_track_points: int = 3,
+        min_r_squared: float = 0.5,
+        min_size_change_ratio: float = 0.3,
+    ) -> SizeEstimationResult:
+        """
+        Запускает оценку размеров.
+        
+        Args:
+            detections_csv: Путь к CSV с детекциями.
+            output_csv: Путь к выходному CSV с размерами.
+            tracks_csv: Путь к выходному CSV со статистикой треков.
+            geometry_csv: Путь к CSV с геометрией камеры (опционально).
+            frame_width: Ширина кадра.
+            frame_height: Высота кадра.
+            min_depth_change: Минимальное изменение глубины для регрессии.
+            min_track_points: Минимальное количество точек в треке.
+            min_r_squared: Минимальный R² для принятия регрессии.
+            min_size_change_ratio: Минимальное относительное изменение размера.
+            
+        Returns:
+            SizeEstimationResult с результатами.
+        """
         self._cancelled = False
         start_time = time.time()
         
@@ -225,28 +233,28 @@ class SizeEstimationProcessor:
             )
             
             # Создаём выходные директории
-            os.makedirs(os.path.dirname(self.output_csv), exist_ok=True)
-            if self.tracks_output_csv:
-                os.makedirs(os.path.dirname(self.tracks_output_csv), exist_ok=True)
+            os.makedirs(os.path.dirname(os.path.abspath(output_csv)), exist_ok=True)
+            if tracks_csv:
+                os.makedirs(os.path.dirname(os.path.abspath(tracks_csv)), exist_ok=True)
             
             # Калибровка
             calibration = CameraCalibration()
-            calibration.frame_width = self.frame_width
-            calibration.frame_height = self.frame_height
+            calibration.frame_width = frame_width
+            calibration.frame_height = frame_height
             
             # Обработка
             df, tracks_df = process_detections_with_size(
-                detections_csv=self.detections_csv,
-                output_csv=self.output_csv,
-                tracks_output_csv=self.tracks_output_csv,
-                geometry_csv=self.geometry_csv,
+                detections_csv=detections_csv,
+                output_csv=output_csv,
+                tracks_output_csv=tracks_csv,
+                geometry_csv=geometry_csv,
                 calibration=calibration,
-                frame_width=self.frame_width,
-                frame_height=self.frame_height,
-                min_depth_change=self.min_depth_change,
-                min_track_points=self.min_track_points,
-                min_r_squared=self.min_r_squared,
-                min_size_change_ratio=self.min_size_change_ratio,
+                frame_width=frame_width,
+                frame_height=frame_height,
+                min_depth_change=min_depth_change,
+                min_track_points=min_track_points,
+                min_r_squared=min_r_squared,
+                min_size_change_ratio=min_size_change_ratio,
                 verbose=True
             )
             
@@ -257,7 +265,7 @@ class SizeEstimationProcessor:
             reference = 0
             typical = 0
             
-            if len(tracks_df) > 0 and 'method' in tracks_df.columns:
+            if tracks_df is not None and len(tracks_df) > 0 and 'method' in tracks_df.columns:
                 method_counts = tracks_df['method'].value_counts()
                 regression = method_counts.get('regression', 0)
                 reference = method_counts.get('reference', 0)
@@ -266,8 +274,8 @@ class SizeEstimationProcessor:
             return SizeEstimationResult(
                 success=True,
                 processing_time_s=processing_time,
-                output_csv_path=self.output_csv,
-                tracks_csv_path=self.tracks_output_csv,
+                output_csv_path=output_csv,
+                tracks_csv_path=tracks_csv,
                 tracks_with_regression=int(regression),
                 tracks_with_reference=int(reference),
                 tracks_with_typical=int(typical),
@@ -292,36 +300,7 @@ class VolumeEstimationProcessor:
     и плотность организмов по классам.
     """
     
-    def __init__(
-        self,
-        detections_csv: str,
-        output_csv: str,
-        tracks_csv: Optional[str] = None,
-        ctd_csv: Optional[str] = None,
-        fov_horizontal: float = 100.0,
-        near_distance: float = 0.3,
-        detection_distance: Optional[float] = None,
-        depth_min: Optional[float] = None,
-        depth_max: Optional[float] = None,
-        total_duration: Optional[float] = None,
-        fps: float = 60.0,
-        frame_width: int = 1920,
-        frame_height: int = 1080,
-    ):
-        self.detections_csv = detections_csv
-        self.output_csv = output_csv
-        self.tracks_csv = tracks_csv
-        self.ctd_csv = ctd_csv
-        self.fov_horizontal = fov_horizontal
-        self.near_distance = near_distance
-        self.detection_distance = detection_distance
-        self.depth_min = depth_min
-        self.depth_max = depth_max
-        self.total_duration = total_duration
-        self.fps = fps
-        self.frame_width = frame_width
-        self.frame_height = frame_height
-        
+    def __init__(self):
         self._cancelled = False
     
     def cancel(self) -> None:
@@ -330,8 +309,43 @@ class VolumeEstimationProcessor:
     def is_cancelled(self) -> bool:
         return self._cancelled
     
-    def run(self) -> VolumeEstimationResult:
-        """Запускает расчёт объёма."""
+    def process(
+        self,
+        detections_csv: str,
+        output_csv: str,
+        tracks_csv: Optional[str] = None,
+        ctd_csv: Optional[str] = None,
+        fov: float = 100.0,
+        near_distance: float = 0.3,
+        detection_distance: Optional[float] = None,
+        depth_min: Optional[float] = None,
+        depth_max: Optional[float] = None,
+        duration: Optional[float] = None,
+        fps: float = 60.0,
+        frame_width: int = 1920,
+        frame_height: int = 1080,
+    ) -> VolumeEstimationResult:
+        """
+        Запускает расчёт объёма.
+        
+        Args:
+            detections_csv: Путь к CSV с детекциями.
+            output_csv: Путь к выходному CSV.
+            tracks_csv: Путь к CSV со статистикой треков (опционально).
+            ctd_csv: Путь к CSV с данными CTD (опционально).
+            fov: Горизонтальный угол обзора камеры (градусы).
+            near_distance: Ближняя граница обнаружения (метры).
+            detection_distance: Дистанция обнаружения (метры), None = авто.
+            depth_min: Минимальная глубина (метры).
+            depth_max: Максимальная глубина (метры).
+            duration: Длительность записи (секунды).
+            fps: Частота кадров.
+            frame_width: Ширина кадра.
+            frame_height: Высота кадра.
+            
+        Returns:
+            VolumeEstimationResult с результатами.
+        """
         self._cancelled = False
         start_time = time.time()
         
@@ -339,23 +353,23 @@ class VolumeEstimationProcessor:
             from camera_geometry import process_volume_estimation
             
             # Создаём выходную директорию
-            os.makedirs(os.path.dirname(self.output_csv), exist_ok=True)
+            os.makedirs(os.path.dirname(os.path.abspath(output_csv)), exist_ok=True)
             
             # Обработка
             result = process_volume_estimation(
-                detections_csv=self.detections_csv,
-                tracks_csv=self.tracks_csv,
-                ctd_csv=self.ctd_csv,
-                output_csv=self.output_csv,
-                fov_horizontal=self.fov_horizontal,
-                near_distance=self.near_distance,
-                detection_distance=self.detection_distance,
-                depth_min=self.depth_min,
-                depth_max=self.depth_max,
-                total_duration=self.total_duration,
-                fps=self.fps,
-                frame_width=self.frame_width,
-                frame_height=self.frame_height,
+                detections_csv=detections_csv,
+                tracks_csv=tracks_csv,
+                ctd_csv=ctd_csv,
+                output_csv=output_csv,
+                fov_horizontal=fov,
+                near_distance=near_distance,
+                detection_distance=detection_distance,
+                depth_min=depth_min,
+                depth_max=depth_max,
+                total_duration=duration,
+                fps=fps,
+                frame_width=frame_width,
+                frame_height=frame_height,
                 verbose=True
             )
             
@@ -364,10 +378,10 @@ class VolumeEstimationProcessor:
             return VolumeEstimationResult(
                 success=True,
                 processing_time_s=processing_time,
-                output_csv_path=self.output_csv,
+                output_csv_path=output_csv,
                 total_volume_m3=result.total_volume_m3,
-                depth_min_m=result.depth_range_m[0],
-                depth_max_m=result.depth_range_m[1],
+                depth_min_m=result.depth_range_m[0] if result.depth_range_m else None,
+                depth_max_m=result.depth_range_m[1] if result.depth_range_m else None,
                 depth_traversed_m=result.depth_traversed_m,
                 detection_distance_m=result.detection_distance_m,
                 counts_by_class=result.counts_by_class,

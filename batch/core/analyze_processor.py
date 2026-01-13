@@ -44,7 +44,17 @@ class AnalyzeProcessor:
     Генерирует графики и отчёты по данным детекции.
     """
     
-    def __init__(
+    def __init__(self):
+        self._cancelled = False
+    
+    def cancel(self) -> None:
+        """Отменяет выполнение."""
+        self._cancelled = True
+    
+    def is_cancelled(self) -> bool:
+        return self._cancelled
+    
+    def process(
         self,
         csv_path: str,
         output_dir: str,
@@ -56,29 +66,25 @@ class AnalyzeProcessor:
         generate_species_summary: bool = True,
         generate_report: bool = True,
         video_name: Optional[str] = None,
-    ):
-        self.csv_path = csv_path
-        self.output_dir = output_dir
-        self.depth_bin = depth_bin
-        self.time_bin = time_bin
-        self.report_name = report_name
-        self.generate_vertical_distribution = generate_vertical_distribution
-        self.generate_timeline = generate_timeline
-        self.generate_species_summary = generate_species_summary
-        self.generate_report = generate_report
-        self.video_name = video_name
+    ) -> AnalyzeResult:
+        """
+        Запускает анализ данных.
         
-        self._cancelled = False
-    
-    def cancel(self) -> None:
-        """Отменяет выполнение."""
-        self._cancelled = True
-    
-    def is_cancelled(self) -> bool:
-        return self._cancelled
-    
-    def run(self) -> AnalyzeResult:
-        """Запускает анализ данных."""
+        Args:
+            csv_path: Путь к CSV с детекциями.
+            output_dir: Директория для сохранения результатов.
+            depth_bin: Шаг биннинга по глубине (метры).
+            time_bin: Шаг биннинга по времени (секунды).
+            report_name: Имя файла отчёта.
+            generate_vertical_distribution: Генерировать график вертикального распределения.
+            generate_timeline: Генерировать временную шкалу.
+            generate_species_summary: Генерировать сводку по видам.
+            generate_report: Генерировать текстовый отчёт.
+            video_name: Имя видео для отчёта (опционально).
+            
+        Returns:
+            AnalyzeResult с результатами анализа.
+        """
         self._cancelled = False
         start_time = time.time()
         
@@ -88,12 +94,12 @@ class AnalyzeProcessor:
                 plot_vertical_distribution,
                 plot_detection_timeline,
                 plot_species_summary,
-                generate_report
+                generate_report as gen_report
             )
             
             # Загружаем данные
-            print(f"Загрузка данных: {self.csv_path}")
-            df = pd.read_csv(self.csv_path)
+            print(f"Загрузка данных: {csv_path}")
+            df = pd.read_csv(csv_path)
             
             if len(df) == 0:
                 return AnalyzeResult(
@@ -103,47 +109,48 @@ class AnalyzeProcessor:
                 )
             
             # Создаём выходную директорию
-            output_path = Path(self.output_dir)
+            output_path = Path(output_dir)
             output_path.mkdir(parents=True, exist_ok=True)
             
             result = AnalyzeResult(
                 success=True,
-                output_dir=self.output_dir,
+                output_dir=output_dir,
                 total_detections=len(df),
-                unique_species=df['class_name'].nunique()
+                unique_species=df['class_name'].nunique() if 'class_name' in df.columns else 0
             )
             
             # Подсчёт по видам
-            result.species_counts = df['class_name'].value_counts().to_dict()
+            if 'class_name' in df.columns:
+                result.species_counts = df['class_name'].value_counts().to_dict()
             
             # Вертикальное распределение
-            if self.generate_vertical_distribution:
+            if generate_vertical_distribution:
                 if self._cancelled:
                     result.cancelled = True
                     return result
                 
                 vd_path = str(output_path / "vertical_distribution.png")
                 try:
-                    plot_vertical_distribution(df, vd_path, self.depth_bin)
+                    plot_vertical_distribution(df, vd_path, depth_bin)
                     result.vertical_distribution_path = vd_path
                 except Exception as e:
                     print(f"Ошибка при построении вертикального распределения: {e}")
             
             # Временная шкала
-            if self.generate_timeline:
+            if generate_timeline:
                 if self._cancelled:
                     result.cancelled = True
                     return result
                 
                 tl_path = str(output_path / "detection_timeline.png")
                 try:
-                    plot_detection_timeline(df, tl_path, self.time_bin)
+                    plot_detection_timeline(df, tl_path, time_bin)
                     result.detection_timeline_path = tl_path
                 except Exception as e:
                     print(f"Ошибка при построении временной шкалы: {e}")
             
             # Сводка по видам
-            if self.generate_species_summary:
+            if generate_species_summary:
                 if self._cancelled:
                     result.cancelled = True
                     return result
@@ -156,16 +163,16 @@ class AnalyzeProcessor:
                     print(f"Ошибка при построении сводки: {e}")
             
             # Текстовый отчёт
-            if self.generate_report:
+            if generate_report:
                 if self._cancelled:
                     result.cancelled = True
                     return result
                 
-                report_path = str(output_path / self.report_name)
-                video_name = self.video_name or Path(self.csv_path).stem.replace("_detections", "")
+                report_file = str(output_path / report_name)
+                vn = video_name or Path(csv_path).stem.replace("_detections", "")
                 try:
-                    generate_report(df, report_path, video_name)
-                    result.report_path = report_path
+                    gen_report(df, report_file, vn)
+                    result.report_path = report_file
                 except Exception as e:
                     print(f"Ошибка при генерации отчёта: {e}")
             
@@ -187,18 +194,7 @@ class BatchAnalyzeProcessor:
     Пакетный анализатор для нескольких файлов.
     """
     
-    def __init__(
-        self,
-        csv_paths: List[str],
-        output_base_dir: str,
-        depth_bin: float = 1.0,
-        time_bin: float = 10.0,
-    ):
-        self.csv_paths = csv_paths
-        self.output_base_dir = output_base_dir
-        self.depth_bin = depth_bin
-        self.time_bin = time_bin
-        
+    def __init__(self):
         self.progress_callback: Optional[callable] = None
         self._cancelled = False
     
@@ -208,30 +204,46 @@ class BatchAnalyzeProcessor:
     def is_cancelled(self) -> bool:
         return self._cancelled
     
-    def run(self) -> List[AnalyzeResult]:
-        """Запускает пакетный анализ."""
+    def process(
+        self,
+        csv_paths: List[str],
+        output_base_dir: str,
+        depth_bin: float = 1.0,
+        time_bin: float = 10.0,
+    ) -> List[AnalyzeResult]:
+        """
+        Запускает пакетный анализ.
+        
+        Args:
+            csv_paths: Список путей к CSV файлам.
+            output_base_dir: Базовая директория для результатов.
+            depth_bin: Шаг биннинга по глубине.
+            time_bin: Шаг биннинга по времени.
+            
+        Returns:
+            Список результатов для каждого файла.
+        """
         results = []
         
-        for i, csv_path in enumerate(self.csv_paths):
+        for i, csv_path in enumerate(csv_paths):
             if self._cancelled:
                 break
             
             # Создаём подпапку для каждого файла
             csv_name = Path(csv_path).stem.replace("_detections", "")
-            output_dir = os.path.join(self.output_base_dir, csv_name)
+            output_dir = os.path.join(output_base_dir, csv_name)
             
-            processor = AnalyzeProcessor(
+            processor = AnalyzeProcessor()
+            result = processor.process(
                 csv_path=csv_path,
                 output_dir=output_dir,
-                depth_bin=self.depth_bin,
-                time_bin=self.time_bin,
+                depth_bin=depth_bin,
+                time_bin=time_bin,
                 video_name=csv_name
             )
-            
-            result = processor.run()
             results.append(result)
             
             if self.progress_callback:
-                self.progress_callback(i + 1, len(self.csv_paths))
+                self.progress_callback(i + 1, len(csv_paths))
         
         return results

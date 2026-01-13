@@ -19,6 +19,8 @@ from .models import (
     CTDFile,
     Model,
     Task,
+    SubTask,
+    SubTaskType,
     TaskOutput,
     TaskStatus,
     OutputType,
@@ -735,3 +737,304 @@ class Repository:
                 ),
             }
             return stats
+
+    # ========== POST-PROCESSING OPERATIONS ==========
+
+    def get_task_with_outputs(self, task_id: int) -> Optional[Task]:
+        """
+        Получает задачу с загруженными outputs.
+        
+        Args:
+            task_id: ID задачи.
+            
+        Returns:
+            Задача с загруженными связями или None.
+        """
+        with self.get_session() as session:
+            from sqlalchemy.orm import joinedload
+            stmt = (
+                select(Task)
+                .where(Task.id == task_id)
+                .options(joinedload(Task.outputs))
+            )
+            return session.scalar(stmt)
+
+    def get_completed_tasks(self) -> List[Task]:
+        """Получает завершённые задачи детекции."""
+        with self.get_session() as session:
+            stmt = (
+                select(Task)
+                .where(Task.status == TaskStatus.DONE)
+                .order_by(Task.completed_at.desc())
+            )
+            return list(session.scalars(stmt))
+
+    def update_postprocess_status(
+        self,
+        task_id: int,
+        process_type: str,
+        status: "PostProcessStatus",
+        error: Optional[str] = None,
+        **extra_fields,
+    ) -> Optional[Task]:
+        """
+        Обновляет статус постобработки.
+        
+        Args:
+            task_id: ID задачи.
+            process_type: Тип постобработки (geometry, size, volume, analysis).
+            status: Новый статус.
+            error: Сообщение об ошибке.
+            **extra_fields: Дополнительные поля для обновления.
+            
+        Returns:
+            Обновлённая задача или None.
+        """
+        from .models import PostProcessStatus
+        
+        with self.get_session() as session:
+            task = session.get(Task, task_id)
+            if not task:
+                return None
+            
+            # Обновляем статус
+            status_field = f"{process_type}_status"
+            error_field = f"{process_type}_error"
+            
+            if hasattr(task, status_field):
+                setattr(task, status_field, status)
+            if hasattr(task, error_field):
+                setattr(task, error_field, error)
+            
+            # Обновляем дополнительные поля
+            for key, value in extra_fields.items():
+                if hasattr(task, key):
+                    setattr(task, key, value)
+            
+            session.commit()
+            session.refresh(task)
+            return task
+
+    def get_task_output_by_type(
+        self,
+        task_id: int,
+        output_type: OutputType,
+    ) -> Optional[TaskOutput]:
+        """Получает выходной файл задачи по типу."""
+        with self.get_session() as session:
+            stmt = (
+                select(TaskOutput)
+                .where(TaskOutput.task_id == task_id)
+                .where(TaskOutput.output_type == output_type)
+            )
+            return session.scalar(stmt)
+
+    def remove_task_output_by_type(
+        self,
+        task_id: int,
+        output_type: OutputType,
+    ) -> bool:
+        """Удаляет выходной файл задачи по типу."""
+        with self.get_session() as session:
+            stmt = (
+                delete(TaskOutput)
+                .where(TaskOutput.task_id == task_id)
+                .where(TaskOutput.output_type == output_type)
+            )
+            result = session.execute(stmt)
+            session.commit()
+            return result.rowcount > 0
+
+    # ========== SUBTASK OPERATIONS ==========
+
+    def create_subtask(
+        self,
+        parent_task_id: int,
+        subtask_type: "SubTaskType",
+        position: int = 0,
+        params_json: Optional[str] = None,
+    ) -> Optional["SubTask"]:
+        """
+        Создаёт подзадачу постобработки.
+        
+        Args:
+            parent_task_id: ID родительской задачи.
+            subtask_type: Тип подзадачи.
+            position: Позиция в очереди.
+            params_json: Параметры в формате JSON.
+            
+        Returns:
+            Созданная подзадача или None.
+        """
+        from .models import SubTask, SubTaskType
+        
+        with self.get_session() as session:
+            task = session.get(Task, parent_task_id)
+            if not task:
+                return None
+            
+            subtask = SubTask(
+                parent_task_id=parent_task_id,
+                subtask_type=subtask_type,
+                position=position,
+                params_json=params_json,
+            )
+            session.add(subtask)
+            session.commit()
+            session.refresh(subtask)
+            return subtask
+
+    def get_subtask(self, subtask_id: int) -> Optional["SubTask"]:
+        """Получает подзадачу по ID."""
+        from .models import SubTask
+        
+        with self.get_session() as session:
+            return session.get(SubTask, subtask_id)
+
+    def get_subtasks_for_task(self, task_id: int) -> List["SubTask"]:
+        """Получает все подзадачи для задачи."""
+        from .models import SubTask
+        
+        with self.get_session() as session:
+            stmt = (
+                select(SubTask)
+                .where(SubTask.parent_task_id == task_id)
+                .order_by(SubTask.position)
+            )
+            return list(session.scalars(stmt))
+
+    def get_pending_subtasks(self) -> List["SubTask"]:
+        """Получает все ожидающие подзадачи."""
+        from .models import SubTask
+        
+        with self.get_session() as session:
+            stmt = (
+                select(SubTask)
+                .where(SubTask.status == TaskStatus.PENDING)
+                .order_by(SubTask.parent_task_id, SubTask.position)
+            )
+            return list(session.scalars(stmt))
+
+    def update_subtask(
+        self,
+        subtask_id: int,
+        **kwargs,
+    ) -> Optional["SubTask"]:
+        """Обновляет подзадачу."""
+        from .models import SubTask
+        
+        with self.get_session() as session:
+            subtask = session.get(SubTask, subtask_id)
+            if subtask:
+                for key, value in kwargs.items():
+                    if hasattr(subtask, key):
+                        setattr(subtask, key, value)
+                session.commit()
+                session.refresh(subtask)
+            return subtask
+
+    def update_subtask_status(
+        self,
+        subtask_id: int,
+        status: TaskStatus,
+        error_message: Optional[str] = None,
+        result_value: Optional[float] = None,
+        result_text: Optional[str] = None,
+    ) -> Optional["SubTask"]:
+        """Обновляет статус подзадачи."""
+        from .models import SubTask
+        from datetime import datetime
+        
+        with self.get_session() as session:
+            subtask = session.get(SubTask, subtask_id)
+            if subtask:
+                subtask.status = status
+                subtask.error_message = error_message
+                
+                if result_value is not None:
+                    subtask.result_value = result_value
+                if result_text is not None:
+                    subtask.result_text = result_text
+                
+                if status == TaskStatus.RUNNING:
+                    subtask.started_at = datetime.now()
+                elif status in (TaskStatus.DONE, TaskStatus.ERROR, TaskStatus.CANCELLED):
+                    subtask.completed_at = datetime.now()
+                
+                session.commit()
+                session.refresh(subtask)
+            return subtask
+
+    def delete_subtask(self, subtask_id: int) -> bool:
+        """Удаляет подзадачу."""
+        from .models import SubTask
+        
+        with self.get_session() as session:
+            subtask = session.get(SubTask, subtask_id)
+            if subtask:
+                session.delete(subtask)
+                session.commit()
+                return True
+            return False
+
+    def create_postprocess_subtasks(
+        self,
+        task_id: int,
+        geometry: bool = True,
+        size: bool = True,
+        volume: bool = True,
+        analysis: bool = True,
+        params_json: Optional[str] = None,
+    ) -> List["SubTask"]:
+        """
+        Создаёт набор подзадач постобработки для задачи.
+        
+        Args:
+            task_id: ID родительской задачи.
+            geometry: Создать подзадачу геометрии.
+            size: Создать подзадачу размеров.
+            volume: Создать подзадачу объёма.
+            analysis: Создать подзадачу анализа.
+            params_json: Общие параметры.
+            
+        Returns:
+            Список созданных подзадач.
+        """
+        from .models import SubTask, SubTaskType
+        
+        subtasks = []
+        position = 0
+        
+        types_to_create = []
+        if geometry:
+            types_to_create.append(SubTaskType.GEOMETRY)
+        if size:
+            types_to_create.append(SubTaskType.SIZE)
+        if volume:
+            types_to_create.append(SubTaskType.VOLUME)
+        if analysis:
+            types_to_create.append(SubTaskType.ANALYSIS)
+        
+        for st_type in types_to_create:
+            st = self.create_subtask(
+                parent_task_id=task_id,
+                subtask_type=st_type,
+                position=position,
+                params_json=params_json,
+            )
+            if st:
+                subtasks.append(st)
+                position += 1
+        
+        return subtasks
+
+    def get_task_with_subtasks(self, task_id: int) -> Optional[Task]:
+        """Получает задачу с загруженными подзадачами."""
+        with self.get_session() as session:
+            from sqlalchemy.orm import joinedload
+            stmt = (
+                select(Task)
+                .where(Task.id == task_id)
+                .options(joinedload(Task.subtasks))
+            )
+            return session.scalar(stmt)

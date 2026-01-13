@@ -28,7 +28,7 @@ from .widgets.dive_panel import DivePanel
 from .widgets.model_panel import ModelPanel
 from .widgets.task_table import TaskTable
 from .widgets.status_bar import StatusBarWidget
-from .dialogs import NewTaskDialog, GeometryDialog, AnalyzeDialog
+from .dialogs import NewTaskDialog
 
 
 class MainWindow(QMainWindow):
@@ -52,7 +52,7 @@ class MainWindow(QMainWindow):
     def _setup_ui(self):
         """Настройка интерфейса."""
         self.setWindowTitle("🦑 YOLO Jellyfish - Batch Processor")
-        self.setMinimumSize(1000, 700)
+        self.setMinimumSize(1100, 700)
         
         central = QWidget()
         self.setCentralWidget(central)
@@ -86,7 +86,7 @@ class MainWindow(QMainWindow):
         self.task_table = TaskTable(self.repo, self.task_manager)
         self.main_splitter.addWidget(self.task_table)
         
-        self.main_splitter.setSizes([350, 650])
+        self.main_splitter.setSizes([350, 750])
 
     def _setup_menu(self):
         """Настройка меню."""
@@ -95,12 +95,12 @@ class MainWindow(QMainWindow):
         # === Файл ===
         file_menu = menubar.addMenu("&Файл")
         
-        self.action_add_dive = QAction("Добавить погружение...", self)
+        self.action_add_dive = QAction("📁 Добавить погружение...", self)
         self.action_add_dive.setShortcut(QKeySequence("Ctrl+D"))
         self.action_add_dive.triggered.connect(self._on_add_dive)
         file_menu.addAction(self.action_add_dive)
         
-        self.action_add_model = QAction("Добавить модель...", self)
+        self.action_add_model = QAction("🧠 Добавить модель...", self)
         self.action_add_model.setShortcut(QKeySequence("Ctrl+M"))
         self.action_add_model.triggered.connect(self._on_add_model)
         file_menu.addAction(self.action_add_model)
@@ -132,19 +132,6 @@ class MainWindow(QMainWindow):
         self.action_stop_queue.setEnabled(False)
         queue_menu.addAction(self.action_stop_queue)
         
-        # === Инструменты ===
-        tools_menu = menubar.addMenu("&Инструменты")
-        
-        self.action_geometry = QAction("📐 Геометрия и размеры...", self)
-        self.action_geometry.setShortcut(QKeySequence("Ctrl+G"))
-        self.action_geometry.triggered.connect(self._on_geometry)
-        tools_menu.addAction(self.action_geometry)
-        
-        self.action_analyze = QAction("📊 Анализ детекций...", self)
-        self.action_analyze.setShortcut(QKeySequence("Ctrl+A"))
-        self.action_analyze.triggered.connect(self._on_analyze)
-        tools_menu.addAction(self.action_analyze)
-        
         # === Справка ===
         help_menu = menubar.addMenu("&Справка")
         
@@ -165,9 +152,6 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.action_start_queue)
         toolbar.addAction(self.action_pause_queue)
         toolbar.addAction(self.action_stop_queue)
-        toolbar.addSeparator()
-        toolbar.addAction(self.action_geometry)
-        toolbar.addAction(self.action_analyze)
 
     def _setup_statusbar(self):
         """Настройка статусной строки."""
@@ -249,33 +233,23 @@ class MainWindow(QMainWindow):
         if reply == QMessageBox.StandardButton.Yes:
             self.task_manager.stop_queue()
 
-    def _on_geometry(self):
-        """Открывает диалог геометрии и размеров."""
-        dive_id = self.dive_panel.get_selected_dive_id()
-        dialog = GeometryDialog(self.repo, dive_id, self)
-        dialog.exec()
-
-    def _on_analyze(self):
-        """Открывает диалог анализа детекций."""
-        dive_id = self.dive_panel.get_selected_dive_id()
-        dialog = AnalyzeDialog(self.repo, dive_id, self)
-        dialog.exec()
-
     def _on_about(self):
         QMessageBox.about(
             self, "О программе",
             "<h2>🦑 YOLO Jellyfish Batch Processor</h2>"
             "<p>Пакетная обработка видео для детекции желетелого макрозоопланктона.</p>"
-            "<p><b>Версия:</b> 0.2.0</p>"
+            "<p><b>Версия:</b> 0.3.0</p>"
             "<hr>"
             "<p>Использует YOLOv8 для детекции и трекинга.</p>"
-            "<p><b>Инструменты:</b></p>"
+            "<p><b>Постобработка задач (колонка «Пост.»):</b></p>"
             "<ul>"
-            "<li>Геометрия камеры (FOE)</li>"
-            "<li>Оценка размеров объектов</li>"
-            "<li>Расчёт осмотренного объёма</li>"
-            "<li>Анализ и визуализация</li>"
+            "<li><b>G</b> - Геометрия камеры (FOE)</li>"
+            "<li><b>S</b> - Оценка размеров объектов</li>"
+            "<li><b>V</b> - Расчёт осмотренного объёма</li>"
+            "<li><b>A</b> - Анализ и визуализация</li>"
             "</ul>"
+            "<p>Двойной клик на завершённой задаче → постобработка</p>"
+            "<p>Или кнопка «📊 Постобработка» внизу таблицы</p>"
         )
 
     # ========== Обработчики сигналов ==========

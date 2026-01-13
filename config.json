@@ -10,13 +10,13 @@
     "save_video": true
   },
   "ui": {
-    "window_geometry": "AdnQywADAAAAAAAA////+QAABbYAAANhAAAAFgAAAGEAAAWKAAADNwAAAAACAAAABbcAAAAAAAAAFwAABbYAAANh",
+    "window_geometry": "AdnQywADAAAAAArdAAAAbwAAET4AAAPyAAAK3QAAAI4AABE+AAAD8gAAAAEAAAAAB4AAAArdAAAAjgAAET4AAAPy",
     "window_state": null,
-    "last_browse_path": "C:\\WORK\\Claude_allowed\\yolo_jellyfish\\runs\\detect\\yolo8n_v3\\weights",
+    "last_browse_path": "D:\\Видео",
     "last_model_id": 1,
     "splitter_sizes": [
-      449,
-      1002
+      502,
+      1120
     ]
   }
 }

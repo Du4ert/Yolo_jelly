@@ -12,36 +12,36 @@ from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
-    QTableWidget,
-    QTableWidgetItem,
+    QTreeWidget,
+    QTreeWidgetItem,
     QPushButton,
     QMenu,
     QMessageBox,
     QHeaderView,
     QGroupBox,
-    QProgressBar,
     QAbstractItemView,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QBrush
+from PyQt6.QtGui import QColor, QBrush, QFont
 
-from ...database import Repository, Task, TaskStatus, VideoFile, Model
+from ...database import Repository, Task, SubTask, SubTaskType, TaskStatus, VideoFile, Model
 from ...core import TaskManager
-from ..dialogs import EditTaskDialog
+from ..dialogs import EditTaskDialog, PostProcessDialog
 
 
 class TaskTable(QWidget):
     """
     Таблица для отображения и управления задачами.
+    Использует QTreeWidget для отображения задач и подзадач.
     """
 
     # Цвета статусов
     STATUS_COLORS = {
-        TaskStatus.PENDING: QColor(200, 200, 200),
+        TaskStatus.PENDING: QColor(220, 220, 220),
         TaskStatus.RUNNING: QColor(100, 180, 255),
         TaskStatus.PAUSED: QColor(255, 220, 100),
-        TaskStatus.DONE: QColor(100, 220, 100),
-        TaskStatus.ERROR: QColor(255, 120, 120),
+        TaskStatus.DONE: QColor(120, 200, 120),
+        TaskStatus.ERROR: QColor(255, 140, 140),
         TaskStatus.CANCELLED: QColor(180, 180, 180),
     }
     
@@ -52,6 +52,13 @@ class TaskTable(QWidget):
         TaskStatus.DONE: "✓",
         TaskStatus.ERROR: "✗",
         TaskStatus.CANCELLED: "⊘",
+    }
+    
+    SUBTASK_ICONS = {
+        SubTaskType.GEOMETRY: "📐",
+        SubTaskType.SIZE: "📏",
+        SubTaskType.VOLUME: "📦",
+        SubTaskType.ANALYSIS: "📊",
     }
 
     def __init__(self, repository: Repository, task_manager: TaskManager, parent=None):
@@ -65,6 +72,7 @@ class TaskTable(QWidget):
     def _connect_signals(self):
         """Подключает сигналы."""
         self.task_manager.task_progress.connect(self._on_task_progress)
+        self.task_manager.subtask_progress.connect(self._on_subtask_progress)
         self.task_manager.queue_changed.connect(self.refresh)
 
     def _setup_ui(self):
@@ -79,34 +87,32 @@ class TaskTable(QWidget):
         group_layout.setContentsMargins(4, 4, 4, 4)
         group_layout.setSpacing(4)
         
-        # Таблица
-        self.table = QTableWidget()
-        self.table.setColumnCount(6)
-        self.table.setHorizontalHeaderLabels([
-            "#", "Видео", "Модель", "Статус", "Прогресс", "Результат"
-        ])
+        # Дерево задач
+        self.tree = QTreeWidget()
+        self.tree.setColumnCount(5)
+        self.tree.setHeaderLabels(["#", "Задача", "Статус", "Прогресс", "Результат"])
         
         # Настройка колонок
-        header = self.table.horizontalHeader()
+        header = self.tree.header()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         
-        self.table.setColumnWidth(0, 40)
-        self.table.setColumnWidth(4, 100)
+        self.tree.setColumnWidth(0, 50)
+        self.tree.setColumnWidth(3, 80)
         
         # Настройка поведения
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.table.customContextMenuRequested.connect(self._on_context_menu)
-        self.table.itemDoubleClicked.connect(self._on_double_click)
-        self.table.verticalHeader().setVisible(False)
+        self.tree.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._on_context_menu)
+        self.tree.itemDoubleClicked.connect(self._on_double_click)
+        self.tree.setRootIsDecorated(True)
+        self.tree.setAnimated(True)
         
-        group_layout.addWidget(self.table)
+        group_layout.addWidget(self.tree)
         
         # Кнопки управления
         btn_layout = QHBoxLayout()
@@ -132,6 +138,11 @@ class TaskTable(QWidget):
         
         btn_layout.addStretch()
         
+        self.btn_postprocess = QPushButton("📊 Постобработка")
+        self.btn_postprocess.setToolTip("Добавить постобработку к задаче")
+        self.btn_postprocess.clicked.connect(self._postprocess_selected)
+        btn_layout.addWidget(self.btn_postprocess)
+        
         self.btn_retry = QPushButton("↻ Повторить")
         self.btn_retry.setToolTip("Повторить задачу с ошибкой")
         self.btn_retry.clicked.connect(self._retry_selected)
@@ -142,55 +153,64 @@ class TaskTable(QWidget):
         layout.addWidget(group)
 
     def refresh(self):
-        """Обновляет таблицу."""
-        self.table.setRowCount(0)
+        """Обновляет дерево задач."""
+        # Сохраняем состояние раскрытия
+        expanded_tasks = set()
+        for i in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(i)
+            if item and item.isExpanded():
+                task_id = item.data(0, Qt.ItemDataRole.UserRole)
+                if task_id:
+                    expanded_tasks.add(task_id)
+        
+        self.tree.clear()
         
         tasks = self.task_manager.get_all_tasks()
         
         for task in tasks:
-            self._add_task_row(task)
+            item = self._create_task_item(task)
+            self.tree.addTopLevelItem(item)
+            
+            # Добавляем подзадачи
+            subtasks = self.repo.get_subtasks_for_task(task.id)
+            for subtask in subtasks:
+                sub_item = self._create_subtask_item(subtask)
+                item.addChild(sub_item)
+            
+            # Восстанавливаем раскрытие
+            if task.id in expanded_tasks or len(subtasks) > 0:
+                item.setExpanded(True)
 
-    def _add_task_row(self, task: Task):
-        """Добавляет строку задачи."""
-        row = self.table.rowCount()
-        self.table.insertRow(row)
-        
-        # Получаем связанные данные
+    def _create_task_item(self, task: Task) -> QTreeWidgetItem:
+        """Создаёт элемент дерева для задачи."""
         video = self.repo.get_video_file(task.video_id)
         model = self.repo.get_model(task.model_id)
         
+        item = QTreeWidgetItem()
+        
         # ID
-        id_item = QTableWidgetItem(str(task.id))
-        id_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        id_item.setData(Qt.ItemDataRole.UserRole, task.id)
-        self.table.setItem(row, 0, id_item)
+        item.setText(0, str(task.id))
+        item.setData(0, Qt.ItemDataRole.UserRole, task.id)
+        item.setData(0, Qt.ItemDataRole.UserRole + 1, "task")
+        item.setTextAlignment(0, Qt.AlignmentFlag.AlignCenter)
         
-        # Видео
+        # Видео + модель
         video_name = video.filename if video else "???"
-        video_item = QTableWidgetItem(video_name)
-        video_item.setToolTip(video.filepath if video else "")
-        self.table.setItem(row, 1, video_item)
-        
-        # Модель
         model_name = model.name if model else "???"
-        model_item = QTableWidgetItem(model_name)
-        self.table.setItem(row, 2, model_item)
+        item.setText(1, f"🎬 {video_name}")
+        item.setToolTip(1, f"Видео: {video.filepath if video else '???'}\nМодель: {model_name}")
         
         # Статус
         status_icon = self.STATUS_ICONS.get(task.status, "?")
-        status_text = f"{status_icon} {task.status.value}"
-        status_item = QTableWidgetItem(status_text)
-        status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        item.setText(2, f"{status_icon} {task.status.value}")
+        item.setTextAlignment(2, Qt.AlignmentFlag.AlignCenter)
         
         color = self.STATUS_COLORS.get(task.status, QColor(255, 255, 255))
-        status_item.setBackground(QBrush(color))
-        
-        self.table.setItem(row, 3, status_item)
+        item.setBackground(2, QBrush(color))
         
         # Прогресс
-        progress_item = QTableWidgetItem(f"{task.progress_percent:.0f}%")
-        progress_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.table.setItem(row, 4, progress_item)
+        item.setText(3, f"{task.progress_percent:.0f}%")
+        item.setTextAlignment(3, Qt.AlignmentFlag.AlignCenter)
         
         # Результат
         result_text = ""
@@ -199,27 +219,94 @@ class TaskTable(QWidget):
             if task.tracks_count:
                 result_text += f" / {task.tracks_count} тр."
         elif task.status == TaskStatus.ERROR:
-            result_text = task.error_message or "Ошибка"
+            result_text = task.error_message[:30] + "..." if task.error_message and len(task.error_message) > 30 else (task.error_message or "Ошибка")
+            item.setToolTip(4, task.error_message or "")
         
-        result_item = QTableWidgetItem(result_text)
-        if task.status == TaskStatus.ERROR:
-            result_item.setToolTip(task.error_message or "")
-        self.table.setItem(row, 5, result_item)
+        item.setText(4, result_text)
         
-        # Окрашиваем всю строку
-        for col in range(self.table.columnCount()):
-            item = self.table.item(row, col)
-            if item and col != 3:
-                if task.status == TaskStatus.DONE:
-                    item.setForeground(QBrush(QColor(0, 100, 0)))
-                elif task.status == TaskStatus.ERROR:
-                    item.setForeground(QBrush(QColor(150, 0, 0)))
+        # Стиль текста
+        if task.status == TaskStatus.DONE:
+            for col in range(5):
+                item.setForeground(col, QBrush(QColor(0, 100, 0)))
+        elif task.status == TaskStatus.ERROR:
+            for col in range(5):
+                item.setForeground(col, QBrush(QColor(150, 0, 0)))
+        
+        # Жирный шрифт для основных задач
+        font = item.font(1)
+        font.setBold(True)
+        item.setFont(1, font)
+        
+        return item
 
-    def _on_double_click(self, item):
-        """Двойной клик - открыть диалог редактирования."""
-        task_id = self._get_selected_task_id()
-        if task_id:
-            self._edit_task(task_id)
+    def _create_subtask_item(self, subtask: SubTask) -> QTreeWidgetItem:
+        """Создаёт элемент дерева для подзадачи."""
+        item = QTreeWidgetItem()
+        
+        # ID подзадачи (пустой для ID)
+        item.setText(0, "")
+        item.setData(0, Qt.ItemDataRole.UserRole, subtask.id)
+        item.setData(0, Qt.ItemDataRole.UserRole + 1, "subtask")
+        item.setData(0, Qt.ItemDataRole.UserRole + 2, subtask.parent_task_id)
+        
+        # Название с иконкой
+        icon = self.SUBTASK_ICONS.get(subtask.subtask_type, "?")
+        item.setText(1, f"  {icon} {subtask.type_name}")
+        
+        # Статус
+        status_icon = self.STATUS_ICONS.get(subtask.status, "?")
+        item.setText(2, f"{status_icon} {subtask.status.value}")
+        item.setTextAlignment(2, Qt.AlignmentFlag.AlignCenter)
+        
+        color = self.STATUS_COLORS.get(subtask.status, QColor(255, 255, 255))
+        item.setBackground(2, QBrush(color))
+        
+        # Прогресс
+        item.setText(3, f"{subtask.progress_percent:.0f}%")
+        item.setTextAlignment(3, Qt.AlignmentFlag.AlignCenter)
+        
+        # Результат
+        result_text = ""
+        if subtask.status == TaskStatus.DONE:
+            if subtask.result_text:
+                result_text = subtask.result_text
+            elif subtask.result_value is not None:
+                if subtask.subtask_type == SubTaskType.GEOMETRY:
+                    result_text = f"{subtask.result_value:.1f}°"
+                elif subtask.subtask_type == SubTaskType.VOLUME:
+                    result_text = f"{subtask.result_value:.2f} м³"
+                else:
+                    result_text = f"{subtask.result_value:.0f}"
+        elif subtask.status == TaskStatus.ERROR:
+            result_text = subtask.error_message[:25] + "..." if subtask.error_message and len(subtask.error_message) > 25 else (subtask.error_message or "Ошибка")
+            item.setToolTip(4, subtask.error_message or "")
+        
+        item.setText(4, result_text)
+        
+        # Стиль для подзадач - чуть светлее
+        if subtask.status == TaskStatus.DONE:
+            for col in range(5):
+                item.setForeground(col, QBrush(QColor(60, 130, 60)))
+        elif subtask.status == TaskStatus.ERROR:
+            for col in range(5):
+                item.setForeground(col, QBrush(QColor(180, 60, 60)))
+        else:
+            for col in range(5):
+                item.setForeground(col, QBrush(QColor(80, 80, 80)))
+        
+        return item
+
+    def _on_double_click(self, item: QTreeWidgetItem, column: int):
+        """Двойной клик."""
+        item_type = item.data(0, Qt.ItemDataRole.UserRole + 1)
+        
+        if item_type == "task":
+            task_id = item.data(0, Qt.ItemDataRole.UserRole)
+            task = self.task_manager.get_task(task_id)
+            if task and task.status == TaskStatus.DONE:
+                self._postprocess_task(task_id)
+            else:
+                self._edit_task(task_id)
 
     def _edit_task(self, task_id: int):
         """Открывает диалог редактирования задачи."""
@@ -230,33 +317,83 @@ class TaskTable(QWidget):
         except ValueError as e:
             QMessageBox.warning(self, "Ошибка", str(e))
 
-    def _get_selected_task_id(self) -> Optional[int]:
-        """Возвращает ID выбранной задачи."""
-        items = self.table.selectedItems()
-        if not items:
-            return None
-        row = items[0].row()
-        id_item = self.table.item(row, 0)
-        return id_item.data(Qt.ItemDataRole.UserRole)
+    def _postprocess_task(self, task_id: int):
+        """Открывает диалог постобработки."""
+        try:
+            dialog = PostProcessDialog(self.repo, self.task_manager, task_id, parent=self)
+            dialog.exec()
+            self.refresh()
+        except ValueError as e:
+            QMessageBox.warning(self, "Ошибка", str(e))
 
-    def _on_context_menu(self, position):
-        """Контекстное меню."""
-        item = self.table.itemAt(position)
+    def _postprocess_selected(self):
+        """Открывает постобработку для выбранной задачи."""
+        item = self.tree.currentItem()
         if not item:
+            QMessageBox.information(self, "Не выбрано", "Выберите задачу")
             return
         
-        task_id = self._get_selected_task_id()
+        # Если выбрана подзадача, берём родительскую задачу
+        item_type = item.data(0, Qt.ItemDataRole.UserRole + 1)
+        if item_type == "subtask":
+            task_id = item.data(0, Qt.ItemDataRole.UserRole + 2)
+        else:
+            task_id = item.data(0, Qt.ItemDataRole.UserRole)
+        
         if not task_id:
             return
         
+        task = self.task_manager.get_task(task_id)
+        if not task or task.status != TaskStatus.DONE:
+            QMessageBox.warning(
+                self, "Недоступно",
+                "Постобработка доступна только для завершённых задач детекции."
+            )
+            return
+        
+        self._postprocess_task(task_id)
+
+    def _get_selected_task_id(self) -> Optional[int]:
+        """Возвращает ID выбранной задачи."""
+        item = self.tree.currentItem()
+        if not item:
+            return None
+        
+        item_type = item.data(0, Qt.ItemDataRole.UserRole + 1)
+        if item_type == "subtask":
+            return item.data(0, Qt.ItemDataRole.UserRole + 2)
+        return item.data(0, Qt.ItemDataRole.UserRole)
+
+    def _on_context_menu(self, position):
+        """Контекстное меню."""
+        item = self.tree.itemAt(position)
+        if not item:
+            return
+        
+        item_type = item.data(0, Qt.ItemDataRole.UserRole + 1)
+        
+        if item_type == "subtask":
+            self._show_subtask_context_menu(item, position)
+        else:
+            self._show_task_context_menu(item, position)
+
+    def _show_task_context_menu(self, item: QTreeWidgetItem, position):
+        """Контекстное меню для задачи."""
+        task_id = item.data(0, Qt.ItemDataRole.UserRole)
         task = self.task_manager.get_task(task_id)
         if not task:
             return
         
         menu = QMenu(self)
         
-        # Просмотр/редактирование
-        action_edit = menu.addAction("✏ Просмотр/редактировать...")
+        # Постобработка (для завершённых)
+        if task.status == TaskStatus.DONE:
+            action_postprocess = menu.addAction("📊 Добавить постобработку...")
+            action_postprocess.triggered.connect(lambda: self._postprocess_task(task_id))
+            menu.addSeparator()
+        
+        # Редактирование
+        action_edit = menu.addAction("✏ Редактировать...")
         action_edit.triggered.connect(lambda: self._edit_task(task_id))
         
         menu.addSeparator()
@@ -271,10 +408,8 @@ class TaskTable(QWidget):
         if task.status == TaskStatus.PENDING:
             action_up = menu.addAction("▲ Переместить вверх")
             action_up.triggered.connect(self._move_up)
-            
             action_down = menu.addAction("▼ Переместить вниз")
             action_down.triggered.connect(self._move_down)
-            
             menu.addSeparator()
         
         # Повтор (для error/cancelled)
@@ -288,7 +423,44 @@ class TaskTable(QWidget):
             action_delete = menu.addAction("🗑 Удалить")
             action_delete.triggered.connect(self._delete_selected)
         
-        menu.exec(self.table.viewport().mapToGlobal(position))
+        menu.exec(self.tree.viewport().mapToGlobal(position))
+
+    def _show_subtask_context_menu(self, item: QTreeWidgetItem, position):
+        """Контекстное меню для подзадачи."""
+        subtask_id = item.data(0, Qt.ItemDataRole.UserRole)
+        subtask = self.repo.get_subtask(subtask_id)
+        if not subtask:
+            return
+        
+        menu = QMenu(self)
+        
+        # Повтор (для error/cancelled)
+        if subtask.status in (TaskStatus.ERROR, TaskStatus.CANCELLED):
+            action_retry = menu.addAction("↻ Повторить")
+            action_retry.triggered.connect(lambda: self._retry_subtask(subtask_id))
+            menu.addSeparator()
+        
+        # Удаление (кроме running)
+        if subtask.status != TaskStatus.RUNNING:
+            action_delete = menu.addAction("🗑 Удалить подзадачу")
+            action_delete.triggered.connect(lambda: self._delete_subtask(subtask_id))
+        
+        menu.exec(self.tree.viewport().mapToGlobal(position))
+
+    def _retry_subtask(self, subtask_id: int):
+        """Повторяет подзадачу."""
+        self.repo.update_subtask_status(subtask_id, TaskStatus.PENDING)
+        self.refresh()
+
+    def _delete_subtask(self, subtask_id: int):
+        """Удаляет подзадачу."""
+        subtask = self.repo.get_subtask(subtask_id)
+        if subtask and subtask.status == TaskStatus.RUNNING:
+            QMessageBox.warning(self, "Невозможно удалить", "Подзадача выполняется")
+            return
+        
+        self.repo.delete_subtask(subtask_id)
+        self.refresh()
 
     def _move_up(self):
         """Перемещает задачу вверх."""
@@ -317,8 +489,7 @@ class TaskTable(QWidget):
             )
             return
         
-        if self.task_manager.remove_task(task_id):
-            pass
+        self.task_manager.remove_task(task_id)
 
     def _retry_selected(self):
         """Повторяет выбранную задачу."""
@@ -357,21 +528,25 @@ class TaskTable(QWidget):
     def _on_task_progress(self, task_id: int, percent: float, current_frame: int, 
                           total_frames: int, detections: int, tracks: int):
         """Обновляет прогресс задачи в таблице."""
-        # Ищем строку с этой задачей
-        for row in range(self.table.rowCount()):
-            id_item = self.table.item(row, 0)
-            if id_item and id_item.data(Qt.ItemDataRole.UserRole) == task_id:
-                # Обновляем прогресс
-                progress_item = self.table.item(row, 4)
-                if progress_item:
-                    progress_item.setText(f"{percent:.0f}%")
-                
-                # Обновляем результат (текущие детекции/треки)
-                result_item = self.table.item(row, 5)
-                if result_item:
-                    result_text = f"{detections} дет."
-                    if tracks > 0:
-                        result_text += f" / {tracks} тр."
-                    result_item.setText(result_text)
-                
+        # Ищем элемент с этой задачей
+        for i in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(i)
+            if item and item.data(0, Qt.ItemDataRole.UserRole) == task_id:
+                item.setText(3, f"{percent:.0f}%")
+                result_text = f"{detections} дет."
+                if tracks > 0:
+                    result_text += f" / {tracks} тр."
+                item.setText(4, result_text)
                 break
+
+    def _on_subtask_progress(self, subtask_id: int, percent: float):
+        """Обновляет прогресс подзадачи."""
+        # Ищем подзадачу в дереве
+        for i in range(self.tree.topLevelItemCount()):
+            task_item = self.tree.topLevelItem(i)
+            if task_item:
+                for j in range(task_item.childCount()):
+                    sub_item = task_item.child(j)
+                    if sub_item and sub_item.data(0, Qt.ItemDataRole.UserRole) == subtask_id:
+                        sub_item.setText(3, f"{percent:.0f}%")
+                        return

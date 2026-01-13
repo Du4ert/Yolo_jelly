@@ -8,8 +8,7 @@ from .add_model import AddModelDialog
 from .edit_task import EditTaskDialog
 from .edit_dive import EditDiveDialog
 from .catalog_dialog import CatalogDialog
-from .geometry_dialog import GeometryDialog
-from .analyze_dialog import AnalyzeDialog
+from .postprocess_dialog import PostProcessDialog
 
 __all__ = [
     "NewTaskDialog",
@@ -18,6 +17,5 @@ __all__ = [
     "EditTaskDialog",
     "EditDiveDialog",
     "CatalogDialog",
-    "GeometryDialog",
-    "AnalyzeDialog",
+    "PostProcessDialog",
 ]
