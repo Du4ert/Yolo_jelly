@@ -321,19 +321,24 @@ def estimate_size_by_k_method(
     track_df: pd.DataFrame,
     calibration: CameraCalibration,
     min_depth_change: float = 0.1,
-    min_points: int = 3
+    min_points: int = 3,
+    min_size_change_pct: float = 10.0
 ) -> Optional[TrackSizeEstimate]:
     """
     Оценивает размер объекта методом удельного прироста k.
     
     Алгоритм:
-    1. Для каждой пары соседних точек вычисляем k = (Δpx/px₁) / Δdepth_camera
-    2. По k вычисляем дистанцию: d = 24.68 × |k|^(-0.644)
-    3. Находим кадр с максимальным размером (объект целиком в кадре)
-    4. Берём дистанцию от ближайшей пары к этому кадру
-    5. Калибровка пикселя: p = 2.432 × d^(-1.0334)
-    6. Размер: size_mm = pixels_max / p
-    7. Глубина объекта = глубина камеры + дистанция (камера смотрит вниз)
+    1. Берём пары точек, где размер изменился минимум на 10%
+    2. Для каждой пары вычисляем k = (Δpx/px₁) / Δdepth_camera
+    3. По k вычисляем дистанцию: d = 24.68 × |k|^(-0.644)
+    4. Находим кадр с максимальным размером (объект целиком в кадре)
+    5. Берём дистанцию от ближайшей пары к этому кадру
+    6. Калибровка пикселя: p = 2.432 × d^(-1.0334)
+    7. Размер: size_mm = pixels_max / p
+    8. Глубина объекта = глубина камеры + дистанция (камера смотрит вниз)
+    
+    Args:
+        min_size_change_pct: Минимальное изменение размера между точками пары (%)
     """
     track_id = track_df['track_id'].iloc[0]
     class_name = track_df['class_name'].iloc[0]
@@ -362,51 +367,84 @@ def estimate_size_by_k_method(
     if depth_change < min_depth_change:
         return None
     
-    # Вычисляем k и дистанцию для каждой пары соседних точек
-    pair_data = []  # список (frame_mid, k, distance)
+    # Ищем пары с изменением размера >= min_size_change_pct%
+    # Используем скользящий подход: для каждой точки ищем следующую,
+    # где размер вырос на нужный процент
+    pair_data = []
+    min_change_ratio = 1.0 + min_size_change_pct / 100.0  # 1.10 для 10%
     
-    for i in range(len(valid_df) - 1):
+    i = 0
+    while i < len(valid_df):
         row1 = valid_df.iloc[i]
-        row2 = valid_df.iloc[i + 1]
-        
         pixels1 = row1['size_pix']
-        pixels2 = row2['size_pix']
         depth1 = row1['depth_m']
-        depth2 = row2['depth_m']
-        
-        delta_depth = depth2 - depth1
-        
-        # Пропускаем пары с малым изменением глубины
-        if abs(delta_depth) < 0.05:
-            continue
+        frame1 = row1['frame']
         
         if pixels1 <= 0:
+            i += 1
             continue
         
-        delta_pixels = pixels2 - pixels1
-        k = (delta_pixels / pixels1) / delta_depth  # доли/м
+        # Ищем следующую точку, где размер вырос на min_size_change_pct%
+        target_size = pixels1 * min_change_ratio
         
-        # k должен быть положительным (размер растёт при погружении)
-        # Если k <= 0, значит объект удаляется или данные шумные
-        if k <= 0:
-            continue
+        found_j = None
+        for j in range(i + 1, len(valid_df)):
+            if valid_df.iloc[j]['size_pix'] >= target_size:
+                found_j = j
+                break
         
-        k_percent = k * 100  # в %/м
-        distance = _calculate_distance_from_k(k_percent, calibration)
-        
-        # Средний кадр пары
-        frame_mid = (row1['frame'] + row2['frame']) / 2
-        
-        pair_data.append({
-            'frame_mid': frame_mid,
-            'k': k,
-            'k_percent': k_percent,
-            'distance': distance,
-            'depth_camera': (depth1 + depth2) / 2
-        })
+        if found_j is not None:
+            row2 = valid_df.iloc[found_j]
+            pixels2 = row2['size_pix']
+            depth2 = row2['depth_m']
+            frame2 = row2['frame']
+            
+            delta_depth = depth2 - depth1
+            
+            # Пропускаем если глубина не изменилась (избегаем деления на 0)
+            if abs(delta_depth) < 0.01:
+                i = found_j
+                continue
+            
+            delta_pixels = pixels2 - pixels1
+            k = (delta_pixels / pixels1) / delta_depth  # доли/м
+            
+            # k должен быть положительным (размер растёт при погружении)
+            if k > 0:
+                k_percent = k * 100  # в %/м
+                distance = _calculate_distance_from_k(k_percent, calibration)
+                
+                pair_data.append({
+                    'frame_start': frame1,
+                    'frame_end': frame2,
+                    'frame_mid': (frame1 + frame2) / 2,
+                    'k': k,
+                    'k_percent': k_percent,
+                    'distance': distance,
+                    'depth_camera': (depth1 + depth2) / 2,
+                    'size_change_pct': (pixels2 / pixels1 - 1) * 100
+                })
+            
+            # Переходим к найденной точке для следующей пары
+            i = found_j
+        else:
+            # Не нашли точку с нужным приростом — выходим
+            break
     
     if len(pair_data) == 0:
         return None
+    
+    # Фильтрация выбросов по k (удаляем слишком большие значения)
+    # k > 500%/м обычно означает дистанцию < 0.5м, что маловероятно для начала трека
+    k_values_raw = [p['k_percent'] for p in pair_data]
+    k_median = np.median(k_values_raw)
+    
+    # Фильтруем пары с k > 3 * median (выбросы)
+    max_k_threshold = max(k_median * 3, 500)  # но не меньше 500%/м
+    pair_data_filtered = [p for p in pair_data if p['k_percent'] <= max_k_threshold]
+    
+    if len(pair_data_filtered) == 0:
+        pair_data_filtered = pair_data  # если всё отфильтровали, вернём исходные
     
     # Находим кадр с максимальным размером
     max_idx, max_row, max_size_pix = _find_max_size_frame(valid_df, frame_width, frame_height)
@@ -414,13 +452,16 @@ def estimate_size_by_k_method(
     camera_depth_max = max_row['depth_m']
     
     # Находим ближайшую пару к кадру с максимальным размером
-    closest_pair = min(pair_data, key=lambda p: abs(p['frame_mid'] - max_frame))
+    closest_pair = min(pair_data_filtered, key=lambda p: abs(p['frame_mid'] - max_frame))
     
     # Дистанция на момент максимального размера
     # Корректируем по разнице глубин камеры
     depth_diff = camera_depth_max - closest_pair['depth_camera']
     distance_at_max = closest_pair['distance'] - depth_diff  # камера приблизилась
     distance_at_max = max(distance_at_max, 0.1)  # защита от отрицательных
+    
+    # Используем отфильтрованные данные для статистики
+    pair_data = pair_data_filtered
     
     # Калибровка пикселя для этой дистанции
     pixel_calib = _calculate_pixel_calibration(distance_at_max, calibration)
