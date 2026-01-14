@@ -25,8 +25,13 @@ from scipy.optimize import minimize
 import argparse
 
 
-# Классы, для которых не считаем размер (слишком мелкие)
-SKIP_SIZE_CLASSES = {'Pleurobrachia pileus'}
+# Классы с фиксированным размером (слишком мелкие для k-метода)
+FIXED_SIZE_CLASSES = {
+    'Pleurobrachia pileus': {
+        'size_mm': 10.0,      # фиксированный размер
+        'distance_m': 0.2,    # фиксированная дистанция (200 мм)
+    }
+}
 
 # Типичные размеры видов (см) для референсной оценки
 TYPICAL_SIZES_CM = {
@@ -343,7 +348,8 @@ def estimate_size_by_k_method(
     track_id = track_df['track_id'].iloc[0]
     class_name = track_df['class_name'].iloc[0]
     
-    if class_name in SKIP_SIZE_CLASSES:
+    # Пропускаем классы с фиксированным размером
+    if class_name in FIXED_SIZE_CLASSES:
         return None
     
     if 'depth_m' not in track_df.columns or track_df['depth_m'].isna().all():
@@ -531,6 +537,70 @@ def estimate_size_by_k_method(
     )
 
 
+def estimate_size_fixed(
+    track_df: pd.DataFrame,
+    calibration: CameraCalibration
+) -> Optional[TrackSizeEstimate]:
+    """
+    Оценивает размер для классов с фиксированным размером.
+    Глубина объекта вычисляется по последнему кадру трека.
+    """
+    track_id = track_df['track_id'].iloc[0]
+    class_name = track_df['class_name'].iloc[0]
+    
+    if class_name not in FIXED_SIZE_CLASSES:
+        return None
+    
+    fixed = FIXED_SIZE_CLASSES[class_name]
+    size_mm = fixed['size_mm']
+    distance = fixed['distance_m']
+    
+    frame_width = calibration.frame_width
+    frame_height = calibration.frame_height
+    
+    # Берём последний кадр трека
+    valid_df = track_df[track_df['depth_m'].notna()].copy() if 'depth_m' in track_df.columns else track_df.copy()
+    if len(valid_df) == 0:
+        valid_df = track_df.copy()
+    
+    valid_df = valid_df.sort_values('frame')
+    last_row = valid_df.iloc[-1]
+    
+    last_frame = int(last_row['frame'])
+    camera_depth_last = last_row.get('depth_m', np.nan)
+    
+    # Размер в пикселях на последнем кадре
+    last_size_pix = _get_bbox_size_pixels(last_row, frame_width, frame_height)
+    
+    # Глубина объекта = глубина камеры + дистанция
+    if pd.notna(camera_depth_last):
+        object_depth = camera_depth_last + distance
+    else:
+        object_depth = np.nan
+    
+    # Калибровка пикселя для фиксированной дистанции
+    pixel_calib = _calculate_pixel_calibration(distance, calibration)
+    
+    return TrackSizeEstimate(
+        track_id=track_id,
+        class_name=class_name,
+        real_size_mm=size_mm,
+        real_size_cm=round(size_mm / 10.0, 2),
+        distance_m=distance,
+        object_depth_m=round(object_depth, 2) if pd.notna(object_depth) else None,
+        first_frame=last_frame,
+        first_size_pixels=round(last_size_pix, 1),
+        camera_depth_first=round(camera_depth_last, 2) if pd.notna(camera_depth_last) else None,
+        k_mean=0.0,
+        k_std=0.0,
+        pixel_calibration=round(pixel_calib, 4),
+        confidence=0.5,  # средняя уверенность для фиксированных
+        method="fixed",
+        n_points_used=len(valid_df),
+        warnings=["fixed_size_estimate"]
+    )
+
+
 def estimate_size_from_typical(
     track_df: pd.DataFrame,
     calibration: CameraCalibration
@@ -542,7 +612,8 @@ def estimate_size_from_typical(
     track_id = track_df['track_id'].iloc[0]
     class_name = track_df['class_name'].iloc[0]
     
-    if class_name in SKIP_SIZE_CLASSES:
+    # Пропускаем классы с фиксированным размером
+    if class_name in FIXED_SIZE_CLASSES:
         return None
     
     if class_name not in TYPICAL_SIZES_CM:
@@ -653,6 +724,9 @@ def process_detections_with_size(
     if missing:
         raise ValueError(f"Отсутствуют колонки: {missing}")
     
+    # Этап 0: классы с фиксированным размером (P. pileus)
+    fixed_estimates = []
+    
     # Этап 1: k-метод для хороших треков
     k_method_estimates = []
     tracks_for_typical = []
@@ -662,7 +736,12 @@ def process_detections_with_size(
             continue
         
         class_name = track_df['class_name'].iloc[0]
-        if class_name in SKIP_SIZE_CLASSES:
+        
+        # Сначала проверяем фиксированные классы
+        if class_name in FIXED_SIZE_CLASSES:
+            estimate = estimate_size_fixed(track_df, calibration)
+            if estimate is not None:
+                fixed_estimates.append(estimate)
             continue
         
         estimate = estimate_size_by_k_method(
@@ -677,7 +756,8 @@ def process_detections_with_size(
             tracks_for_typical.append((track_id, track_df))
     
     if verbose:
-        print(f"\nТреков с k-методом: {len(k_method_estimates)}")
+        print(f"\nТреков с фиксированным размером: {len(fixed_estimates)}")
+        print(f"Треков с k-методом: {len(k_method_estimates)}")
         print(f"Треков для типичной оценки: {len(tracks_for_typical)}")
     
     # Этап 2: оценка по типичным размерам
@@ -692,7 +772,7 @@ def process_detections_with_size(
         print(f"Треков с типичной оценкой: {len(typical_estimates)}")
     
     # Объединяем все оценки
-    all_estimates = k_method_estimates + typical_estimates
+    all_estimates = fixed_estimates + k_method_estimates + typical_estimates
     
     if verbose:
         print(f"\nВсего треков с оценкой: {len(all_estimates)}")
@@ -1080,9 +1160,6 @@ def calculate_surveyed_volume(
     density_by_class = {}
     
     for class_name in detections_df['class_name'].unique():
-        if class_name in SKIP_SIZE_CLASSES:
-            continue
-        
         class_df = detections_df[detections_df['class_name'] == class_name]
         n_tracks = class_df['track_id'].nunique()
         
