@@ -4,10 +4,15 @@
 Функции:
 - Оценка наклона камеры по морскому снегу (Focus of Expansion)
 - Расчёт реального размера объектов по динамике изменения размера в треке
-- Коррекция дисторсии GoPro fisheye
 - Определение абсолютной глубины объекта в толще воды
 
 Калибровочные данные получены для GoPro 12 Wide 4K (3840x2160).
+
+Формулы расчёта размеров (по методике научрука):
+1. k = (Δpixels/pixels₁) / Δd  - удельный прирост размера (%/м)
+2. d = 24.68 * |k|^(-0.644)    - дистанция до объекта (м)
+3. p = 2.432 * d^(-1.0334)     - калибровка (px/мм)
+4. size = pixels / p           - размер объекта (мм)
 """
 
 import cv2
@@ -17,7 +22,6 @@ from pathlib import Path
 from typing import Optional, Tuple, Dict, List
 from dataclasses import dataclass, field
 from scipy.optimize import minimize
-from scipy.stats import linregress
 import argparse
 
 
@@ -35,32 +39,30 @@ TYPICAL_SIZES_CM = {
 
 @dataclass
 class CameraCalibration:
-    """Калибровочные параметры камеры GoPro 12 Wide."""
-    # Калибровочная константа k = размер_пикс × дистанция
-    k: float = 154.8  # после коррекции дисторсии
+    """Калибровочные параметры камеры GoPro 12 Wide 4K.
     
-    # Размер кадра
-    frame_width: int = 1920
-    frame_height: int = 1080
-    
-    # Параметры fisheye дисторсии: correction = 1 + a*r² + b*r⁴
-    distortion_a: float = 0.3146
-    distortion_b: float = 0.0382
-    
-    # Нормализующий радиус (диагональ/2 для 4K)
-    distortion_r_max: float = 2203.0
+    Калибровка выполнена для разрешения 3840x2160 (4K).
+    Коэффициенты получены эмпирически по формулам научрука.
+    """
+    # Размер кадра (4K)
+    frame_width: int = 3840
+    frame_height: int = 2160
     
     # Угол обзора
     fov_horizontal: float = 100.0
     
-    # Диапазон надёжных измерений
-    min_reliable_distance: float = 0.5
-    max_reliable_distance: float = 3.0
+    # === Калибровочные коэффициенты (эмпирические, GoPro 12 Wide 4K) ===
+    # Формула: d = A * k^B, где k - удельный прирост размера (%/м)
+    distance_coef_A: float = 24.68
+    distance_coef_B: float = -0.644
     
-    @property
-    def K(self) -> float:
-        """Коэффициент K = k / эталонный_размер."""
-        return self.k / 0.066  # ≈ 2345
+    # Формула: p = C * d^D, где p - px/мм, d - дистанция (м)
+    pixel_calib_C: float = 2.432
+    pixel_calib_D: float = -1.0334
+    
+    # Диапазон надёжных измерений (по SNR анализу)
+    min_reliable_distance: float = 0.3   # ближе - слишком крупно
+    max_reliable_distance: float = 3.0   # дальше - шум > сигнал
     
     @property
     def pixels_per_degree(self) -> float:
@@ -69,26 +71,6 @@ class CameraCalibration:
     @property
     def frame_center(self) -> Tuple[float, float]:
         return self.frame_width / 2, self.frame_height / 2
-    
-    def get_distortion_correction(self, x: float, y: float) -> float:
-        """
-        Вычисляет коэффициент коррекции дисторсии для точки (x, y).
-        
-        Fisheye растягивает объекты радиально от центра.
-        Возвращает коэффициент, на который нужно ДЕЛИТЬ измеренный размер.
-        """
-        cx, cy = self.frame_center
-        
-        # Масштабируем для текущего разрешения относительно 4K
-        scale = self.frame_width / 1920.0
-        r_max_scaled = self.distortion_r_max / 2.0 * scale  # для HD
-        
-        dist = np.sqrt((x - cx)**2 + (y - cy)**2)
-        r = dist / r_max_scaled
-        r = min(r, 1.5)  # ограничиваем для экстраполяции
-        
-        correction = 1 + self.distortion_a * r**2 + self.distortion_b * r**4
-        return correction
 
 
 @dataclass
@@ -104,22 +86,37 @@ class FOEResult:
 
 @dataclass
 class TrackSizeEstimate:
-    """Результат оценки размера объекта по треку."""
+    """
+    Результат оценки размера объекта по треку.
+    
+    Метод расчёта по формулам научрука:
+    1. k = (Δpixels/pixels₁) / Δdepth_camera  - удельный прирост размера для каждой пары
+    2. d = 24.68 * |k|^(-0.644)               - дистанция до объекта (м)
+    3. p = 2.432 * d^(-1.0334)                - калибровка px/мм
+    4. size = pixels_max / p                  - размер объекта по макс. кадру (мм)
+    5. object_depth = camera_depth + distance - глубина объекта (камера смотрит вниз)
+    """
     track_id: int
     class_name: str
-    real_size_m: float
-    real_size_cm: float
-    distance_at_max_size: float
-    object_depth_m: float
-    camera_depth_at_max: float
-    max_size_frame: int
-    max_size_pixels: float
-    confidence: float
-    method: str  # 'regression', 'reference', 'typical'
-    n_points_used: int
-    fit_r_squared: Optional[float]
+    real_size_mm: float            # Размер в миллиметрах
+    real_size_cm: float            # Размер в сантиметрах
+    distance_m: float              # Дистанция до объекта на момент max размера (м)
+    object_depth_m: float          # Глубина объекта в воде (м)
+    first_frame: int               # Кадр с макс. размером (переименовать в max_frame)
+    first_size_pixels: float       # Макс. размер в пикселях (переименовать в max_size_pixels)
+    camera_depth_first: float      # Глубина камеры на кадре с макс. размером (м)
+    k_mean: float                  # Средний k по всем парам (%/м)
+    k_std: float                   # Стд k (%/м)
+    pixel_calibration: float       # Калибровка px/мм на момент max размера
+    confidence: float              # Уверенность оценки (0-1)
+    method: str                    # 'k_method', 'typical'
+    n_points_used: int             # Количество пар для расчёта k
     warnings: List[str] = field(default_factory=list)
 
+
+# =============================================================================
+# FOE (Focus of Expansion) - оценка наклона камеры
+# =============================================================================
 
 def estimate_foe(
     points: np.ndarray,
@@ -133,16 +130,6 @@ def estimate_foe(
     
     При малом движении камеры FOE уходит в бесконечность, что даёт
     нефизичные значения наклона. Фильтруем такие случаи.
-    
-    Args:
-        points: координаты точек (N, 2)
-        vectors: векторы смещения (N, 2)
-        frame_size: размер кадра (width, height)
-        min_vector_length: минимальная длина вектора для учёта
-        max_tilt_deg: максимальный допустимый наклон (градусы)
-    
-    Returns:
-        FOEResult с оценкой FOE и наклона
     """
     width, height = frame_size
     cx, cy = width / 2, height / 2
@@ -167,13 +154,10 @@ def estimate_foe(
     foe_x, foe_y = result.x
     confidence = 1 - result.fun
     
-    # Вычисляем наклон
     pixels_per_degree = width / 100.0
     tilt_h = (foe_x - cx) / pixels_per_degree
     tilt_v = (foe_y - cy) / pixels_per_degree
     
-    # Проверяем на выбросы: если FOE слишком далеко от кадра или наклон нереален
-    # FOE дальше 3 диагоналей от центра — признак малого движения
     diagonal = np.sqrt(width**2 + height**2)
     foe_distance = np.sqrt((foe_x - cx)**2 + (foe_y - cy)**2)
     max_foe_distance = 3 * diagonal
@@ -187,96 +171,169 @@ def estimate_foe(
     )
     
     if is_outlier:
-        # Возвращаем центр кадра с нулевым наклоном и низкой уверенностью
-        # Это означает "камера не двигалась достаточно для определения наклона"
-        return FOEResult(
-            foe_x=cx,
-            foe_y=cy,
-            tilt_horizontal=0.0,
-            tilt_vertical=0.0,
-            confidence=0.0,  # Нулевая уверенность — признак невалидного результата
-            n_vectors=len(points_filt)
-        )
+        return FOEResult(cx, cy, 0.0, 0.0, 0.0, len(points_filt))
     
     return FOEResult(foe_x, foe_y, tilt_h, tilt_v, confidence, len(points_filt))
 
 
-def _get_bbox_size_pixels(
-    row: pd.Series, 
-    frame_width: int, 
-    frame_height: int,
-    calibration: CameraCalibration,
-    apply_distortion_correction: bool = True
-) -> float:
+# =============================================================================
+# Вспомогательные функции для расчёта размеров
+# =============================================================================
+
+def _get_bbox_size_pixels(row: pd.Series, frame_width: int, frame_height: int) -> float:
     """
-    Получает размер bbox в пикселях с коррекцией дисторсии.
-    
-    Берёт максимум из ширины и высоты (для объектов которые могут поворачиваться).
-    Применяет коррекцию fisheye дисторсии по позиции в кадре.
+    Получает размер bbox в пикселях.
+    Берёт максимум из ширины и высоты.
+    Калибровка выполнена без коррекции дисторсии.
     """
     w_pix = row['width'] * frame_width
     h_pix = row['height'] * frame_height
-    size_pix = max(w_pix, h_pix)
-    
-    if apply_distortion_correction:
-        # Позиция центра bbox
-        x = row['x_center'] * frame_width
-        y = row['y_center'] * frame_height
-        
-        correction = calibration.get_distortion_correction(x, y)
-        size_pix = size_pix / correction
-    
-    return size_pix
+    return max(w_pix, h_pix)
 
 
-def _find_max_size_frame(
+def _calculate_k_for_pair(
+    pixels1: float, pixels2: float, 
+    depth1: float, depth2: float
+) -> Optional[float]:
+    """
+    Вычисляет удельный прирост k для пары точек.
+    
+    k = (Δpixels / pixels₁) / Δd
+    
+    Возвращает k в долях/м. Для %/м умножить на 100.
+    """
+    delta_d = depth2 - depth1
+    
+    if abs(delta_d) < 0.05:  # меньше 5 см - шум
+        return None
+    
+    if pixels1 <= 0:
+        return None
+    
+    delta_pixels = pixels2 - pixels1
+    relative_change = delta_pixels / pixels1
+    k = relative_change / delta_d
+    
+    return k
+
+
+def _calculate_distance_from_k(k_abs: float, calibration: CameraCalibration) -> float:
+    """
+    Вычисляет дистанцию до объекта по удельному приросту.
+    d = A * k^B
+    
+    Args:
+        k_abs: модуль k в %/м (NOT долях!)
+    """
+    A = calibration.distance_coef_A
+    B = calibration.distance_coef_B
+    k_abs = max(k_abs, 1.0)  # минимум 1%/м
+    return A * (k_abs ** B)
+
+
+def _calculate_pixel_calibration(distance: float, calibration: CameraCalibration) -> float:
+    """
+    Вычисляет калибровку px/мм для данной дистанции.
+    p = C * d^D
+    """
+    C = calibration.pixel_calib_C
+    D = calibration.pixel_calib_D
+    distance = max(distance, 0.1)
+    return C * (distance ** D)
+
+
+def _calculate_size_mm(pixels: float, pixel_calibration: float) -> float:
+    """Вычисляет размер объекта в миллиметрах: size_mm = pixels / p"""
+    if pixel_calibration <= 0:
+        return 0.0
+    return pixels / pixel_calibration
+
+
+def _get_first_frame_data(
     track_df: pd.DataFrame, 
     frame_width: int, 
-    frame_height: int,
-    calibration: CameraCalibration
+    frame_height: int
+) -> Tuple[int, pd.Series, float]:
+    """Получает данные первого кадра трека."""
+    track_df = track_df.copy()
+    track_df['size_pix'] = track_df.apply(
+        lambda r: _get_bbox_size_pixels(r, frame_width, frame_height), axis=1
+    )
+    first_idx = track_df['frame'].idxmin()
+    first_row = track_df.loc[first_idx]
+    return first_idx, first_row, first_row['size_pix']
+
+
+# =============================================================================
+# Основные функции оценки размеров
+# =============================================================================
+
+def _find_max_size_frame(
+    track_df: pd.DataFrame,
+    frame_width: int,
+    frame_height: int
 ) -> Tuple[int, pd.Series, float]:
     """
     Находит кадр с максимальным размером объекта.
     
-    Исключает последние кадры, где размер может падать из-за выхода за границы.
-    Возвращает (индекс, строку, размер_в_пикселях).
+    Логика: из последних 20% трека берём последний кадр,
+    где объект ещё увеличивается (до начала выхода за границы кадра).
     """
     track_df = track_df.copy()
     track_df['size_pix'] = track_df.apply(
-        lambda r: _get_bbox_size_pixels(r, frame_width, frame_height, calibration), 
-        axis=1
+        lambda r: _get_bbox_size_pixels(r, frame_width, frame_height), axis=1
     )
-    
-    max_idx = track_df['size_pix'].idxmax()
-    max_pos = track_df.index.get_loc(max_idx)
+    track_df = track_df.sort_values('frame').reset_index(drop=True)
     
     n_points = len(track_df)
-    if n_points > 3 and max_pos >= n_points - 2:
-        cutoff = int(n_points * 0.8)
-        if cutoff > 0:
-            track_subset = track_df.iloc[:cutoff]
-            if len(track_subset) > 0:
-                max_idx = track_subset['size_pix'].idxmax()
     
-    max_row = track_df.loc[max_idx]
-    max_size = max_row['size_pix']
+    if n_points < 3:
+        # Слишком короткий трек — просто берём максимум
+        max_idx = track_df['size_pix'].idxmax()
+        max_row = track_df.loc[max_idx]
+        return max_idx, max_row, max_row['size_pix']
     
-    return max_idx, max_row, max_size
+    # Последние 20% трека
+    start_idx = int(n_points * 0.8)
+    last_20_pct = track_df.iloc[start_idx:]
+    
+    # Ищем последний кадр, где размер ещё растёт
+    # (следующий кадр больше или равен текущему)
+    best_idx = None
+    
+    for i in range(len(last_20_pct) - 1):
+        current_size = last_20_pct.iloc[i]['size_pix']
+        next_size = last_20_pct.iloc[i + 1]['size_pix']
+        
+        if next_size >= current_size:
+            # Размер ещё растёт — запоминаем следующий кадр
+            best_idx = last_20_pct.index[i + 1]
+    
+    if best_idx is None:
+        # Размер везде уменьшается — берём первый кадр из последних 20%
+        best_idx = last_20_pct.index[0]
+    
+    max_row = track_df.loc[best_idx]
+    return best_idx, max_row, max_row['size_pix']
 
 
-def estimate_size_from_track_regression(
+def estimate_size_by_k_method(
     track_df: pd.DataFrame,
     calibration: CameraCalibration,
-    camera_tilt_deg: float = 0.0,
-    min_depth_change: float = 0.3,
-    min_points: int = 5,
-    min_r_squared: float = 0.5,
-    min_size_change_ratio: float = 0.3
+    min_depth_change: float = 0.1,
+    min_points: int = 3
 ) -> Optional[TrackSizeEstimate]:
     """
-    Оценивает размер объекта методом линейной регрессии 1/size vs depth.
+    Оценивает размер объекта методом удельного прироста k.
     
-    Возвращает None если данных недостаточно или фит плохой.
+    Алгоритм:
+    1. Для каждой пары соседних точек вычисляем k = (Δpx/px₁) / Δdepth_camera
+    2. По k вычисляем дистанцию: d = 24.68 × |k|^(-0.644)
+    3. Находим кадр с максимальным размером (объект целиком в кадре)
+    4. Берём дистанцию от ближайшей пары к этому кадру
+    5. Калибровка пикселя: p = 2.432 × d^(-1.0334)
+    6. Размер: size_mm = pixels_max / p
+    7. Глубина объекта = глубина камеры + дистанция (камера смотрит вниз)
     """
     track_id = track_df['track_id'].iloc[0]
     class_name = track_df['class_name'].iloc[0]
@@ -292,189 +349,154 @@ def estimate_size_from_track_regression(
     if len(valid_df) < min_points:
         return None
     
-    depth_change = valid_df['depth_m'].max() - valid_df['depth_m'].min()
-    if depth_change < min_depth_change:
-        return None
-    
     frame_width = calibration.frame_width
     frame_height = calibration.frame_height
     
     valid_df['size_pix'] = valid_df.apply(
-        lambda r: _get_bbox_size_pixels(r, frame_width, frame_height, calibration),
-        axis=1
+        lambda r: _get_bbox_size_pixels(r, frame_width, frame_height), axis=1
     )
+    valid_df = valid_df.sort_values('frame').reset_index(drop=True)
     
-    # Проверка изменения размера
-    size_min = valid_df['size_pix'].min()
-    size_max = valid_df['size_pix'].max()
-    if size_max <= 0:
-        return None
-    size_change_ratio = (size_max - size_min) / size_max
-    
-    if size_change_ratio < min_size_change_ratio:
+    # Проверяем достаточное изменение глубины
+    depth_change = valid_df['depth_m'].max() - valid_df['depth_m'].min()
+    if depth_change < min_depth_change:
         return None
     
-    # Фильтр выбросов
-    size_mean = valid_df['size_pix'].mean()
-    size_std = valid_df['size_pix'].std()
-    if size_std > 0:
-        valid_df = valid_df[
-            (valid_df['size_pix'] > size_mean - 3*size_std) &
-            (valid_df['size_pix'] < size_mean + 3*size_std)
-        ]
+    # Вычисляем k и дистанцию для каждой пары соседних точек
+    pair_data = []  # список (frame_mid, k, distance)
     
-    if len(valid_df) < min_points:
+    for i in range(len(valid_df) - 1):
+        row1 = valid_df.iloc[i]
+        row2 = valid_df.iloc[i + 1]
+        
+        pixels1 = row1['size_pix']
+        pixels2 = row2['size_pix']
+        depth1 = row1['depth_m']
+        depth2 = row2['depth_m']
+        
+        delta_depth = depth2 - depth1
+        
+        # Пропускаем пары с малым изменением глубины
+        if abs(delta_depth) < 0.05:
+            continue
+        
+        if pixels1 <= 0:
+            continue
+        
+        delta_pixels = pixels2 - pixels1
+        k = (delta_pixels / pixels1) / delta_depth  # доли/м
+        
+        # k должен быть положительным (размер растёт при погружении)
+        # Если k <= 0, значит объект удаляется или данные шумные
+        if k <= 0:
+            continue
+        
+        k_percent = k * 100  # в %/м
+        distance = _calculate_distance_from_k(k_percent, calibration)
+        
+        # Средний кадр пары
+        frame_mid = (row1['frame'] + row2['frame']) / 2
+        
+        pair_data.append({
+            'frame_mid': frame_mid,
+            'k': k,
+            'k_percent': k_percent,
+            'distance': distance,
+            'depth_camera': (depth1 + depth2) / 2
+        })
+    
+    if len(pair_data) == 0:
         return None
     
-    camera_depths = valid_df['depth_m'].values
-    sizes_pix = np.maximum(valid_df['size_pix'].values, 1.0)
-    inv_sizes = 1.0 / sizes_pix
+    # Находим кадр с максимальным размером
+    max_idx, max_row, max_size_pix = _find_max_size_frame(valid_df, frame_width, frame_height)
+    max_frame = int(max_row['frame'])
+    camera_depth_max = max_row['depth_m']
     
-    slope, intercept, r_value, _, _ = linregress(camera_depths, inv_sizes)
-    r_squared = r_value ** 2
+    # Находим ближайшую пару к кадру с максимальным размером
+    closest_pair = min(pair_data, key=lambda p: abs(p['frame_mid'] - max_frame))
     
-    if r_squared < min_r_squared:
-        return None
+    # Дистанция на момент максимального размера
+    # Корректируем по разнице глубин камеры
+    depth_diff = camera_depth_max - closest_pair['depth_camera']
+    distance_at_max = closest_pair['distance'] - depth_diff  # камера приблизилась
+    distance_at_max = max(distance_at_max, 0.1)  # защита от отрицательных
     
-    if abs(slope) < 1e-10:
-        return None
+    # Калибровка пикселя для этой дистанции
+    pixel_calib = _calculate_pixel_calibration(distance_at_max, calibration)
     
-    K = calibration.K
+    # Размер объекта
+    size_mm = _calculate_size_mm(max_size_pix, pixel_calib)
+    size_cm = size_mm / 10.0
     
-    # Коррекция на наклон камеры
-    tilt_correction = np.cos(np.radians(abs(camera_tilt_deg))) if camera_tilt_deg != 0 else 1.0
+    # Глубина объекта = глубина камеры + дистанция (камера смотрит вниз)
+    object_depth = camera_depth_max + distance_at_max
     
-    real_size = 1.0 / (K * abs(slope))
+    # Статистика k
+    k_values = [p['k_percent'] for p in pair_data]
+    k_mean = np.mean(k_values)
+    k_std = np.std(k_values) if len(k_values) > 1 else 0.0
     
-    if slope < 0:
-        object_depth = intercept * K * real_size
-    else:
-        object_depth = -intercept * K * real_size
-    
-    _, max_row, max_size_pix = _find_max_size_frame(valid_df, frame_width, frame_height, calibration)
-    camera_depth_at_max = max_row['depth_m']
-    max_frame = max_row['frame']
-    
-    vertical_distance = abs(object_depth - camera_depth_at_max)
-    distance_at_max = vertical_distance / tilt_correction if tilt_correction > 0 else vertical_distance
-    
+    # Оценка уверенности
     warnings_list = []
-    if real_size < 0.005:
-        warnings_list.append("size_too_small")
-    if real_size > 1.0:
-        warnings_list.append("size_too_large")
+    confidence = 1.0
+    
     if distance_at_max > calibration.max_reliable_distance:
-        warnings_list.append("distance_above_max")
+        warnings_list.append("distance_above_reliable")
+        confidence = 0.3
+    elif distance_at_max > 2.0:
+        warnings_list.append("distance_marginal")
+        confidence = 0.6
     
-    return TrackSizeEstimate(
-        track_id=track_id,
-        class_name=class_name,
-        real_size_m=round(real_size, 4),
-        real_size_cm=round(real_size * 100, 2),
-        distance_at_max_size=round(distance_at_max, 3),
-        object_depth_m=round(object_depth, 2),
-        camera_depth_at_max=round(camera_depth_at_max, 2),
-        max_size_frame=int(max_frame),
-        max_size_pixels=round(max_size_pix, 1),
-        confidence=round(r_squared, 3),
-        method="regression",
-        n_points_used=len(valid_df),
-        fit_r_squared=round(r_squared, 4),
-        warnings=warnings_list
-    )
-
-
-def estimate_size_from_reference(
-    track_df: pd.DataFrame,
-    calibration: CameraCalibration,
-    reference_estimates: List[TrackSizeEstimate],
-    camera_tilt_deg: float = 0.0
-) -> Optional[TrackSizeEstimate]:
-    """
-    Оценивает размер объекта по референсным данным от хороших треков того же класса.
+    if distance_at_max < calibration.min_reliable_distance:
+        warnings_list.append("distance_too_close")
+        confidence *= 0.8
     
-    Находит ближайшие по глубине хорошие треки и интерполирует дистанцию.
-    """
-    track_id = track_df['track_id'].iloc[0]
-    class_name = track_df['class_name'].iloc[0]
+    # Проверка стабильности k
+    if k_std > 0 and k_mean > 0:
+        cv = k_std / k_mean  # коэффициент вариации
+        if cv > 0.5:
+            warnings_list.append("k_unstable")
+            confidence *= 0.7
     
-    if class_name in SKIP_SIZE_CLASSES:
-        return None
-    
-    # Находим референсные треки того же класса
-    same_class_refs = [e for e in reference_estimates if e.class_name == class_name]
-    
-    if not same_class_refs:
-        return None
-    
-    frame_width = calibration.frame_width
-    frame_height = calibration.frame_height
-    
-    # Находим максимальный размер и глубину для текущего трека
-    valid_df = track_df[track_df['depth_m'].notna()].copy()
-    if len(valid_df) == 0:
-        return None
-    
-    _, max_row, max_size_pix = _find_max_size_frame(valid_df, frame_width, frame_height, calibration)
-    camera_depth_at_max = max_row['depth_m']
-    max_frame = max_row['frame']
-    
-    # Находим ближайший референсный трек по глубине камеры
-    closest_ref = min(same_class_refs, key=lambda e: abs(e.camera_depth_at_max - camera_depth_at_max))
-    
-    # Оцениваем дистанцию как среднюю от референсных
-    ref_distances = [e.distance_at_max_size for e in same_class_refs]
-    estimated_distance = np.mean(ref_distances)
-    
-    # Коррекция на наклон
-    tilt_correction = np.cos(np.radians(abs(camera_tilt_deg))) if camera_tilt_deg != 0 else 1.0
-    
-    # Вычисляем размер
-    K = calibration.K
-    real_size = max_size_pix * estimated_distance / K
-    
-    # Глубина объекта
-    object_depth = camera_depth_at_max - estimated_distance * tilt_correction
-    
-    # Уверенность ниже чем у регрессии
-    confidence = 0.5
-    
-    warnings_list = ["estimated_from_reference"]
-    
-    # Проверка разумности
     if class_name in TYPICAL_SIZES_CM:
         typical = TYPICAL_SIZES_CM[class_name]
-        if real_size * 100 < typical['min'] * 0.5 or real_size * 100 > typical['max'] * 2:
-            warnings_list.append("size_outside_typical_range")
+        if size_cm < typical['min'] * 0.3 or size_cm > typical['max'] * 3:
+            warnings_list.append("size_outside_typical")
             confidence *= 0.5
+    
+    if size_mm < 5:
+        warnings_list.append("size_too_small")
+    if size_mm > 1000:
+        warnings_list.append("size_too_large")
     
     return TrackSizeEstimate(
         track_id=track_id,
         class_name=class_name,
-        real_size_m=round(real_size, 4),
-        real_size_cm=round(real_size * 100, 2),
-        distance_at_max_size=round(estimated_distance, 3),
+        real_size_mm=round(size_mm, 1),
+        real_size_cm=round(size_cm, 2),
+        distance_m=round(distance_at_max, 3),
         object_depth_m=round(object_depth, 2),
-        camera_depth_at_max=round(camera_depth_at_max, 2),
-        max_size_frame=int(max_frame),
-        max_size_pixels=round(max_size_pix, 1),
+        first_frame=max_frame,
+        first_size_pixels=round(max_size_pix, 1),
+        camera_depth_first=round(camera_depth_max, 2),
+        k_mean=round(k_mean, 2),
+        k_std=round(k_std, 2),
+        pixel_calibration=round(pixel_calib, 4),
         confidence=round(confidence, 3),
-        method="reference",
-        n_points_used=len(valid_df),
-        fit_r_squared=None,
+        method="k_method",
+        n_points_used=len(pair_data),
         warnings=warnings_list
     )
 
 
 def estimate_size_from_typical(
     track_df: pd.DataFrame,
-    calibration: CameraCalibration,
-    camera_tilt_deg: float = 0.0
+    calibration: CameraCalibration
 ) -> Optional[TrackSizeEstimate]:
     """
     Оценивает размер на основе типичных размеров вида.
-    
-    Используется как fallback когда нет ни регрессии, ни референсов.
+    Используется как fallback когда k-метод не работает.
     """
     track_id = track_df['track_id'].iloc[0]
     class_name = track_df['class_name'].iloc[0]
@@ -486,63 +508,61 @@ def estimate_size_from_typical(
         return None
     
     typical = TYPICAL_SIZES_CM[class_name]
+    typical_size_mm = typical['mean'] * 10  # см -> мм
     
     frame_width = calibration.frame_width
     frame_height = calibration.frame_height
     
-    valid_df = track_df[track_df['depth_m'].notna()].copy()
+    valid_df = track_df[track_df['depth_m'].notna()].copy() if 'depth_m' in track_df.columns else track_df.copy()
     if len(valid_df) == 0:
         valid_df = track_df.copy()
     
-    _, max_row, max_size_pix = _find_max_size_frame(
-        valid_df if len(valid_df) > 0 else track_df, 
-        frame_width, frame_height, calibration
-    )
+    _, first_row, first_size_pix = _get_first_frame_data(valid_df, frame_width, frame_height)
     
-    camera_depth_at_max = max_row.get('depth_m', np.nan)
-    max_frame = max_row['frame']
+    camera_depth_first = first_row.get('depth_m', np.nan)
+    first_frame = int(first_row['frame'])
     
-    # Используем средний типичный размер
-    typical_size_m = typical['mean'] / 100.0
+    # Обратная калибровка: из типичного размера и пикселей находим p, затем d
+    pixel_calib = first_size_pix / typical_size_mm
     
-    # Вычисляем дистанцию исходя из типичного размера
-    K = calibration.K
-    estimated_distance = typical_size_m * K / max_size_pix
+    C = calibration.pixel_calib_C
+    D = calibration.pixel_calib_D
     
-    # Ограничиваем разумными пределами
-    estimated_distance = np.clip(estimated_distance, 0.2, 5.0)
+    if pixel_calib > 0 and C > 0:
+        distance = (pixel_calib / C) ** (1.0 / D)
+    else:
+        distance = 1.5
     
-    # Глубина объекта
-    tilt_correction = np.cos(np.radians(abs(camera_tilt_deg))) if camera_tilt_deg != 0 else 1.0
+    distance = np.clip(distance, 0.2, 5.0)
     
-    if pd.notna(camera_depth_at_max):
-        object_depth = camera_depth_at_max - estimated_distance * tilt_correction
+    if pd.notna(camera_depth_first):
+        object_depth = camera_depth_first - distance
     else:
         object_depth = np.nan
-    
-    # Пересчитываем размер для консистентности
-    real_size = max_size_pix * estimated_distance / K
-    
-    confidence = 0.3  # низкая уверенность
-    warnings_list = ["estimated_from_typical_size"]
     
     return TrackSizeEstimate(
         track_id=track_id,
         class_name=class_name,
-        real_size_m=round(real_size, 4),
-        real_size_cm=round(real_size * 100, 2),
-        distance_at_max_size=round(estimated_distance, 3),
+        real_size_mm=round(typical_size_mm, 1),
+        real_size_cm=round(typical['mean'], 2),
+        distance_m=round(distance, 3),
         object_depth_m=round(object_depth, 2) if pd.notna(object_depth) else None,
-        camera_depth_at_max=round(camera_depth_at_max, 2) if pd.notna(camera_depth_at_max) else None,
-        max_size_frame=int(max_frame),
-        max_size_pixels=round(max_size_pix, 1),
-        confidence=round(confidence, 3),
+        first_frame=first_frame,
+        first_size_pixels=round(first_size_pix, 1),
+        camera_depth_first=round(camera_depth_first, 2) if pd.notna(camera_depth_first) else None,
+        k_mean=0.0,
+        k_std=0.0,
+        pixel_calibration=round(pixel_calib, 4),
+        confidence=0.2,
         method="typical",
         n_points_used=len(valid_df),
-        fit_r_squared=None,
-        warnings=warnings_list
+        warnings=["estimated_from_typical_size"]
     )
 
+
+# =============================================================================
+# Загрузка данных геометрии
+# =============================================================================
 
 def load_geometry_data(geometry_csv: str) -> Optional[pd.DataFrame]:
     """Загружает данные о наклоне камеры."""
@@ -551,46 +571,9 @@ def load_geometry_data(geometry_csv: str) -> Optional[pd.DataFrame]:
     return None
 
 
-def get_camera_tilt_for_frame(
-    geometry_df: Optional[pd.DataFrame], 
-    frame: int,
-    min_confidence: float = 0.5
-) -> float:
-    """
-    Получает наклон камеры для заданного кадра.
-    
-    Игнорирует записи с низкой уверенностью (выбросы).
-    
-    Args:
-        geometry_df: DataFrame с данными геометрии
-        frame: номер кадра
-        min_confidence: минимальная уверенность для учёта записи
-    
-    Returns:
-        Общий наклон камеры в градусах
-    """
-    if geometry_df is None or len(geometry_df) == 0:
-        return 0.0
-    
-    # Фильтруем невалидные записи (выбросы)
-    if 'confidence' in geometry_df.columns:
-        valid_df = geometry_df[geometry_df['confidence'] >= min_confidence]
-    else:
-        valid_df = geometry_df
-    
-    if len(valid_df) == 0:
-        return 0.0
-    
-    # Находим ближайший валидный кадр
-    idx = (valid_df['frame_end'] - frame).abs().argmin()
-    row = valid_df.iloc[idx]
-    
-    tilt_h = row.get('tilt_horizontal_deg', 0)
-    tilt_v = row.get('tilt_vertical_deg', 0)
-    
-    total_tilt = np.sqrt(tilt_h**2 + tilt_v**2)
-    return total_tilt
-
+# =============================================================================
+# Основная функция обработки детекций
+# =============================================================================
 
 def process_detections_with_size(
     detections_csv: str,
@@ -598,21 +581,18 @@ def process_detections_with_size(
     tracks_output_csv: Optional[str] = None,
     geometry_csv: Optional[str] = None,
     calibration: CameraCalibration = None,
-    frame_width: int = 1920,
-    frame_height: int = 1080,
-    min_depth_change: float = 0.3,
+    frame_width: int = 3840,
+    frame_height: int = 2160,
+    min_depth_change: float = 0.1,
     min_track_points: int = 3,
-    min_r_squared: float = 0.5,
-    min_size_change_ratio: float = 0.3,
     verbose: bool = True
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Обрабатывает детекции и добавляет оценки размеров.
     
     Стратегия:
-    1. Сначала пытаемся регрессию для треков с хорошими данными
-    2. Для остальных — оценка по референсам от хороших треков
-    3. Fallback — оценка по типичным размерам вида
+    1. Сначала пытаемся k-метод для треков с хорошими данными
+    2. Fallback — оценка по типичным размерам вида
     """
     if calibration is None:
         calibration = CameraCalibration()
@@ -621,37 +601,19 @@ def process_detections_with_size(
     
     df = pd.read_csv(detections_csv)
     
-    geometry_df = load_geometry_data(geometry_csv)
-    
     if verbose:
         print(f"Загружено детекций: {len(df)}")
         print(f"Уникальных треков: {df['track_id'].nunique()}")
-        if geometry_df is not None:
-            # Фильтруем выбросы (confidence >= 0.5)
-            if 'confidence' in geometry_df.columns:
-                valid_geom = geometry_df[geometry_df['confidence'] >= 0.5]
-            else:
-                valid_geom = geometry_df
-            
-            if len(valid_geom) > 0:
-                mean_tilt = np.sqrt(
-                    valid_geom['tilt_horizontal_deg'].mean()**2 + 
-                    valid_geom['tilt_vertical_deg'].mean()**2
-                )
-                n_outliers = len(geometry_df) - len(valid_geom)
-                outlier_info = f" (отфильтровано выбросов: {n_outliers})" if n_outliers > 0 else ""
-                print(f"Средний наклон камеры: {mean_tilt:.1f}°{outlier_info}")
-            else:
-                print("Средний наклон камеры: нет валидных данных")
+        print(f"Разрешение: {frame_width}x{frame_height}")
     
     required_cols = ['track_id', 'frame', 'width', 'height', 'class_name', 'x_center', 'y_center']
     missing = [c for c in required_cols if c not in df.columns]
     if missing:
         raise ValueError(f"Отсутствуют колонки: {missing}")
     
-    # Этап 1: регрессия для хороших треков
-    regression_estimates = []
-    tracks_for_reference = []
+    # Этап 1: k-метод для хороших треков
+    k_method_estimates = []
+    tracks_for_typical = []
     
     for track_id, track_df in df.groupby('track_id'):
         if pd.isna(track_id):
@@ -661,50 +623,26 @@ def process_detections_with_size(
         if class_name in SKIP_SIZE_CLASSES:
             continue
         
-        mean_frame = track_df['frame'].mean()
-        camera_tilt = get_camera_tilt_for_frame(geometry_df, mean_frame)
-        
-        estimate = estimate_size_from_track_regression(
+        estimate = estimate_size_by_k_method(
             track_df, calibration,
-            camera_tilt_deg=camera_tilt,
             min_depth_change=min_depth_change,
-            min_points=min_track_points,
-            min_r_squared=min_r_squared,
-            min_size_change_ratio=min_size_change_ratio
+            min_points=min_track_points
         )
         
         if estimate is not None:
-            regression_estimates.append(estimate)
+            k_method_estimates.append(estimate)
         else:
-            tracks_for_reference.append((track_id, track_df, camera_tilt))
+            tracks_for_typical.append((track_id, track_df))
     
     if verbose:
-        print(f"\nТреков с регрессией: {len(regression_estimates)}")
-        print(f"Треков для референсной оценки: {len(tracks_for_reference)}")
+        print(f"\nТреков с k-методом: {len(k_method_estimates)}")
+        print(f"Треков для типичной оценки: {len(tracks_for_typical)}")
     
-    # Этап 2: референсная оценка
-    reference_estimates = []
-    tracks_for_typical = []
-    
-    for track_id, track_df, camera_tilt in tracks_for_reference:
-        estimate = estimate_size_from_reference(
-            track_df, calibration, regression_estimates, camera_tilt
-        )
-        
-        if estimate is not None:
-            reference_estimates.append(estimate)
-        else:
-            tracks_for_typical.append((track_id, track_df, camera_tilt))
-    
-    if verbose:
-        print(f"Треков с референсной оценкой: {len(reference_estimates)}")
-    
-    # Этап 3: оценка по типичным размерам
+    # Этап 2: оценка по типичным размерам
     typical_estimates = []
     
-    for track_id, track_df, camera_tilt in tracks_for_typical:
-        estimate = estimate_size_from_typical(track_df, calibration, camera_tilt)
-        
+    for track_id, track_df in tracks_for_typical:
+        estimate = estimate_size_from_typical(track_df, calibration)
         if estimate is not None:
             typical_estimates.append(estimate)
     
@@ -712,7 +650,7 @@ def process_detections_with_size(
         print(f"Треков с типичной оценкой: {len(typical_estimates)}")
     
     # Объединяем все оценки
-    all_estimates = regression_estimates + reference_estimates + typical_estimates
+    all_estimates = k_method_estimates + typical_estimates
     
     if verbose:
         print(f"\nВсего треков с оценкой: {len(all_estimates)}")
@@ -723,17 +661,19 @@ def process_detections_with_size(
             {
                 'track_id': e.track_id,
                 'class_name': e.class_name,
+                'real_size_mm': e.real_size_mm,
                 'real_size_cm': e.real_size_cm,
-                'real_size_m': e.real_size_m,
+                'distance_m': e.distance_m,
                 'object_depth_m': e.object_depth_m,
-                'distance_at_max_m': e.distance_at_max_size,
-                'camera_depth_at_max_m': e.camera_depth_at_max,
-                'max_size_frame': e.max_size_frame,
-                'max_size_pixels': e.max_size_pixels,
+                'first_frame': e.first_frame,
+                'first_size_pixels': e.first_size_pixels,
+                'camera_depth_first_m': e.camera_depth_first,
+                'k_mean_pct_per_m': e.k_mean,
+                'k_std_pct_per_m': e.k_std,
+                'pixel_calibration': e.pixel_calibration,
                 'confidence': e.confidence,
                 'method': e.method,
                 'n_points': e.n_points_used,
-                'fit_r_squared': e.fit_r_squared,
                 'warnings': ';'.join(e.warnings) if e.warnings else ''
             }
             for e in all_estimates
@@ -744,8 +684,8 @@ def process_detections_with_size(
     # Добавляем к детекциям
     size_map = {e.track_id: e for e in all_estimates}
     
+    df['estimated_size_mm'] = None
     df['estimated_size_cm'] = None
-    df['estimated_size_m'] = None
     df['object_depth_m'] = None
     df['distance_to_object_m'] = None
     df['size_confidence'] = None
@@ -755,8 +695,8 @@ def process_detections_with_size(
         track_id = row['track_id']
         if pd.notna(track_id) and track_id in size_map:
             est = size_map[track_id]
+            df.at[idx, 'estimated_size_mm'] = est.real_size_mm
             df.at[idx, 'estimated_size_cm'] = est.real_size_cm
-            df.at[idx, 'estimated_size_m'] = est.real_size_m
             df.at[idx, 'object_depth_m'] = est.object_depth_m
             df.at[idx, 'size_confidence'] = est.confidence
             df.at[idx, 'size_method'] = est.method
@@ -798,6 +738,10 @@ def process_detections_with_size(
     
     return df, tracks_df
 
+
+# =============================================================================
+# Обработка геометрии видео (FOE)
+# =============================================================================
 
 def process_video_geometry(
     video_path: str,
@@ -889,7 +833,6 @@ def process_video_geometry(
             print(f"Сохранено: {output_csv}")
     
     if verbose and len(df) > 0:
-        # Фильтруем выбросы
         if 'confidence' in df.columns:
             valid_df = df[df['confidence'] >= 0.5]
         else:
@@ -903,81 +846,58 @@ def process_video_geometry(
             n_outliers = len(df) - len(valid_df)
             outlier_info = f" (отфильтровано выбросов: {n_outliers})" if n_outliers > 0 else ""
             print(f"Средний наклон: {total_tilt:.1f}°{outlier_info}")
-        else:
-            print("Средний наклон: нет валидных данных")
     
     return df
 
 
+# =============================================================================
+# Расчёт объёма (будет в следующей части)
+# =============================================================================
+
 @dataclass
 class VolumeEstimate:
     """Результат оценки осмотренного объёма воды."""
-    total_volume_m3: float           # Общий осмотренный объём (м³)
-    frustum_volume_m3: float         # Объём начального frustum (м³)
-    swept_volume_m3: float           # Объём пройденных слоёв (м³)
-    depth_range_m: Tuple[float, float]  # Диапазон глубин (мин, макс)
-    depth_traversed_m: float         # Пройденная глубина (м)
-    detection_distance_m: float      # Эффективная дистанция обнаружения (м)
-    near_distance_m: float           # Ближняя граница (м)
-    cross_section_area_m2: float     # Площадь сечения на дальней границе (м²)
-    fov_horizontal_deg: float        # Горизонтальный угол обзора
-    fov_vertical_deg: float          # Вертикальный угол обзора
-    duration_s: float                # Длительность записи (с)
-    descent_rate_m_s: float          # Скорость погружения (м/с)
-    density_by_class: Dict[str, float]  # Плотность по классам (особей/м³)
-    counts_by_class: Dict[str, int]  # Количество особей по классам
+    total_volume_m3: float
+    frustum_volume_m3: float
+    swept_volume_m3: float
+    depth_range_m: Tuple[float, float]
+    depth_traversed_m: float
+    detection_distance_m: float
+    near_distance_m: float
+    cross_section_area_m2: float
+    fov_horizontal_deg: float
+    fov_vertical_deg: float
+    duration_s: float
+    descent_rate_m_s: float
+    density_by_class: Dict[str, float]
+    counts_by_class: Dict[str, int]
 
 
-# Дистанции обнаружения по умолчанию (из эмпирических данных)
 DEFAULT_DETECTION_DISTANCES = {
-    'Aurelia aurita': 2.0,      # крупная, хорошо заметная
-    'Rhizostoma pulmo': 2.5,    # очень крупная
-    'Mnemiopsis leidyi': 1.0,   # средняя, прозрачная
-    'Beroe ovata': 1.2,         # средняя
-    'Pleurobrachia pileus': 0.5  # мелкая
+    'Aurelia aurita': 2.0,
+    'Rhizostoma pulmo': 2.5,
+    'Mnemiopsis leidyi': 1.0,
+    'Beroe ovata': 1.2,
+    'Pleurobrachia pileus': 0.5
 }
 
 
-def calculate_frustum_volume(
-    d_near: float,
-    d_far: float,
-    fov_h_rad: float,
-    fov_v_rad: float
-) -> float:
-    """
-    Вычисляет объём усечённой пирамиды (frustum).
-    
-    Args:
-        d_near: ближняя граница (м)
-        d_far: дальняя граница (м)
-        fov_h_rad: горизонтальный FOV (радианы)
-        fov_v_rad: вертикальный FOV (радианы)
-    
-    Returns:
-        Объём в м³
-    """
-    # Размеры на ближней границе
+def calculate_frustum_volume(d_near: float, d_far: float, fov_h_rad: float, fov_v_rad: float) -> float:
+    """Вычисляет объём усечённой пирамиды (frustum)."""
     w_near = 2 * d_near * np.tan(fov_h_rad / 2)
     h_near = 2 * d_near * np.tan(fov_v_rad / 2)
     A_near = w_near * h_near
     
-    # Размеры на дальней границе
     w_far = 2 * d_far * np.tan(fov_h_rad / 2)
     h_far = 2 * d_far * np.tan(fov_v_rad / 2)
     A_far = w_far * h_far
     
-    # Объём усечённой пирамиды
     depth = d_far - d_near
     V = (depth / 3) * (A_near + A_far + np.sqrt(A_near * A_far))
-    
     return V
 
 
-def calculate_cross_section_area(
-    distance: float,
-    fov_h_rad: float,
-    fov_v_rad: float
-) -> float:
+def calculate_cross_section_area(distance: float, fov_h_rad: float, fov_v_rad: float) -> float:
     """Вычисляет площадь поперечного сечения на заданной дистанции."""
     w = 2 * distance * np.tan(fov_h_rad / 2)
     h = 2 * distance * np.tan(fov_v_rad / 2)
@@ -990,41 +910,24 @@ def estimate_detection_distance(
     calibration: CameraCalibration,
     reference_class: str = 'Aurelia aurita'
 ) -> float:
-    """
-    Оценивает эффективную дистанцию обнаружения по данным треков.
-    
-    Использует максимальную дистанцию, на которой объекты были обнаружены.
-    
-    Args:
-        tracks_df: DataFrame со статистикой треков (из process_detections_with_size)
-        detections_df: DataFrame с детекциями
-        calibration: параметры калибровки
-        reference_class: референсный класс для оценки (по умолчанию Aurelia)
-    
-    Returns:
-        Эффективная дистанция обнаружения (м)
-    """
+    """Оценивает эффективную дистанцию обнаружения по данным треков."""
     if tracks_df is None or len(tracks_df) == 0:
         return DEFAULT_DETECTION_DISTANCES.get(reference_class, 1.5)
     
-    # Проверяем что это правильный DataFrame с колонкой method
     if 'method' not in tracks_df.columns:
         return DEFAULT_DETECTION_DISTANCES.get(reference_class, 1.5)
     
-    # Фильтруем по референсному классу и методу регрессии (надёжные данные)
     ref_tracks = tracks_df[
         (tracks_df['class_name'] == reference_class) & 
-        (tracks_df['method'] == 'regression')
+        (tracks_df['method'] == 'k_method')
     ]
     
     if len(ref_tracks) == 0:
-        # Пробуем любой класс с регрессией
-        ref_tracks = tracks_df[tracks_df['method'] == 'regression']
+        ref_tracks = tracks_df[tracks_df['method'] == 'k_method']
     
     if len(ref_tracks) == 0:
         return DEFAULT_DETECTION_DISTANCES.get(reference_class, 1.5)
     
-    # Для каждого трека вычисляем максимальную дистанцию
     max_distances = []
     
     for _, track in ref_tracks.iterrows():
@@ -1034,20 +937,17 @@ def estimate_detection_distance(
         if pd.isna(object_depth):
             continue
         
-        # Находим детекции этого трека
         track_detections = detections_df[detections_df['track_id'] == track_id]
         if len(track_detections) == 0:
             continue
         
-        # Минимальная глубина камеры = момент первого обнаружения (самый далёкий)
         min_camera_depth = track_detections['depth_m'].min()
         max_dist = abs(object_depth - min_camera_depth)
         
-        if 0.5 < max_dist < 5.0:  # разумные пределы
+        if 0.5 < max_dist < 5.0:
             max_distances.append(max_dist)
     
     if max_distances:
-        # Берём среднее + 0.5 std для консервативной оценки
         return np.mean(max_distances) + np.std(max_distances) * 0.5
     
     return DEFAULT_DETECTION_DISTANCES.get(reference_class, 1.5)
@@ -1066,37 +966,10 @@ def calculate_surveyed_volume(
     fps: float = 60.0,
     verbose: bool = True
 ) -> VolumeEstimate:
-    """
-    Вычисляет осмотренный объём воды на основе данных погружения.
-    
-    ВАЖНО: Объём считается по ВСЕМУ диапазону погружения, а не только там,
-    где есть детекции. Пустая вода тоже учитывается!
-    
-    Приоритет источников данных о глубине:
-    1. depth_range — если задан явно
-    2. ctd_df — если передан файл CTD
-    3. detections_df — fallback на данные из детекций
-    
-    Args:
-        detections_df: DataFrame с детекциями
-        tracks_df: DataFrame со статистикой треков (опционально)
-        ctd_df: DataFrame с данными CTD (опционально, приоритетный источник)
-        calibration: параметры калибровки
-        fov_horizontal_deg: горизонтальный угол обзора камеры
-        near_distance_m: ближняя граница обнаружения
-        detection_distance_m: дистанция обнаружения (если None — оценивается автоматически)
-        depth_range: (min_depth, max_depth) — явно заданный диапазон глубин
-        total_duration_s: общая длительность записи (если известна)
-        fps: частота кадров видео
-        verbose: выводить детали
-    
-    Returns:
-        VolumeEstimate с результатами
-    """
+    """Вычисляет осмотренный объём воды на основе данных погружения."""
     if calibration is None:
         calibration = CameraCalibration()
     
-    # Параметры поля зрения
     fov_h_deg = fov_horizontal_deg
     aspect_ratio = calibration.frame_width / calibration.frame_height
     fov_v_deg = fov_h_deg / aspect_ratio
@@ -1104,7 +977,6 @@ def calculate_surveyed_volume(
     fov_h_rad = np.radians(fov_h_deg)
     fov_v_rad = np.radians(fov_v_deg)
     
-    # Определяем диапазон глубин (приоритет: явный > CTD > детекции)
     if depth_range is not None:
         depth_min, depth_max = depth_range
         source = "явно задан"
@@ -1122,18 +994,16 @@ def calculate_surveyed_volume(
             raise ValueError("Нет данных о глубине")
         depth_min = depths.min()
         depth_max = depths.max()
-        source = "детекции (ВНИМАНИЕ: может быть неполный диапазон!)"
+        source = "детекции"
     
     depth_traversed = depth_max - depth_min
     
-    # Определяем длительность записи
     if total_duration_s is not None:
         duration = total_duration_s
     elif ctd_df is not None and 'timestamp_s' in ctd_df.columns:
         timestamps = ctd_df['timestamp_s'].dropna()
         duration = timestamps.max() - timestamps.min() if len(timestamps) > 1 else 0
     else:
-        # Оцениваем по номерам кадров
         frames = detections_df['frame'].dropna()
         if len(frames) > 1:
             duration = (frames.max() - frames.min()) / fps
@@ -1143,7 +1013,6 @@ def calculate_surveyed_volume(
     
     descent_rate = depth_traversed / duration if duration > 0 else 0
     
-    # Эффективная дистанция обнаружения
     if detection_distance_m is None:
         d_far = estimate_detection_distance(tracks_df, detections_df, calibration)
     else:
@@ -1153,33 +1022,18 @@ def calculate_surveyed_volume(
     
     if verbose:
         print(f"=== РАСЧЁТ ОСМОТРЕННОГО ОБЪЁМА ===")
-        print(f"Источник данных о глубине: {source}")
+        print(f"Источник: {source}")
         print(f"Диапазон глубин: {depth_min:.1f} - {depth_max:.1f} м")
-        print(f"Пройденная глубина: {depth_traversed:.2f} м")
-        print(f"Длительность: {duration:.1f} с")
-        print(f"Скорость погружения: {descent_rate:.3f} м/с")
-        print(f"FOV: {fov_h_deg:.0f}° × {fov_v_deg:.0f}°")
         print(f"Дистанция обнаружения: {d_near:.1f} - {d_far:.2f} м")
     
-    # Объём начального frustum
     V_frustum = calculate_frustum_volume(d_near, d_far, fov_h_rad, fov_v_rad)
-    
-    # Площадь сечения на дальней границе
     A_far = calculate_cross_section_area(d_far, fov_h_rad, fov_v_rad)
-    
-    # Объём пройденных слоёв
     V_swept = A_far * depth_traversed
-    
-    # Общий объём
     V_total = V_frustum + V_swept
     
     if verbose:
-        print(f"\nОбъём frustum: {V_frustum:.2f} м³")
-        print(f"Площадь сечения: {A_far:.2f} м²")
-        print(f"Объём слоёв: {V_swept:.2f} м³")
-        print(f"ИТОГО: {V_total:.1f} м³")
+        print(f"ИТОГО объём: {V_total:.1f} м³")
     
-    # Подсчёт особей по классам
     counts_by_class = {}
     density_by_class = {}
     
@@ -1187,22 +1041,14 @@ def calculate_surveyed_volume(
         if class_name in SKIP_SIZE_CLASSES:
             continue
         
-        # Считаем уникальные треки
         class_df = detections_df[detections_df['class_name'] == class_name]
         n_tracks = class_df['track_id'].nunique()
         
-        # Если track_id пустой, считаем детекции
         if n_tracks == 0 or class_df['track_id'].isna().all():
             n_tracks = len(class_df)
         
         counts_by_class[class_name] = n_tracks
         density_by_class[class_name] = n_tracks / V_total if V_total > 0 else 0
-    
-    if verbose:
-        print(f"\n=== ПЛОТНОСТЬ ПО КЛАССАМ ===")
-        for class_name, count in counts_by_class.items():
-            density = density_by_class[class_name]
-            print(f"{class_name}: {count} особей, {density:.4f} ос./м³ ({density*1000:.1f} ос./1000м³)")
     
     return VolumeEstimate(
         total_volume_m3=round(V_total, 2),
@@ -1234,32 +1080,11 @@ def process_volume_estimation(
     depth_max: Optional[float] = None,
     total_duration: Optional[float] = None,
     fps: float = 60.0,
-    frame_width: int = 1920,
-    frame_height: int = 1080,
+    frame_width: int = 3840,
+    frame_height: int = 2160,
     verbose: bool = True
 ) -> VolumeEstimate:
-    """
-    Обрабатывает файлы и вычисляет осмотренный объём.
-    
-    Args:
-        detections_csv: путь к CSV с детекциями
-        tracks_csv: путь к CSV со статистикой треков (опционально)
-        ctd_csv: путь к CSV с данными CTD (приоритетный источник глубины)
-        output_csv: путь для сохранения результатов
-        fov_horizontal: горизонтальный FOV камеры (градусы)
-        near_distance: ближняя граница обнаружения (м)
-        detection_distance: дистанция обнаружения (м), None для автоматической
-        depth_min: минимальная глубина (если задана явно)
-        depth_max: максимальная глубина (если задана явно)
-        total_duration: общая длительность записи (с)
-        fps: частота кадров видео
-        frame_width: ширина кадра
-        frame_height: высота кадра
-        verbose: выводить детали
-    
-    Returns:
-        VolumeEstimate
-    """
+    """Обрабатывает файлы и вычисляет осмотренный объём."""
     calibration = CameraCalibration()
     calibration.frame_width = frame_width
     calibration.frame_height = frame_height
@@ -1273,7 +1098,6 @@ def process_volume_estimation(
     ctd_df = None
     if ctd_csv and Path(ctd_csv).exists():
         ctd_df = pd.read_csv(ctd_csv)
-        # Нормализуем названия колонок CTD (могут быть разные варианты)
         column_mapping = {}
         for col in ctd_df.columns:
             col_lower = col.lower().strip()
@@ -1281,12 +1105,9 @@ def process_volume_estimation(
                 column_mapping[col] = 'depth_m'
             elif col_lower in ('time', 'time_s', 'timestamp', 'timestamp_s', 'время'):
                 column_mapping[col] = 'timestamp_s'
-            elif col_lower in ('temperature', 'temp', 'temp_c', 'температура'):
-                column_mapping[col] = 'temperature_c'
         if column_mapping:
             ctd_df = ctd_df.rename(columns=column_mapping)
     
-    # Диапазон глубин
     depth_range = None
     if depth_min is not None and depth_max is not None:
         depth_range = (depth_min, depth_max)
@@ -1305,42 +1126,22 @@ def process_volume_estimation(
         verbose=verbose
     )
     
-    # Сохранение результатов
     if output_csv:
         output_data = {
             'parameter': [
-                'total_volume_m3',
-                'frustum_volume_m3',
-                'swept_volume_m3',
-                'depth_min_m',
-                'depth_max_m',
-                'depth_traversed_m',
-                'detection_distance_m',
-                'near_distance_m',
-                'cross_section_area_m2',
-                'fov_horizontal_deg',
-                'fov_vertical_deg',
-                'duration_s',
-                'descent_rate_m_s'
+                'total_volume_m3', 'frustum_volume_m3', 'swept_volume_m3',
+                'depth_min_m', 'depth_max_m', 'depth_traversed_m',
+                'detection_distance_m', 'near_distance_m', 'cross_section_area_m2',
+                'fov_horizontal_deg', 'fov_vertical_deg', 'duration_s', 'descent_rate_m_s'
             ],
             'value': [
-                result.total_volume_m3,
-                result.frustum_volume_m3,
-                result.swept_volume_m3,
-                result.depth_range_m[0],
-                result.depth_range_m[1],
-                result.depth_traversed_m,
-                result.detection_distance_m,
-                result.near_distance_m,
-                result.cross_section_area_m2,
-                result.fov_horizontal_deg,
-                result.fov_vertical_deg,
-                result.duration_s,
-                result.descent_rate_m_s
+                result.total_volume_m3, result.frustum_volume_m3, result.swept_volume_m3,
+                result.depth_range_m[0], result.depth_range_m[1], result.depth_traversed_m,
+                result.detection_distance_m, result.near_distance_m, result.cross_section_area_m2,
+                result.fov_horizontal_deg, result.fov_vertical_deg, result.duration_s, result.descent_rate_m_s
             ]
         }
         
-        # Добавляем данные по классам
         for class_name, count in result.counts_by_class.items():
             output_data['parameter'].append(f'count_{class_name.replace(" ", "_")}')
             output_data['value'].append(count)
@@ -1356,6 +1157,10 @@ def process_volume_estimation(
     
     return result
 
+
+# =============================================================================
+# CLI
+# =============================================================================
 
 def main():
     parser = argparse.ArgumentParser(description="Оценка геометрии и размеров")
@@ -1373,28 +1178,26 @@ def main():
     size.add_argument('--output', '-o')
     size.add_argument('--tracks', '-t')
     size.add_argument('--geometry', '-g')
-    size.add_argument('--width', type=int, default=1920)
-    size.add_argument('--height', type=int, default=1080)
-    size.add_argument('--min-depth-change', type=float, default=0.3)
+    size.add_argument('--width', type=int, default=3840)
+    size.add_argument('--height', type=int, default=2160)
+    size.add_argument('--min-depth-change', type=float, default=0.1)
     size.add_argument('--min-track-points', type=int, default=3)
-    size.add_argument('--min-r-squared', type=float, default=0.5)
-    size.add_argument('--min-size-change', type=float, default=0.3)
     
     # volume
     vol = subparsers.add_parser('volume', help='Расчёт осмотренного объёма воды')
-    vol.add_argument('--detections', '-d', required=True, help='CSV с детекциями')
-    vol.add_argument('--tracks', '-t', help='CSV со статистикой треков')
-    vol.add_argument('--ctd', '-c', help='CSV с данными CTD (полный диапазон глубин)')
-    vol.add_argument('--output', '-o', help='Выходной CSV')
-    vol.add_argument('--fov', type=float, default=100.0, help='Горизонтальный FOV камеры (градусы)')
-    vol.add_argument('--near-distance', type=float, default=0.3, help='Ближняя граница (м)')
-    vol.add_argument('--detection-distance', type=float, help='Дистанция обнаружения (м)')
-    vol.add_argument('--depth-min', type=float, help='Минимальная глубина (м)')
-    vol.add_argument('--depth-max', type=float, help='Максимальная глубина (м)')
-    vol.add_argument('--duration', type=float, help='Длительность записи (с)')
-    vol.add_argument('--fps', type=float, default=60.0, help='Частота кадров')
-    vol.add_argument('--width', type=int, default=1920, help='Ширина кадра')
-    vol.add_argument('--height', type=int, default=1080, help='Высота кадра')
+    vol.add_argument('--detections', '-d', required=True)
+    vol.add_argument('--tracks', '-t')
+    vol.add_argument('--ctd', '-c')
+    vol.add_argument('--output', '-o')
+    vol.add_argument('--fov', type=float, default=100.0)
+    vol.add_argument('--near-distance', type=float, default=0.3)
+    vol.add_argument('--detection-distance', type=float)
+    vol.add_argument('--depth-min', type=float)
+    vol.add_argument('--depth-max', type=float)
+    vol.add_argument('--duration', type=float)
+    vol.add_argument('--fps', type=float, default=60.0)
+    vol.add_argument('--width', type=int, default=3840)
+    vol.add_argument('--height', type=int, default=2160)
     
     args = parser.parse_args()
     
@@ -1408,9 +1211,7 @@ def main():
             args.detections, output, tracks, args.geometry,
             frame_width=args.width, frame_height=args.height,
             min_depth_change=args.min_depth_change,
-            min_track_points=args.min_track_points,
-            min_r_squared=args.min_r_squared,
-            min_size_change_ratio=args.min_size_change
+            min_track_points=args.min_track_points
         )
     
     elif args.command == 'volume':
