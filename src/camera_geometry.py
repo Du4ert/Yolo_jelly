@@ -517,13 +517,14 @@ def estimate_size_from_typical(
     if len(valid_df) == 0:
         valid_df = track_df.copy()
     
-    _, first_row, first_size_pix = _get_first_frame_data(valid_df, frame_width, frame_height)
+    # Берём кадр с максимальным размером (ближайший к камере)
+    _, max_row, max_size_pix = _find_max_size_frame(valid_df, frame_width, frame_height)
     
-    camera_depth_first = first_row.get('depth_m', np.nan)
-    first_frame = int(first_row['frame'])
+    camera_depth_max = max_row.get('depth_m', np.nan)
+    max_frame = int(max_row['frame'])
     
     # Обратная калибровка: из типичного размера и пикселей находим p, затем d
-    pixel_calib = first_size_pix / typical_size_mm
+    pixel_calib = max_size_pix / typical_size_mm
     
     C = calibration.pixel_calib_C
     D = calibration.pixel_calib_D
@@ -535,8 +536,8 @@ def estimate_size_from_typical(
     
     distance = np.clip(distance, 0.2, 5.0)
     
-    if pd.notna(camera_depth_first):
-        object_depth = camera_depth_first - distance
+    if pd.notna(camera_depth_max):
+        object_depth = camera_depth_max + distance  # камера смотрит вниз, объект глубже
     else:
         object_depth = np.nan
     
@@ -547,9 +548,9 @@ def estimate_size_from_typical(
         real_size_cm=round(typical['mean'], 2),
         distance_m=round(distance, 3),
         object_depth_m=round(object_depth, 2) if pd.notna(object_depth) else None,
-        first_frame=first_frame,
-        first_size_pixels=round(first_size_pix, 1),
-        camera_depth_first=round(camera_depth_first, 2) if pd.notna(camera_depth_first) else None,
+        first_frame=max_frame,
+        first_size_pixels=round(max_size_pix, 1),
+        camera_depth_first=round(camera_depth_max, 2) if pd.notna(camera_depth_max) else None,
         k_mean=0.0,
         k_std=0.0,
         pixel_calibration=round(pixel_calib, 4),
