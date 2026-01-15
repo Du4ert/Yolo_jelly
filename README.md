@@ -245,11 +245,23 @@ python src/camera_geometry.py geometry \
 Оценка размеров объектов по трекам.
 
 ```bash
+# Базовый вызов (камера считается вертикальной)
 python src/camera_geometry.py size \
     --detections output/detections.csv \
     --output output/detections_with_size.csv \
-    --tracks output/track_sizes.csv \
-    --geometry output/geometry.csv
+    --tracks output/track_sizes.csv
+
+# С коррекцией наклона камеры
+python src/camera_geometry.py size \
+    --detections output/detections.csv \
+    --geometry output/geometry.csv \
+    --output output/detections_with_size.csv
+
+# Отключить коррекцию наклона (даже если есть geometry.csv)
+python src/camera_geometry.py size \
+    --detections output/detections.csv \
+    --geometry output/geometry.csv \
+    --no-tilt-correction
 ```
 
 | Параметр | По умолчанию | Описание |
@@ -258,21 +270,36 @@ python src/camera_geometry.py size \
 | `--output`, `-o` | auto | CSV с детекциями + размеры |
 | `--tracks`, `-t` | auto | CSV со статистикой треков |
 | `--geometry`, `-g` | None | CSV с геометрией камеры (опционально) |
-| `--width` | 1920 | Ширина кадра |
-| `--height` | 1080 | Высота кадра |
-| `--min-depth-change` | 0.3 | Мин. изменение глубины (м) |
+| `--width` | 3840 | Ширина кадра |
+| `--height` | 2160 | Высота кадра |
+| `--min-depth-change` | 0.1 | Мин. изменение глубины (м) |
 | `--min-track-points` | 3 | Мин. точек в треке |
-| `--min-r-squared` | 0.5 | Мин. R² для регрессии |
-| `--min-size-change` | 0.3 | Мин. изменение размера bbox |
+| `--apply-tilt-correction` | True | Применять коррекцию наклона |
+| `--no-tilt-correction` | — | Отключить коррекцию наклона |
+
+**Коррекция наклона камеры:**
+
+Если камера наклонена на угол θ от вертикали, размер объекта увеличивается медленнее при погружении, так как реальное сближение с объектом составляет `Δdepth × cos(θ)`.
+
+- **Без `--geometry`** — камера считается вертикальной (θ = 0°)
+- **С `--geometry`** — применяется коррекция: `k_real = k_measured / cos(θ)`
+
+| Наклон камеры | Коррекция k |
+|----------------|----------------|
+| 0° (вертикально) | +0% |
+| 15° | +3.5% |
+| 30° | +15.5% |
+| 45° | +41.4% |
+| 60° | +100% |
 
 **Методы оценки размера:**
-1. **regression** — линейная регрессия 1/size vs depth (наилучший)
-2. **reference** — по референсным трекам того же класса
+1. **k_method** — по удельному приросту размера (наилучший)
+2. **fixed** — для мелких видов (P. pileus)
 3. **typical** — по типичным размерам вида (fallback)
 
 **Выходные колонки в детекциях:**
+- `estimated_size_mm` — оценённый размер (мм)
 - `estimated_size_cm` — оценённый размер (см)
-- `estimated_size_m` — оценённый размер (м)
 - `object_depth_m` — абсолютная глубина объекта
 - `distance_to_object_m` — расстояние до объекта
 - `size_confidence` — уверенность оценки
@@ -280,11 +307,12 @@ python src/camera_geometry.py size \
 
 **Файл треков** (`track_sizes.csv`):
 - `track_id`, `class_name` — идентификация
-- `real_size_cm`, `real_size_m` — размер объекта
+- `real_size_mm`, `real_size_cm` — размер объекта
+- `distance_m` — дистанция до объекта при макс. размере
 - `object_depth_m` — глубина объекта в столбе воды
-- `distance_at_max_m` — дистанция при максимальном размере
-- `method`, `confidence`, `fit_r_squared` — метаданные
-- `warnings` — предупреждения
+- `k_mean_pct_per_m`, `k_std_pct_per_m` — статистика k (%/м)
+- `method`, `confidence` — метаданные
+- `warnings` — предупреждения (включая `tilt_corrected_XXdeg` если применена коррекция)
 
 ---
 
@@ -447,9 +475,11 @@ track_id,class_id,class_name,first_frame,last_frame,duration_s,detections_count,
 - При малом движении камеры наклон определить невозможно
 
 ### Плохая оценка размеров
-- Нужна достаточная глубина погружения (> 0.3 м изменения)
+- Нужна достаточная глубина погружения (> 0.1 м изменения)
 - Для fallback используются типичные размеры видов
-- Проверьте `method` в результатах: `regression` — лучший
+- Проверьте `method` в результатах: `k_method` — лучший
+- Если камера наклонена, используйте `--geometry` для коррекции
+- При наклоне > 30° размеры могут быть занижены на 15%+ без коррекции
 
 ### Нехватка памяти GPU
 - Уменьшите `--batch` (8 или 4)

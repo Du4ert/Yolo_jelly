@@ -327,7 +327,9 @@ def estimate_size_by_k_method(
     calibration: CameraCalibration,
     min_depth_change: float = 0.1,
     min_points: int = 3,
-    min_size_change_pct: float = 10.0
+    min_size_change_pct: float = 10.0,
+    geometry_df: Optional[pd.DataFrame] = None,
+    apply_tilt_correction: bool = True
 ) -> Optional[TrackSizeEstimate]:
     """
     Оценивает размер объекта методом удельного прироста k.
@@ -335,15 +337,30 @@ def estimate_size_by_k_method(
     Алгоритм:
     1. Берём пары точек, где размер изменился минимум на 10%
     2. Для каждой пары вычисляем k = (Δpx/px₁) / Δdepth_camera
-    3. По k вычисляем дистанцию: d = 24.68 × |k|^(-0.644)
-    4. Находим кадр с максимальным размером (объект целиком в кадре)
-    5. Берём дистанцию от ближайшей пары к этому кадру
+    3. Корректируем k на наклон камеры: k_corr = k / cos(θ)
+    4. По k вычисляем дистанцию: d = 24.68 × |k|^(-0.644)
+    5. Находим кадр с максимальным размером (объект целиком в кадре)
     6. Калибровка пикселя: p = 2.432 × d^(-1.0334)
     7. Размер: size_mm = pixels_max / p
-    8. Глубина объекта = глубина камеры + дистанция (камера смотрит вниз)
+    8. Глубина объекта = глубина камеры + дистанция
+    
+    Коррекция наклона:
+    При наклоне камеры на угол θ от вертикали, реальное изменение дистанции
+    до объекта = Δdepth × cos(θ). Измеренный k занижен, поэтому:
+    k_corrected = k_measured / cos(θ)
+    
+    Чем сильнее камера наклонена от вертикали, тем меньше размер объекта
+    увеличивается с погружением (при горизонтальном положении камеры
+    погружение вообще не меняет дистанцию до объекта).
     
     Args:
-        min_size_change_pct: Минимальное изменение размера между точками пары (%)
+        track_df: DataFrame с детекциями трека
+        calibration: калибровочные параметры камеры
+        min_depth_change: минимальное изменение глубины (м)
+        min_points: минимальное количество точек
+        min_size_change_pct: минимальное изменение размера между точками пары (%)
+        geometry_df: DataFrame с данными геометрии (наклон камеры)
+        apply_tilt_correction: применять ли коррекцию наклона
     """
     track_id = track_df['track_id'].iloc[0]
     class_name = track_df['class_name'].iloc[0]
@@ -379,6 +396,10 @@ def estimate_size_by_k_method(
     pair_data = []
     min_change_ratio = 1.0 + min_size_change_pct / 100.0  # 1.10 для 10%
     
+    # Флаг, была ли применена коррекция наклона
+    tilt_correction_applied = False
+    avg_tilt_deg = 0.0
+    
     i = 0
     while i < len(valid_df):
         row1 = valid_df.iloc[i]
@@ -413,7 +434,24 @@ def estimate_size_by_k_method(
                 continue
             
             delta_pixels = pixels2 - pixels1
-            k = (delta_pixels / pixels1) / delta_depth  # доли/м
+            k_raw = (delta_pixels / pixels1) / delta_depth  # доли/м (до коррекции)
+            k = k_raw
+            
+            # Применяем коррекцию наклона камеры
+            # При наклоне θ реальное изменение дистанции = Δdepth × cos(θ)
+            # Поэтому k_real = k_measured / cos(θ)
+            cos_tilt = 1.0
+            tilt_deg_pair = 0.0
+            if apply_tilt_correction and geometry_df is not None:
+                cos_tilt, tilt_deg_pair = get_average_tilt_for_range(
+                    int(frame1), int(frame2), geometry_df
+                )
+                if cos_tilt < 1.0:
+                    tilt_correction_applied = True
+                    avg_tilt_deg = max(avg_tilt_deg, tilt_deg_pair)
+                # Защита от деления на очень малые значения
+                cos_tilt = max(cos_tilt, 0.17)  # ~80° максимальный учитываемый наклон
+                k = k_raw / cos_tilt
             
             # k должен быть положительным (размер растёт при погружении)
             if k > 0:
@@ -426,6 +464,9 @@ def estimate_size_by_k_method(
                     'frame_mid': (frame1 + frame2) / 2,
                     'k': k,
                     'k_percent': k_percent,
+                    'k_raw_percent': k_raw * 100,  # до коррекции
+                    'cos_tilt': cos_tilt,
+                    'tilt_deg': tilt_deg_pair,
                     'distance': distance,
                     'depth_camera': (depth1 + depth2) / 2,
                     'size_change_pct': (pixels2 / pixels1 - 1) * 100
@@ -516,6 +557,10 @@ def estimate_size_by_k_method(
         warnings_list.append("size_too_small")
     if size_mm > 1000:
         warnings_list.append("size_too_large")
+    
+    # Добавляем информацию о коррекции наклона
+    if tilt_correction_applied:
+        warnings_list.append(f"tilt_corrected_{avg_tilt_deg:.0f}deg")
     
     return TrackSizeEstimate(
         track_id=track_id,
@@ -684,6 +729,111 @@ def load_geometry_data(geometry_csv: str) -> Optional[pd.DataFrame]:
     return None
 
 
+def get_tilt_correction_for_frame(
+    frame: int,
+    geometry_df: Optional[pd.DataFrame],
+    min_confidence: float = 0.5
+) -> float:
+    """
+    Получает коэффициент коррекции наклона для заданного кадра.
+    
+    При наклоне камеры на угол θ от вертикали, изменение дистанции до объекта
+    при погружении камеры на Δd составляет Δd × cos(θ).
+    
+    Возвращает cos(θ) для коррекции. Если геометрия недоступна, возвращает 1.0.
+    
+    Args:
+        frame: номер кадра
+        geometry_df: DataFrame с данными геометрии (из process_video_geometry)
+        min_confidence: минимальная уверенность для использования данных
+    
+    Returns:
+        cos(θ) - коэффициент коррекции (0..1), где 1.0 = камера смотрит вертикально
+    """
+    if geometry_df is None or len(geometry_df) == 0:
+        return 1.0
+    
+    # Находим интервал, содержащий кадр
+    mask = (geometry_df['frame_start'] <= frame) & (geometry_df['frame_end'] >= frame)
+    matching = geometry_df[mask]
+    
+    if len(matching) == 0:
+        # Кадр вне диапазона - берём ближайший интервал
+        geometry_df = geometry_df.copy()
+        geometry_df['dist_to_frame'] = geometry_df.apply(
+            lambda r: min(abs(r['frame_start'] - frame), abs(r['frame_end'] - frame)), axis=1
+        )
+        matching = geometry_df.nsmallest(1, 'dist_to_frame')
+    
+    if len(matching) == 0:
+        return 1.0
+    
+    row = matching.iloc[0]
+    
+    # Проверяем уверенность
+    if 'confidence' in row and row['confidence'] < min_confidence:
+        return 1.0
+    
+    # Вычисляем полный угол наклона
+    tilt_h = row.get('tilt_horizontal_deg', 0.0)
+    tilt_v = row.get('tilt_vertical_deg', 0.0)
+    
+    # Полный наклон = sqrt(h² + v²)
+    total_tilt_deg = np.sqrt(tilt_h**2 + tilt_v**2)
+    
+    # Ограничиваем максимальный наклон (при >80° cos близок к 0)
+    total_tilt_deg = min(total_tilt_deg, 80.0)
+    
+    # cos(θ) - коэффициент коррекции
+    cos_tilt = np.cos(np.radians(total_tilt_deg))
+    
+    return cos_tilt
+
+
+def get_average_tilt_for_range(
+    frame_start: int,
+    frame_end: int,
+    geometry_df: Optional[pd.DataFrame],
+    min_confidence: float = 0.5
+) -> Tuple[float, float]:
+    """
+    Вычисляет средний наклон камеры для диапазона кадров.
+    
+    Returns:
+        (cos_tilt, tilt_deg) - коэффициент коррекции и угол в градусах
+    """
+    if geometry_df is None or len(geometry_df) == 0:
+        return 1.0, 0.0
+    
+    # Фильтруем по уверенности
+    if 'confidence' in geometry_df.columns:
+        valid_df = geometry_df[geometry_df['confidence'] >= min_confidence].copy()
+    else:
+        valid_df = geometry_df.copy()
+    
+    if len(valid_df) == 0:
+        return 1.0, 0.0
+    
+    # Находим интервалы, пересекающиеся с диапазоном
+    mask = (valid_df['frame_end'] >= frame_start) & (valid_df['frame_start'] <= frame_end)
+    overlapping = valid_df[mask]
+    
+    if len(overlapping) == 0:
+        # Берём все данные если нет пересечений
+        overlapping = valid_df
+    
+    # Вычисляем средний наклон
+    tilt_h = overlapping['tilt_horizontal_deg'].mean()
+    tilt_v = overlapping['tilt_vertical_deg'].mean()
+    
+    total_tilt_deg = np.sqrt(tilt_h**2 + tilt_v**2)
+    total_tilt_deg = min(total_tilt_deg, 80.0)
+    
+    cos_tilt = np.cos(np.radians(total_tilt_deg))
+    
+    return cos_tilt, total_tilt_deg
+
+
 # =============================================================================
 # Основная функция обработки детекций
 # =============================================================================
@@ -698,6 +848,7 @@ def process_detections_with_size(
     frame_height: int = 2160,
     min_depth_change: float = 0.1,
     min_track_points: int = 3,
+    apply_tilt_correction: bool = True,
     verbose: bool = True
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
@@ -706,6 +857,19 @@ def process_detections_with_size(
     Стратегия:
     1. Сначала пытаемся k-метод для треков с хорошими данными
     2. Fallback — оценка по типичным размерам вида
+    
+    Args:
+        detections_csv: CSV с детекциями
+        output_csv: выходной CSV с детекциями + размеры
+        tracks_output_csv: CSV со статистикой треков
+        geometry_csv: CSV с данными геометрии (наклон камеры)
+        calibration: калибровочные параметры
+        frame_width: ширина кадра
+        frame_height: высота кадра
+        min_depth_change: мин. изменение глубины для k-метода
+        min_track_points: мин. точек в треке
+        apply_tilt_correction: применять ли коррекцию наклона камеры
+        verbose: выводить ли информацию о прогрессе
     """
     if calibration is None:
         calibration = CameraCalibration()
@@ -723,6 +887,11 @@ def process_detections_with_size(
     missing = [c for c in required_cols if c not in df.columns]
     if missing:
         raise ValueError(f"Отсутствуют колонки: {missing}")
+    
+    # Загружаем данные геометрии (наклон камеры)
+    geometry_df = load_geometry_data(geometry_csv) if geometry_csv else None
+    if verbose and geometry_df is not None:
+        print(f"Загружены данные геометрии: {len(geometry_df)} интервалов")
     
     # Этап 0: классы с фиксированным размером (P. pileus)
     fixed_estimates = []
@@ -747,7 +916,9 @@ def process_detections_with_size(
         estimate = estimate_size_by_k_method(
             track_df, calibration,
             min_depth_change=min_depth_change,
-            min_points=min_track_points
+            min_points=min_track_points,
+            geometry_df=geometry_df,
+            apply_tilt_correction=apply_tilt_correction
         )
         
         if estimate is not None:
@@ -1296,11 +1467,15 @@ def main():
     size.add_argument('--detections', '-d', required=True)
     size.add_argument('--output', '-o')
     size.add_argument('--tracks', '-t')
-    size.add_argument('--geometry', '-g')
+    size.add_argument('--geometry', '-g', help='CSV с данными геометрии (наклон камеры)')
     size.add_argument('--width', type=int, default=3840)
     size.add_argument('--height', type=int, default=2160)
     size.add_argument('--min-depth-change', type=float, default=0.1)
     size.add_argument('--min-track-points', type=int, default=3)
+    size.add_argument('--apply-tilt-correction', action='store_true', default=True,
+                      help='Применять коррекцию наклона камеры (по умолчанию: вкл.)')
+    size.add_argument('--no-tilt-correction', dest='apply_tilt_correction', action='store_false',
+                      help='Отключить коррекцию наклона камеры')
     
     # volume
     vol = subparsers.add_parser('volume', help='Расчёт осмотренного объёма воды')
@@ -1330,7 +1505,8 @@ def main():
             args.detections, output, tracks, args.geometry,
             frame_width=args.width, frame_height=args.height,
             min_depth_change=args.min_depth_change,
-            min_track_points=args.min_track_points
+            min_track_points=args.min_track_points,
+            apply_tilt_correction=args.apply_tilt_correction
         )
     
     elif args.command == 'volume':
