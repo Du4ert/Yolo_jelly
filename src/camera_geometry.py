@@ -35,9 +35,9 @@ FIXED_SIZE_CLASSES = {
 
 # Типичные размеры видов (см) для референсной оценки
 TYPICAL_SIZES_CM = {
-    'Aurelia aurita': {'mean': 10.0, 'std': 5.0, 'min': 3.0, 'max': 40.0},
-    'Mnemiopsis leidyi': {'mean': 5.0, 'std': 2.5, 'min': 2.0, 'max': 12.0},
-    'Beroe ovata': {'mean': 8.0, 'std': 3.0, 'min': 3.0, 'max': 15.0},
+    'Aurelia aurita': {'mean': 5.0, 'std': 5.0, 'min': 3.0, 'max': 40.0},
+    'Mnemiopsis leidyi': {'mean': 3.0, 'std': 2.5, 'min': 2.0, 'max': 12.0},
+    'Beroe ovata': {'mean': 5.0, 'std': 3.0, 'min': 3.0, 'max': 15.0},
     'Rhizostoma pulmo': {'mean': 30.0, 'std': 15.0, 'min': 10.0, 'max': 60.0},
 }
 

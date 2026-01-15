@@ -191,6 +191,47 @@ class VolumeWorker(QThread):
             self._processor.cancel()
 
 
+class SizeVideoRenderWorker(QThread):
+    """Воркер для рендеринга видео с размерами в отдельном потоке."""
+    
+    finished = pyqtSignal(object)  # SizeVideoRenderResult
+    progress = pyqtSignal(int, int)  # current, total
+    
+    def __init__(
+        self,
+        input_video: str,
+        detections_csv: str,
+        size_csv: str,
+        output_video: str,
+        geometry_csv: Optional[str] = None,
+    ):
+        super().__init__()
+        self.input_video = input_video
+        self.detections_csv = detections_csv
+        self.size_csv = size_csv
+        self.output_video = output_video
+        self.geometry_csv = geometry_csv
+        self._processor = None
+    
+    def run(self):
+        from ...core import SizeVideoRenderProcessor
+        
+        self._processor = SizeVideoRenderProcessor()
+        
+        result = self._processor.process(
+            input_video=self.input_video,
+            detections_csv=self.detections_csv,
+            size_csv=self.size_csv,
+            output_video=self.output_video,
+            geometry_csv=self.geometry_csv,
+        )
+        self.finished.emit(result)
+    
+    def cancel(self):
+        if self._processor:
+            self._processor.cancel()
+
+
 class GeometryDialog(QDialog):
     """
     Диалог для расчёта геометрии камеры, оценки размеров и объёма.
@@ -236,6 +277,11 @@ class GeometryDialog(QDialog):
         self.tab_volume = QWidget()
         self.tabs.addTab(self.tab_volume, "Объём воды")
         self._setup_volume_tab()
+        
+        # === Вкладка: Рендеринг видео с размерами ===
+        self.tab_render = QWidget()
+        self.tabs.addTab(self.tab_render, "Видео с размерами")
+        self._setup_render_tab()
         
         # Прогресс
         self.progress_bar = QProgressBar()
@@ -519,8 +565,112 @@ class GeometryDialog(QDialog):
         output_layout.addRow("Результат:", out_layout)
         
         layout.addWidget(output_group)
+
+        layout.addStretch()
+    
+    def _setup_render_tab(self):
+        """Настройка вкладки рендеринга видео с размерами."""
+        layout = QVBoxLayout(self.tab_render)
+        
+        # Описание
+        desc_label = QLabel(
+            "Создаёт видео с наложенной информацией о размерах объектов:\n"
+            "• Под рамками: дистанция (м) и размер (см)\n"
+            "• В левом нижнем углу: углы наклона камеры"
+        )
+        desc_label.setWordWrap(True)
+        layout.addWidget(desc_label)
+        
+        # Группа: Входные данные
+        input_group = QGroupBox("Входные данные")
+        input_layout = QFormLayout(input_group)
+        
+        # Видео с детекциями
+        video_layout = QHBoxLayout()
+        self.render_video_edit = QLineEdit()
+        self.render_video_edit.setPlaceholderText("Путь к detected.mp4...")
+        video_layout.addWidget(self.render_video_edit)
+        
+        self.render_video_btn = QPushButton("...")
+        self.render_video_btn.setMaximumWidth(30)
+        self.render_video_btn.clicked.connect(lambda: self._browse_video(self.render_video_edit))
+        video_layout.addWidget(self.render_video_btn)
+        
+        input_layout.addRow("Видео (detected.mp4):", video_layout)
+        
+        # Базовые детекции
+        det_layout = QHBoxLayout()
+        self.render_det_edit = QLineEdit()
+        self.render_det_edit.setPlaceholderText("Путь к detections.csv...")
+        det_layout.addWidget(self.render_det_edit)
+        
+        self.render_det_btn = QPushButton("...")
+        self.render_det_btn.setMaximumWidth(30)
+        self.render_det_btn.clicked.connect(lambda: self._browse_csv(self.render_det_edit))
+        det_layout.addWidget(self.render_det_btn)
+        
+        input_layout.addRow("Детекции (CSV):", det_layout)
+        
+        # Детекции с размерами
+        size_layout = QHBoxLayout()
+        self.render_size_edit = QLineEdit()
+        self.render_size_edit.setPlaceholderText("Путь к detections_with_size.csv...")
+        size_layout.addWidget(self.render_size_edit)
+        
+        self.render_size_btn = QPushButton("...")
+        self.render_size_btn.setMaximumWidth(30)
+        self.render_size_btn.clicked.connect(lambda: self._browse_csv(self.render_size_edit))
+        size_layout.addWidget(self.render_size_btn)
+        
+        input_layout.addRow("Размеры (CSV):", size_layout)
+        
+        # Геометрия (опционально)
+        geom_layout = QHBoxLayout()
+        self.render_geom_edit = QLineEdit()
+        self.render_geom_edit.setPlaceholderText("(опционально) Путь к geometry.csv...")
+        geom_layout.addWidget(self.render_geom_edit)
+        
+        self.render_geom_btn = QPushButton("...")
+        self.render_geom_btn.setMaximumWidth(30)
+        self.render_geom_btn.clicked.connect(lambda: self._browse_csv(self.render_geom_edit))
+        geom_layout.addWidget(self.render_geom_btn)
+        
+        input_layout.addRow("Геометрия:", geom_layout)
+        
+        layout.addWidget(input_group)
+        
+        # Группа: Выходные данные
+        output_group = QGroupBox("Выходные данные")
+        output_layout = QFormLayout(output_group)
+        
+        out_layout = QHBoxLayout()
+        self.render_output_edit = QLineEdit()
+        self.render_output_edit.setPlaceholderText("Путь для detected_sized.mp4...")
+        out_layout.addWidget(self.render_output_edit)
+        
+        self.render_output_btn = QPushButton("...")
+        self.render_output_btn.setMaximumWidth(30)
+        self.render_output_btn.clicked.connect(self._browse_save_video)
+        out_layout.addWidget(self.render_output_btn)
+        
+        output_layout.addRow("Выходное видео:", out_layout)
+        
+        layout.addWidget(output_group)
         
         layout.addStretch()
+    
+    def _browse_save_video(self):
+        """Выбор пути для сохранения видео."""
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить видео",
+            "",
+            "Видео (*.mp4);;All files (*.*)"
+        )
+        if path:
+            if not path.endswith(".mp4"):
+                path += ".mp4"
+            self.render_output_edit.setText(path)
     
     def _load_data(self):
         """Загрузка данных из погружения."""
@@ -613,6 +763,8 @@ class GeometryDialog(QDialog):
             self._run_size()
         elif current_tab == 2:
             self._run_volume()
+        elif current_tab == 3:
+            self._run_render()
     
     def _run_geometry(self):
         """Запуск расчёта геометрии."""
@@ -724,6 +876,47 @@ class GeometryDialog(QDialog):
         self._worker.finished.connect(self._on_volume_finished)
         self._worker.start()
     
+    def _run_render(self):
+        """Запуск рендеринга видео с размерами."""
+        video_path = self.render_video_edit.text().strip()
+        det_path = self.render_det_edit.text().strip()
+        size_path = self.render_size_edit.text().strip()
+        output_path = self.render_output_edit.text().strip()
+        
+        if not video_path or not os.path.exists(video_path):
+            QMessageBox.warning(self, "Ошибка", "Выберите входное видео (detected.mp4).")
+            return
+        
+        if not det_path or not os.path.exists(det_path):
+            QMessageBox.warning(self, "Ошибка", "Выберите файл детекций.")
+            return
+        
+        if not size_path or not os.path.exists(size_path):
+            QMessageBox.warning(self, "Ошибка", "Выберите файл с размерами.")
+            return
+        
+        if not output_path:
+            QMessageBox.warning(self, "Ошибка", "Укажите путь для сохранения.")
+            return
+        
+        geom_path = self.render_geom_edit.text().strip()
+        if geom_path and not os.path.exists(geom_path):
+            geom_path = None
+        
+        self._set_running(True)
+        self.result_text.clear()
+        self.result_text.append("Запуск рендеринга видео с размерами...")
+        
+        self._worker = SizeVideoRenderWorker(
+            input_video=video_path,
+            detections_csv=det_path,
+            size_csv=size_path,
+            output_video=output_path,
+            geometry_csv=geom_path if geom_path else None,
+        )
+        self._worker.finished.connect(self._on_render_finished)
+        self._worker.start()
+    
     def _on_geometry_finished(self, result):
         """Обработка результата геометрии."""
         self._set_running(False)
@@ -772,6 +965,16 @@ class GeometryDialog(QDialog):
                     self.result_text.append(f"  {cls}: {count} ({density:.4f} ос./м³)")
             
             self.result_text.append(f"\nФайл сохранён: {result.output_csv_path}")
+        else:
+            self.result_text.append(f"\n❌ Ошибка: {result.error_message}")
+    
+    def _on_render_finished(self, result):
+        """Обработка результата рендеринга видео."""
+        self._set_running(False)
+        
+        if result.success:
+            self.result_text.append(f"\n✅ Готово за {result.processing_time_s:.1f} сек")
+            self.result_text.append(f"\nВидео сохранено: {result.output_video_path}")
         else:
             self.result_text.append(f"\n❌ Ошибка: {result.error_message}")
     

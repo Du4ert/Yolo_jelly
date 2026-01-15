@@ -13,6 +13,8 @@ from .geometry_processor import (
     SizeEstimationResult,
     VolumeEstimationProcessor,
     VolumeEstimationResult,
+    SizeVideoRenderProcessor,
+    SizeVideoRenderResult,
 )
 from .analyze_processor import (
     AnalyzeProcessor,
@@ -40,6 +42,8 @@ __all__ = [
     "SizeEstimationResult",
     "VolumeEstimationProcessor",
     "VolumeEstimationResult",
+    "SizeVideoRenderProcessor",
+    "SizeVideoRenderResult",
     # Analysis
     "AnalyzeProcessor",
     "AnalyzeResult",

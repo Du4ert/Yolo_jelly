@@ -48,6 +48,18 @@ class SizeEstimationResult:
 
 
 @dataclass
+class SizeVideoRenderResult:
+    """Результат рендеринга видео с размерами."""
+    success: bool
+    processing_time_s: float = 0.0
+    output_video_path: Optional[str] = None
+    frames_processed: int = 0
+    detections_rendered: int = 0
+    error_message: Optional[str] = None
+    cancelled: bool = False
+
+
+@dataclass
 class VolumeEstimationResult:
     """Результат расчёта осмотренного объёма."""
     success: bool
@@ -392,6 +404,84 @@ class VolumeEstimationProcessor:
             import traceback
             traceback.print_exc()
             return VolumeEstimationResult(
+                success=False,
+                processing_time_s=time.time() - start_time,
+                error_message=str(e)
+            )
+
+
+class SizeVideoRenderProcessor:
+    """
+    Обработчик рендеринга видео с информацией о размерах.
+    
+    Добавляет на видео с детекциями:
+    - Дистанцию до объекта и размер под рамками
+    - Углы наклона камеры в левом нижнем углу
+    """
+    
+    def __init__(self):
+        self._cancelled = False
+    
+    def cancel(self) -> None:
+        self._cancelled = True
+    
+    def is_cancelled(self) -> bool:
+        return self._cancelled
+    
+    def process(
+        self,
+        input_video: str,
+        detections_csv: str,
+        size_csv: str,
+        output_video: str,
+        geometry_csv: Optional[str] = None,
+        progress_callback: Optional[Callable[[int, int], None]] = None
+    ) -> SizeVideoRenderResult:
+        """
+        Запускает рендеринг видео с размерами.
+        
+        Args:
+            input_video: Путь к видео с детекциями (detected.mp4).
+            detections_csv: Путь к CSV с базовыми детекциями.
+            size_csv: Путь к CSV с размерами (detections_with_size.csv).
+            output_video: Путь к выходному видео.
+            geometry_csv: Путь к CSV с геометрией (опционально).
+            progress_callback: Коллбэк прогресса (current_frame, total_frames).
+            
+        Returns:
+            SizeVideoRenderResult с результатами.
+        """
+        self._cancelled = False
+        start_time = time.time()
+        
+        try:
+            from render_size_video import render_size_video
+            
+            # Создаём выходную директорию
+            os.makedirs(os.path.dirname(os.path.abspath(output_video)), exist_ok=True)
+            
+            # Запускаем рендеринг
+            output_path = render_size_video(
+                input_video=input_video,
+                detections_csv=detections_csv,
+                size_csv=size_csv,
+                geometry_csv=geometry_csv,
+                output_video=output_video,
+                verbose=True
+            )
+            
+            processing_time = time.time() - start_time
+            
+            return SizeVideoRenderResult(
+                success=True,
+                processing_time_s=processing_time,
+                output_video_path=output_path
+            )
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return SizeVideoRenderResult(
                 success=False,
                 processing_time_s=time.time() - start_time,
                 error_message=str(e)
