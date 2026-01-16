@@ -982,6 +982,7 @@ class Repository:
         task_id: int,
         geometry: bool = True,
         size: bool = True,
+        size_video_render: bool = False,
         volume: bool = True,
         analysis: bool = True,
         params_json: Optional[str] = None,
@@ -993,6 +994,7 @@ class Repository:
             task_id: ID родительской задачи.
             geometry: Создать подзадачу геометрии.
             size: Создать подзадачу размеров.
+            size_video_render: Создать подзадачу рендеринга видео с размерами.
             volume: Создать подзадачу объёма.
             analysis: Создать подзадачу анализа.
             params_json: Общие параметры.
@@ -1005,11 +1007,14 @@ class Repository:
         subtasks = []
         position = 0
         
+        # Порядок важен: геометрия -> размеры -> видео с размерами -> объём -> анализ
         types_to_create = []
         if geometry:
             types_to_create.append(SubTaskType.GEOMETRY)
         if size:
             types_to_create.append(SubTaskType.SIZE)
+        if size_video_render:
+            types_to_create.append(SubTaskType.SIZE_VIDEO_RENDER)
         if volume:
             types_to_create.append(SubTaskType.VOLUME)
         if analysis:

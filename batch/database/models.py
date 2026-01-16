@@ -48,6 +48,7 @@ class SubTaskType(enum.Enum):
     SIZE = "size"
     VOLUME = "volume"
     ANALYSIS = "analysis"
+    SIZE_VIDEO_RENDER = "size_video_render"
 
 
 class OutputType(enum.Enum):
@@ -59,6 +60,7 @@ class OutputType(enum.Enum):
     SIZE_CSV = "size_csv"
     TRACK_SIZES_CSV = "track_sizes_csv"
     VOLUME_CSV = "volume_csv"
+    SIZE_VIDEO = "size_video"  # Видео с размерами
     ANALYSIS_PLOT = "analysis_plot"
     ANALYSIS_REPORT = "analysis_report"
 
@@ -279,10 +281,11 @@ class Task(Base):
         
         g = get_icon(SubTaskType.GEOMETRY)
         s = get_icon(SubTaskType.SIZE)
+        r = get_icon(SubTaskType.SIZE_VIDEO_RENDER)
         v = get_icon(SubTaskType.VOLUME)
         a = get_icon(SubTaskType.ANALYSIS)
         
-        return f"{g}{s}{v}{a}"
+        return f"{g}{s}{r}{v}{a}"
     
     @property
     def has_pending_subtasks(self) -> bool:
@@ -331,6 +334,7 @@ class SubTask(Base):
             SubTaskType.SIZE: "Размеры",
             SubTaskType.VOLUME: "Объём",
             SubTaskType.ANALYSIS: "Анализ",
+            SubTaskType.SIZE_VIDEO_RENDER: "Видео с размерами",
         }
         return names.get(self.subtask_type, "???")
     
@@ -342,6 +346,7 @@ class SubTask(Base):
             SubTaskType.SIZE: "📏",
             SubTaskType.VOLUME: "📦",
             SubTaskType.ANALYSIS: "📊",
+            SubTaskType.SIZE_VIDEO_RENDER: "🎬",
         }
         return icons.get(self.subtask_type, "?")
 

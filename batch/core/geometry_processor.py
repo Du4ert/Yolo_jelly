@@ -39,10 +39,11 @@ class SizeEstimationResult:
     processing_time_s: float = 0.0
     output_csv_path: Optional[str] = None
     tracks_csv_path: Optional[str] = None
-    tracks_with_regression: int = 0
-    tracks_with_reference: int = 0
+    tracks_with_k_method: int = 0
+    tracks_with_fixed: int = 0
     tracks_with_typical: int = 0
     total_tracks: int = 0
+    tilt_correction_applied: bool = False
     error_message: Optional[str] = None
     cancelled: bool = False
 
@@ -216,6 +217,7 @@ class SizeEstimationProcessor:
         min_track_points: int = 3,
         min_r_squared: float = 0.5,
         min_size_change_ratio: float = 0.3,
+        apply_tilt_correction: bool = True,
     ) -> SizeEstimationResult:
         """
         Запускает оценку размеров.
@@ -265,33 +267,40 @@ class SizeEstimationProcessor:
                 frame_height=frame_height,
                 min_depth_change=min_depth_change,
                 min_track_points=min_track_points,
-                min_r_squared=min_r_squared,
-                min_size_change_ratio=min_size_change_ratio,
+                apply_tilt_correction=apply_tilt_correction,
                 verbose=True
             )
             
             processing_time = time.time() - start_time
             
             # Статистика по методам
-            regression = 0
-            reference = 0
+            k_method = 0
+            fixed = 0
             typical = 0
+            tilt_applied = False
             
-            if tracks_df is not None and len(tracks_df) > 0 and 'method' in tracks_df.columns:
-                method_counts = tracks_df['method'].value_counts()
-                regression = method_counts.get('regression', 0)
-                reference = method_counts.get('reference', 0)
-                typical = method_counts.get('typical', 0)
+            if tracks_df is not None and len(tracks_df) > 0:
+                if 'method' in tracks_df.columns:
+                    method_counts = tracks_df['method'].value_counts()
+                    k_method = method_counts.get('k_method', 0)
+                    fixed = method_counts.get('fixed', 0)
+                    typical = method_counts.get('typical', 0)
+                
+                # Проверяем, была ли применена коррекция наклона
+                if 'warnings' in tracks_df.columns:
+                    tilt_warnings = tracks_df['warnings'].str.contains('tilt_corrected', na=False)
+                    tilt_applied = tilt_warnings.any()
             
             return SizeEstimationResult(
                 success=True,
                 processing_time_s=processing_time,
                 output_csv_path=output_csv,
                 tracks_csv_path=tracks_csv,
-                tracks_with_regression=int(regression),
-                tracks_with_reference=int(reference),
+                tracks_with_k_method=int(k_method),
+                tracks_with_fixed=int(fixed),
                 tracks_with_typical=int(typical),
-                total_tracks=len(tracks_df) if tracks_df is not None else 0
+                total_tracks=len(tracks_df) if tracks_df is not None else 0,
+                tilt_correction_applied=tilt_applied
             )
             
         except Exception as e:

@@ -56,15 +56,15 @@ class GeometryWorker(QThread):
     def run(self):
         from ...core import GeometryProcessor
         
-        self._processor = GeometryProcessor(
+        self._processor = GeometryProcessor()
+        
+        result = self._processor.process(
             video_path=self.video_path,
             output_csv=self.output_csv,
             frame_interval=self.frame_interval,
             frame_width=self.frame_width,
             frame_height=self.frame_height,
         )
-        
-        result = self._processor.run()
         self.finished.emit(result)
     
     def cancel(self):
@@ -89,6 +89,7 @@ class SizeWorker(QThread):
         min_track_points: int = 3,
         min_r_squared: float = 0.5,
         min_size_change: float = 0.3,
+        apply_tilt_correction: bool = True,
     ):
         super().__init__()
         self.detections_csv = detections_csv
@@ -101,15 +102,18 @@ class SizeWorker(QThread):
         self.min_track_points = min_track_points
         self.min_r_squared = min_r_squared
         self.min_size_change = min_size_change
+        self.apply_tilt_correction = apply_tilt_correction
         self._processor = None
     
     def run(self):
         from ...core import SizeEstimationProcessor
         
-        self._processor = SizeEstimationProcessor(
+        self._processor = SizeEstimationProcessor()
+        
+        result = self._processor.process(
             detections_csv=self.detections_csv,
             output_csv=self.output_csv,
-            tracks_output_csv=self.tracks_csv,
+            tracks_csv=self.tracks_csv,
             geometry_csv=self.geometry_csv,
             frame_width=self.frame_width,
             frame_height=self.frame_height,
@@ -117,9 +121,8 @@ class SizeWorker(QThread):
             min_track_points=self.min_track_points,
             min_r_squared=self.min_r_squared,
             min_size_change_ratio=self.min_size_change,
+            apply_tilt_correction=self.apply_tilt_correction,
         )
-        
-        result = self._processor.run()
         self.finished.emit(result)
     
     def cancel(self):
@@ -167,23 +170,23 @@ class VolumeWorker(QThread):
     def run(self):
         from ...core import VolumeEstimationProcessor
         
-        self._processor = VolumeEstimationProcessor(
+        self._processor = VolumeEstimationProcessor()
+        
+        result = self._processor.process(
             detections_csv=self.detections_csv,
             output_csv=self.output_csv,
             tracks_csv=self.tracks_csv,
             ctd_csv=self.ctd_csv,
-            fov_horizontal=self.fov_horizontal,
+            fov=self.fov_horizontal,
             near_distance=self.near_distance,
             detection_distance=self.detection_distance,
             depth_min=self.depth_min,
             depth_max=self.depth_max,
-            total_duration=self.total_duration,
+            duration=self.total_duration,
             fps=self.fps,
             frame_width=self.frame_width,
             frame_height=self.frame_height,
         )
-        
-        result = self._processor.run()
         self.finished.emit(result)
     
     def cancel(self):
@@ -939,9 +942,11 @@ class GeometryDialog(QDialog):
         if result.success:
             self.result_text.append(f"\n✅ Готово за {result.processing_time_s:.1f} сек")
             self.result_text.append(f"Всего треков с размерами: {result.total_tracks}")
-            self.result_text.append(f"  - регрессия: {result.tracks_with_regression}")
-            self.result_text.append(f"  - референс: {result.tracks_with_reference}")
+            self.result_text.append(f"  - k-метод: {result.tracks_with_k_method}")
+            self.result_text.append(f"  - фиксированный: {result.tracks_with_fixed}")
             self.result_text.append(f"  - типичный: {result.tracks_with_typical}")
+            if result.tilt_correction_applied:
+                self.result_text.append(f"  ✔ Применена коррекция наклона")
             self.result_text.append(f"\nФайл сохранён: {result.output_csv_path}")
             if result.tracks_csv_path:
                 self.result_text.append(f"Треки: {result.tracks_csv_path}")

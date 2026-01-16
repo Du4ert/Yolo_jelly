@@ -250,6 +250,13 @@ class Worker(QThread):
             if not detections_csv or not os.path.exists(detections_csv):
                 raise ValueError("Detections CSV not found")
             
+            # Получаем путь к видео с детекциями
+            detected_video = None
+            for out in outputs:
+                if out.output_type == OutputType.VIDEO:
+                    detected_video = out.filepath
+                    break
+            
             # Выполняем в зависимости от типа
             if subtask.subtask_type == SubTaskType.GEOMETRY:
                 result_value, result_text = self._run_geometry(
@@ -261,11 +268,16 @@ class Worker(QThread):
                 )
             elif subtask.subtask_type == SubTaskType.VOLUME:
                 result_value, result_text = self._run_volume(
-                    detections_csv, track_sizes_csv, size_csv, parent_task, output_dir, base_name, video, params
+                    detections_csv, track_sizes_csv, size_csv, geometry_csv, parent_task, output_dir, base_name, video, params
                 )
             elif subtask.subtask_type == SubTaskType.ANALYSIS:
                 result_value, result_text = self._run_analysis(
                     detections_csv, size_csv, output_dir, base_name, params, parent_task.id
+                )
+            elif subtask.subtask_type == SubTaskType.SIZE_VIDEO_RENDER:
+                result_value, result_text = self._run_size_video_render(
+                    detected_video, detections_csv, size_csv, geometry_csv,
+                    output_dir, base_name, params, parent_task.id
                 )
             else:
                 raise ValueError(f"Unknown subtask type: {subtask.subtask_type}")
@@ -313,14 +325,19 @@ class Worker(QThread):
         size_csv = str(output_dir / f"{base_name}_detections_with_size.csv")
         track_sizes_csv = str(output_dir / f"{base_name}_track_sizes.csv")
         
+        # Проверяем параметр коррекции наклона
+        use_geometry = params.get("use_geometry", True)
+        apply_tilt_correction = use_geometry and geometry_csv and os.path.exists(geometry_csv)
+        
         processor = SizeEstimationProcessor()
         result = processor.process(
             detections_csv=detections_csv,
             output_csv=size_csv,
             tracks_csv=track_sizes_csv,
-            geometry_csv=geometry_csv,
+            geometry_csv=geometry_csv if apply_tilt_correction else None,
             frame_width=video.width or 1920,
             frame_height=video.height or 1080,
+            apply_tilt_correction=apply_tilt_correction,
         )
         
         if not result.success:
@@ -329,10 +346,27 @@ class Worker(QThread):
         self.repo.add_task_output(task_id, OutputType.SIZE_CSV, size_csv)
         self.repo.add_task_output(task_id, OutputType.TRACK_SIZES_CSV, track_sizes_csv)
         
-        return float(result.total_tracks), f"{result.total_tracks} треков"
+        # Формируем информативный текст
+        parts = []
+        if result.tracks_with_k_method > 0:
+            parts.append(f"{result.tracks_with_k_method} k-метод")
+        if result.tracks_with_fixed > 0:
+            parts.append(f"{result.tracks_with_fixed} фикс.")
+        if result.tracks_with_typical > 0:
+            parts.append(f"{result.tracks_with_typical} тип.")
+        
+        method_info = ", ".join(parts) if parts else ""
+        suffix = " (с геом.)" if result.tilt_correction_applied else ""
+        
+        result_text = f"{result.total_tracks} тр."
+        if method_info:
+            result_text += f" ({method_info})"
+        result_text += suffix
+        
+        return float(result.total_tracks), result_text
 
     def _run_volume(self, detections_csv: str, track_sizes_csv: Optional[str], size_csv: Optional[str],
-                    parent_task, output_dir: Path, base_name: str, video, params: dict):
+                    geometry_csv: Optional[str], parent_task, output_dir: Path, base_name: str, video, params: dict):
         """
         Выполняет подзадачу объёма.
         
@@ -340,6 +374,7 @@ class Worker(QThread):
             detections_csv: CSV с детекциями
             track_sizes_csv: CSV со статистикой размеров (из size estimation, содержит колонку 'method')
             size_csv: CSV с детекциями + размерами
+            geometry_csv: CSV с данными геометрии (наклон камеры)
             parent_task: Родительская задача
             output_dir: Папка для выходных файлов
             base_name: Базовое имя файла
@@ -409,6 +444,61 @@ class Worker(QThread):
             self.repo.add_task_output(task_id, OutputType.ANALYSIS_REPORT, str(report_path))
         
         return float(result.total_detections), f"{result.total_detections} дет."
+
+    def _run_size_video_render(
+        self,
+        detected_video: Optional[str],
+        detections_csv: str,
+        size_csv: Optional[str],
+        geometry_csv: Optional[str],
+        output_dir: Path,
+        base_name: str,
+        params: dict,
+        task_id: int
+    ):
+        """
+        Выполняет подзадачу рендеринга видео с размерами.
+        
+        Args:
+            detected_video: Путь к видео с детекциями
+            detections_csv: CSV с детекциями
+            size_csv: CSV с размерами
+            geometry_csv: CSV с геометрией
+            output_dir: Папка для выходных файлов
+            base_name: Базовое имя файла
+            params: Параметры
+            task_id: ID задачи
+        """
+        from .geometry_processor import SizeVideoRenderProcessor
+        
+        if not detected_video or not os.path.exists(detected_video):
+            raise ValueError("Видео с детекциями не найдено")
+        
+        if not size_csv or not os.path.exists(size_csv):
+            raise ValueError("CSV с размерами не найден. Сначала выполните оценку размеров.")
+        
+        output_video = str(output_dir / f"{base_name}_sized.mp4")
+        
+        # Проверяем параметр использования геометрии
+        use_geometry = params.get("use_geometry", True)
+        effective_geometry_csv = geometry_csv if (use_geometry and geometry_csv and os.path.exists(geometry_csv)) else None
+        
+        processor = SizeVideoRenderProcessor()
+        result = processor.process(
+            input_video=detected_video,
+            detections_csv=detections_csv,
+            size_csv=size_csv,
+            output_video=output_video,
+            geometry_csv=effective_geometry_csv,
+        )
+        
+        if not result.success:
+            raise Exception(result.error_message or "Ошибка рендеринга видео")
+        
+        self.repo.add_task_output(task_id, OutputType.SIZE_VIDEO, output_video)
+        
+        suffix = " (с геом.)" if effective_geometry_csv else ""
+        return None, f"Готово{suffix}"
 
     def stop(self) -> None:
         """Останавливает воркер."""
