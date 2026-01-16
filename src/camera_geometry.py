@@ -117,8 +117,9 @@ class TrackSizeEstimate:
     method: str                    # 'k_method', 'typical', 'fixed'
     n_points_used: int             # Количество пар для расчёта k
     warnings: List[str] = field(default_factory=list)
-    # Покадровые данные для k-method: {frame: (size_mm, distance_m, object_depth_m)}
-    frame_data: Dict[int, Tuple[float, float, float]] = field(default_factory=dict)
+    # Покадровые размеры для k-method: {frame: size_mm}
+    # Расстояние вычисляется динамически: object_depth_m - camera_depth
+    frame_data: Dict[int, float] = field(default_factory=dict)
 
 
 # =============================================================================
@@ -128,7 +129,7 @@ class TrackSizeEstimate:
 def estimate_foe(
     points: np.ndarray,
     vectors: np.ndarray,
-    frame_size: Tuple[int, int] = (1920, 1080),
+    frame_size: Tuple[int, int] = (3840, 2160),
     min_vector_length: float = 0.5,
     max_tilt_deg: float = 60.0
 ) -> FOEResult:
@@ -644,15 +645,32 @@ def estimate_size_by_k_method(
     if n_filtered > 0:
         warnings_list.append(f"outliers_filtered_{n_filtered}")
     
-    # Собираем покадровые данные: {frame: (size_mm, distance_m, object_depth_m)}
-    frame_data = {}
+    # ===== Определяем единую object_depth с фильтрацией выбросов =====
+    # Объект находится на фиксированной глубине, она не должна "прыгать"
+    object_depths_raw = [p['object_depth'] for p in pair_data_filtered]
+    obj_depth_median = np.median(object_depths_raw)
+    obj_depth_mad = np.median(np.abs(np.array(object_depths_raw) - obj_depth_median))
+    
+    # Фильтруем выбросы по object_depth (3*MAD)
+    if obj_depth_mad > 0:
+        obj_depth_threshold = 3 * obj_depth_mad * 1.4826
+    else:
+        obj_depth_threshold = obj_depth_median * 0.2  # 20% от медианы
+    
+    valid_depths = [d for d in object_depths_raw if abs(d - obj_depth_median) <= obj_depth_threshold]
+    
+    if valid_depths:
+        # Берём медиану отфильтрованных значений как финальную глубину объекта
+        object_depth_final = np.median(valid_depths)
+    else:
+        object_depth_final = obj_depth_median
+    
+    # Собираем покадровые данные: {frame: size_mm}
+    # Расстояние будем вычислять динамически в process_detections_with_size
+    frame_sizes = {}
     for p in pair_data_filtered:
         frame_end = int(p['frame_end'])
-        frame_data[frame_end] = (
-            round(p['size_mm_smoothed'], 1),
-            round(p['distance'], 3),
-            round(p['object_depth'], 2)
-        )
+        frame_sizes[frame_end] = round(p['size_mm_smoothed'], 1)
     
     return TrackSizeEstimate(
         track_id=track_id,
@@ -660,7 +678,7 @@ def estimate_size_by_k_method(
         real_size_mm=round(size_mm, 1),
         real_size_cm=round(size_cm, 2),
         distance_m=round(distance_final, 3),
-        object_depth_m=round(object_depth, 2),
+        object_depth_m=round(object_depth_final, 2),  # единая фиксированная глубина
         first_frame=final_frame,
         first_size_pixels=round(final_size_pixels, 1),
         camera_depth_first=round(camera_depth_final, 2),
@@ -671,7 +689,7 @@ def estimate_size_by_k_method(
         method="k_method",
         n_points_used=len(pair_data_filtered),
         warnings=warnings_list,
-        frame_data=frame_data
+        frame_data=frame_sizes  # теперь только размеры, расстояние вычисляется динамически
     )
 
 
@@ -1082,57 +1100,49 @@ def process_detections_with_size(
         if pd.notna(track_id) and track_id in size_map:
             est = size_map[track_id]
             frame = int(row['frame'])
+            camera_depth = row.get('depth_m')
             
-            # Проверяем, есть ли покадровые данные для этого кадра
+            # Глубина объекта фиксирована для всего трека
+            df.at[idx, 'object_depth_m'] = est.object_depth_m
+            
+            # Расстояние вычисляется динамически: object_depth - camera_depth
+            # Оно всегда уменьшается при погружении камеры
+            if pd.notna(camera_depth) and est.object_depth_m is not None:
+                distance = est.object_depth_m - camera_depth
+                df.at[idx, 'distance_to_object_m'] = round(max(distance, 0.0), 3)  # не может быть отрицательным
+            
+            # Определяем размер для этого кадра
             if est.frame_data and frame in est.frame_data:
-                # Используем точные данные для этого кадра
-                size_mm, distance_m, obj_depth = est.frame_data[frame]
-                df.at[idx, 'estimated_size_mm'] = size_mm
-                df.at[idx, 'estimated_size_cm'] = round(size_mm / 10.0, 2)
-                df.at[idx, 'object_depth_m'] = obj_depth
-                df.at[idx, 'distance_to_object_m'] = distance_m
+                # Точные данные для этого кадра
+                size_mm = est.frame_data[frame]
             elif est.frame_data:
-                # Интерполяция: ищем ближайший кадр с данными
+                # Интерполяция размера
                 available_frames = sorted(est.frame_data.keys())
                 
                 if frame < available_frames[0]:
-                    # Кадр до первого измерения - берём первое
-                    size_mm, distance_m, obj_depth = est.frame_data[available_frames[0]]
+                    # Кадр до первого измерения
+                    size_mm = est.frame_data[available_frames[0]]
                 elif frame > available_frames[-1]:
-                    # Кадр после последнего измерения - берём последнее
-                    size_mm, distance_m, obj_depth = est.frame_data[available_frames[-1]]
+                    # Кадр после последнего измерения
+                    size_mm = est.frame_data[available_frames[-1]]
                 else:
-                    # Линейная интерполяция между соседними кадрами
-                    # Находим ближайшие кадры до и после
+                    # Линейная интерполяция
                     frame_before = max(f for f in available_frames if f <= frame)
                     frame_after = min(f for f in available_frames if f >= frame)
                     
                     if frame_before == frame_after:
-                        size_mm, distance_m, obj_depth = est.frame_data[frame_before]
+                        size_mm = est.frame_data[frame_before]
                     else:
-                        # Линейная интерполяция
-                        data_before = est.frame_data[frame_before]
-                        data_after = est.frame_data[frame_after]
+                        size_before = est.frame_data[frame_before]
+                        size_after = est.frame_data[frame_after]
                         t = (frame - frame_before) / (frame_after - frame_before)
-                        
-                        size_mm = round(data_before[0] + t * (data_after[0] - data_before[0]), 1)
-                        distance_m = round(data_before[1] + t * (data_after[1] - data_before[1]), 3)
-                        obj_depth = round(data_before[2] + t * (data_after[2] - data_before[2]), 2)
-                
-                df.at[idx, 'estimated_size_mm'] = size_mm
-                df.at[idx, 'estimated_size_cm'] = round(size_mm / 10.0, 2)
-                df.at[idx, 'object_depth_m'] = obj_depth
-                df.at[idx, 'distance_to_object_m'] = distance_m
+                        size_mm = round(size_before + t * (size_after - size_before), 1)
             else:
-                # Нет покадровых данных (typical/fixed method) - используем финальные
-                df.at[idx, 'estimated_size_mm'] = est.real_size_mm
-                df.at[idx, 'estimated_size_cm'] = est.real_size_cm
-                df.at[idx, 'object_depth_m'] = est.object_depth_m
-                
-                camera_depth = row.get('depth_m')
-                if pd.notna(camera_depth) and est.object_depth_m is not None:
-                    df.at[idx, 'distance_to_object_m'] = round(abs(est.object_depth_m - camera_depth), 3)
+                # Нет покадровых данных (typical/fixed method)
+                size_mm = est.real_size_mm
             
+            df.at[idx, 'estimated_size_mm'] = size_mm
+            df.at[idx, 'estimated_size_cm'] = round(size_mm / 10.0, 2)
             df.at[idx, 'size_confidence'] = est.confidence
             df.at[idx, 'size_method'] = est.method
     
