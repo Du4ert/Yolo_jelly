@@ -207,7 +207,8 @@ def plot_species_summary(
 def generate_report(
     df: pd.DataFrame,
     output_path: str,
-    video_name: Optional[str] = None
+    video_name: Optional[str] = None,
+    processing_info: Optional[dict] = None
 ):
     """
     Генерирует текстовый отчёт по детекциям.
@@ -216,11 +217,21 @@ def generate_report(
         df: DataFrame с детекциями
         output_path: путь для сохранения отчёта
         video_name: имя исходного видео (опционально)
+        processing_info: информация об обработке (опционально)
+            - detection_params: параметры детекции
+            - postprocess_params: параметры постобработки
+            - timing: временные метки
+            - subtasks: информация о подзадачах
     """
+    from datetime import datetime
+    
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write("="*70 + "\n")
         f.write("ОТЧЁТ ПО ДЕТЕКЦИИ ЖЕЛЕТЕЛОГО МАКРОЗООПЛАНКТОНА\n")
         f.write("="*70 + "\n\n")
+        
+        # Дата генерации отчёта
+        f.write(f"Дата отчёта: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         
         if video_name:
             f.write(f"Исходное видео: {video_name}\n")
@@ -233,6 +244,77 @@ def generate_report(
         
         if df['depth_m'].notna().any():
             f.write(f"Диапазон глубин: {df['depth_m'].min():.1f} - {df['depth_m'].max():.1f} м\n")
+        
+        # === КОНФИГУРАЦИЯ ОБРАБОТКИ ===
+        if processing_info:
+            f.write("\n" + "-"*70 + "\n")
+            f.write("КОНФИГУРАЦИЯ ОБРАБОТКИ\n")
+            f.write("-"*70 + "\n")
+            
+            # Параметры детекции
+            det_params = processing_info.get('detection_params', {})
+            if det_params:
+                f.write("\nПараметры детекции:\n")
+                f.write(f"  Модель: {det_params.get('model_name', 'N/A')}\n")
+                f.write(f"  Порог уверенности: {det_params.get('conf_threshold', 'N/A')}\n")
+                
+                if det_params.get('enable_tracking'):
+                    f.write(f"  Трекинг: включён ({det_params.get('tracker_type', 'N/A')})\n")
+                    f.write(f"  Мин. длина трека: {det_params.get('min_track_length', 'N/A')} кадров\n")
+                else:
+                    f.write("  Трекинг: выключен\n")
+                
+                if det_params.get('ctd_file'):
+                    f.write(f"  CTD: {det_params.get('ctd_file')}\n")
+                elif det_params.get('depth_rate'):
+                    f.write(f"  Скорость погружения: {det_params.get('depth_rate')} м/с\n")
+            
+            # Параметры постобработки
+            post_params = processing_info.get('postprocess_params', {})
+            if post_params:
+                f.write("\nПараметры постобработки:\n")
+                f.write(f"  FOV камеры: {post_params.get('fov', 'N/A')}°\n")
+                f.write(f"  Ближняя дистанция: {post_params.get('near_distance', 'N/A')} м\n")
+                f.write(f"  Бин глубины: {post_params.get('depth_bin', 'N/A')} м\n")
+            
+            # Информация о подзадачах
+            subtasks = processing_info.get('subtasks', [])
+            if subtasks:
+                f.write("\nВыполненные операции:\n")
+                for st in subtasks:
+                    status_icon = "✓" if st.get('success') else "✗"
+                    time_str = ""
+                    if st.get('processing_time_s'):
+                        time_str = f" ({st['processing_time_s']:.1f} с)"
+                    result_str = ""
+                    if st.get('result_text'):
+                        result_str = f" → {st['result_text']}"
+                    f.write(f"  [{status_icon}] {st.get('name', 'N/A')}{time_str}{result_str}\n")
+            
+            # Время обработки
+            timing = processing_info.get('timing', {})
+            if timing:
+                f.write("\nВремя обработки:\n")
+                if timing.get('detection_time_s'):
+                    det_time = timing['detection_time_s']
+                    if det_time >= 60:
+                        f.write(f"  Детекция: {det_time/60:.1f} мин\n")
+                    else:
+                        f.write(f"  Детекция: {det_time:.1f} с\n")
+                
+                if timing.get('postprocess_time_s'):
+                    post_time = timing['postprocess_time_s']
+                    if post_time >= 60:
+                        f.write(f"  Постобработка: {post_time/60:.1f} мин\n")
+                    else:
+                        f.write(f"  Постобработка: {post_time:.1f} с\n")
+                
+                if timing.get('total_time_s'):
+                    total_time = timing['total_time_s']
+                    if total_time >= 60:
+                        f.write(f"  Общее время: {total_time/60:.1f} мин\n")
+                    else:
+                        f.write(f"  Общее время: {total_time:.1f} с\n")
         
         f.write("\n" + "-"*70 + "\n")
         f.write("ДЕТЕКЦИИ ПО ВИДАМ\n")
@@ -253,6 +335,11 @@ def generate_report(
             
             if sp_df['temperature_c'].notna().any():
                 f.write(f"  Диапазон температур: {sp_df['temperature_c'].min():.1f} - {sp_df['temperature_c'].max():.1f} °C\n")
+            
+            # Добавляем информацию о размерах если есть
+            if 'estimated_size_mm' in sp_df.columns and sp_df['estimated_size_mm'].notna().any():
+                sizes = sp_df['estimated_size_mm'].dropna()
+                f.write(f"  Размеры: {sizes.min():.1f} - {sizes.max():.1f} мм (средний: {sizes.mean():.1f} мм)\n")
         
         f.write("\n" + "="*70 + "\n")
         f.write("КОНЕЦ ОТЧЁТА\n")

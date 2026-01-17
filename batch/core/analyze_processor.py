@@ -66,6 +66,7 @@ class AnalyzeProcessor:
         generate_species_summary: bool = True,
         generate_report: bool = True,
         video_name: Optional[str] = None,
+        processing_info: Optional[dict] = None,
     ) -> AnalyzeResult:
         """
         Запускает анализ данных.
@@ -81,6 +82,7 @@ class AnalyzeProcessor:
             generate_species_summary: Генерировать сводку по видам.
             generate_report: Генерировать текстовый отчёт.
             video_name: Имя видео для отчёта (опционально).
+            processing_info: Информация об обработке для отчёта (опционально).
             
         Returns:
             AnalyzeResult с результатами анализа.
@@ -171,7 +173,7 @@ class AnalyzeProcessor:
                 report_file = str(output_path / report_name)
                 vn = video_name or Path(csv_path).stem.replace("_detections", "")
                 try:
-                    gen_report(df, report_file, vn)
+                    gen_report(df, report_file, vn, processing_info)
                     result.report_path = report_file
                 except Exception as e:
                     print(f"Ошибка при генерации отчёта: {e}")

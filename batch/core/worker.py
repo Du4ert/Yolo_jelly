@@ -423,12 +423,16 @@ class Worker(QThread):
         # Используем CSV с размерами если есть
         input_csv = size_csv if size_csv and os.path.exists(size_csv) else detections_csv
         
+        # Собираем информацию об обработке
+        processing_info = self._collect_processing_info(task_id, params)
+        
         processor = AnalyzeProcessor()
         result = processor.process(
             csv_path=input_csv,
             output_dir=str(analysis_dir),
             depth_bin=params.get("depth_bin", 2.0),
             video_name=base_name,
+            processing_info=processing_info,
         )
         
         if not result.success:
@@ -445,6 +449,98 @@ class Worker(QThread):
             self.repo.add_task_output(task_id, OutputType.ANALYSIS_REPORT, str(report_path))
         
         return float(result.total_detections), f"{result.total_detections} дет."
+
+    def _collect_processing_info(self, task_id: int, current_params: dict) -> dict:
+        """
+        Собирает информацию об обработке для отчёта.
+        
+        Args:
+            task_id: ID задачи.
+            current_params: Текущие параметры подзадачи.
+            
+        Returns:
+            Словарь с информацией об обработке.
+        """
+        processing_info = {}
+        
+        try:
+            # Получаем информацию о задаче
+            task = self.repo.get_task(task_id)
+            if not task:
+                return processing_info
+            
+            # Параметры детекции
+            model = self.repo.get_model(task.model_id)
+            ctd_file = self.repo.get_ctd_file(task.ctd_id) if task.ctd_id else None
+            
+            detection_params = {
+                'model_name': model.name if model else 'N/A',
+                'conf_threshold': task.conf_threshold,
+                'enable_tracking': task.enable_tracking,
+                'tracker_type': task.tracker_type.replace('.yaml', '') if task.tracker_type else None,
+                'min_track_length': task.min_track_length,
+                'depth_rate': task.depth_rate,
+                'ctd_file': ctd_file.filename if ctd_file else None,
+            }
+            processing_info['detection_params'] = detection_params
+            
+            # Параметры постобработки
+            postprocess_params = {
+                'fov': current_params.get('fov', 100.0),
+                'near_distance': current_params.get('near_distance', 0.3),
+                'depth_bin': current_params.get('depth_bin', 2.0),
+            }
+            processing_info['postprocess_params'] = postprocess_params
+            
+            # Информация о выполненных подзадачах
+            subtasks = self.repo.get_subtasks_for_task(task_id)
+            subtasks_info = []
+            total_postprocess_time = 0.0
+            
+            for st in subtasks:
+                # Пропускаем текущую подзадачу (анализ) - она ещё выполняется
+                if st.subtask_type == SubTaskType.ANALYSIS:
+                    continue
+                
+                # Вычисляем время выполнения
+                proc_time = None
+                if st.started_at and st.completed_at:
+                    proc_time = (st.completed_at - st.started_at).total_seconds()
+                    total_postprocess_time += proc_time
+                
+                subtasks_info.append({
+                    'name': st.type_name,
+                    'success': st.status == TaskStatus.DONE,
+                    'processing_time_s': proc_time,
+                    'result_text': st.result_text,
+                })
+            
+            if subtasks_info:
+                processing_info['subtasks'] = subtasks_info
+            
+            # Временные метки
+            timing = {}
+            
+            # Время детекции
+            if task.processing_time_s:
+                timing['detection_time_s'] = task.processing_time_s
+            
+            # Время постобработки (без анализа)
+            if total_postprocess_time > 0:
+                timing['postprocess_time_s'] = total_postprocess_time
+            
+            # Общее время
+            if task.started_at and task.completed_at:
+                detection_time = (task.completed_at - task.started_at).total_seconds()
+                timing['total_time_s'] = detection_time + total_postprocess_time
+            
+            if timing:
+                processing_info['timing'] = timing
+                
+        except Exception as e:
+            print(f"Ошибка при сборе информации об обработке: {e}")
+        
+        return processing_info
 
     def _run_size_video_render(
         self,
