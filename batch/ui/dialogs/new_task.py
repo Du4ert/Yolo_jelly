@@ -18,6 +18,8 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
     QPushButton,
     QDialogButtonBox,
+    QFrame,
+    QWidget,
 )
 from PyQt6.QtCore import Qt
 
@@ -136,13 +138,14 @@ class NewTaskDialog(QDialog):
         
         self.check_auto_postprocess = QCheckBox("Автоматическая постобработка после детекции")
         self.check_auto_postprocess.setToolTip(
-            "После завершения детекции автоматически запустить:\n"
-            "• Геометрия камеры (FOE)\n"
-            "• Размеры объектов\n"
-            "• Объём воды\n"
-            "• Анализ и графики"
+            "После завершения детекции автоматически запустить выбранные операции постобработки"
         )
+        self.check_auto_postprocess.toggled.connect(self._on_auto_postprocess_toggled)
         output_layout.addWidget(self.check_auto_postprocess)
+        
+        # Настройки автопостобработки (скрыты по умолчанию)
+        self.postprocess_widget = self._create_postprocess_settings()
+        output_layout.addWidget(self.postprocess_widget)
         
         layout.addWidget(output_group)
         
@@ -229,6 +232,7 @@ class NewTaskDialog(QDialog):
         
         self._on_tracking_toggled(params.enable_tracking)
         self._update_depth_rate_state()
+        self._on_auto_postprocess_toggled(False)
 
     def _on_ctd_changed(self, index: int):
         """Обработка изменения выбора CTD."""
@@ -250,6 +254,8 @@ class NewTaskDialog(QDialog):
 
     def get_task_params(self) -> Dict[str, Any]:
         """Возвращает параметры для создания задачи."""
+        import json
+        
         params = {
             "conf_threshold": self.spin_conf.value(),
             "enable_tracking": self.check_tracking.isChecked(),
@@ -265,6 +271,24 @@ class NewTaskDialog(QDialog):
         if self.combo_ctd.currentData() is None and self.spin_depth_rate.value() > 0:
             params["depth_rate"] = self.spin_depth_rate.value()
         
+        # Параметры автопостобработки
+        if self.check_auto_postprocess.isChecked():
+            postprocess_params = {
+                # Выбранные операции
+                "geometry": self.pp_chk_geometry.isChecked(),
+                "size": self.pp_chk_size.isChecked(),
+                "size_use_geometry": self.pp_chk_size_use_geometry.isChecked(),
+                "size_video": self.pp_chk_size_video.isChecked(),
+                "video_use_geometry": self.pp_chk_video_use_geometry.isChecked(),
+                "volume": self.pp_chk_volume.isChecked(),
+                "analysis": self.pp_chk_analysis.isChecked(),
+                # Параметры
+                "fov": self.pp_spin_fov.value(),
+                "near_distance": self.pp_spin_near.value(),
+                "depth_bin": self.pp_spin_depth_bin.value(),
+            }
+            params["auto_postprocess_params"] = json.dumps(postprocess_params)
+        
         return params
 
     def get_model_id(self) -> Optional[int]:
@@ -274,3 +298,152 @@ class NewTaskDialog(QDialog):
     def get_ctd_id(self) -> Optional[int]:
         """Возвращает ID CTD файла."""
         return self.combo_ctd.currentData()
+
+    def _create_postprocess_settings(self) -> QWidget:
+        """Создаёт виджет с настройками постобработки."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(20, 5, 0, 5)
+        layout.setSpacing(4)
+        
+        # === Выбор операций ===
+        ops_label = QLabel("Операции:")
+        ops_label.setStyleSheet("font-weight: bold; margin-top: 5px;")
+        layout.addWidget(ops_label)
+        
+        # Геометрия
+        self.pp_chk_geometry = QCheckBox("📐 Геометрия камеры (FOE)")
+        self.pp_chk_geometry.setToolTip("Оценка наклона камеры по Focus of Expansion")
+        self.pp_chk_geometry.setChecked(True)
+        self.pp_chk_geometry.toggled.connect(self._update_postprocess_dependencies)
+        layout.addWidget(self.pp_chk_geometry)
+        
+        # Разделитель
+        separator1 = QFrame()
+        separator1.setFrameShape(QFrame.Shape.HLine)
+        separator1.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(separator1)
+        
+        # Размеры объектов
+        self.pp_chk_size = QCheckBox("📏 Размеры объектов")
+        self.pp_chk_size.setToolTip("Расчёт реальных размеров по k-методу")
+        self.pp_chk_size.setChecked(True)
+        self.pp_chk_size.toggled.connect(self._update_postprocess_dependencies)
+        layout.addWidget(self.pp_chk_size)
+        
+        # Опция коррекции наклона
+        size_indent = QWidget()
+        size_indent_layout = QHBoxLayout(size_indent)
+        size_indent_layout.setContentsMargins(20, 0, 0, 0)
+        self.pp_chk_size_use_geometry = QCheckBox("С коррекцией наклона камеры")
+        self.pp_chk_size_use_geometry.setToolTip(
+            "Коррекция k-значений с учётом угла наклона камеры.\n"
+            "Требует расчёта геометрии."
+        )
+        self.pp_chk_size_use_geometry.setChecked(True)
+        size_indent_layout.addWidget(self.pp_chk_size_use_geometry)
+        size_indent_layout.addStretch()
+        layout.addWidget(size_indent)
+        
+        # Видео с размерами
+        self.pp_chk_size_video = QCheckBox("🎬 Видео с размерами")
+        self.pp_chk_size_video.setToolTip(
+            "Рендеринг видео с отображением дистанции и размера.\n"
+            "Требует расчёта размеров."
+        )
+        self.pp_chk_size_video.setChecked(True)
+        self.pp_chk_size_video.toggled.connect(self._update_postprocess_dependencies)
+        layout.addWidget(self.pp_chk_size_video)
+        
+        # Опция отображения геометрии на видео
+        video_indent = QWidget()
+        video_indent_layout = QHBoxLayout(video_indent)
+        video_indent_layout.setContentsMargins(20, 0, 0, 0)
+        self.pp_chk_video_use_geometry = QCheckBox("Показывать углы наклона")
+        self.pp_chk_video_use_geometry.setToolTip(
+            "Отображать информацию об углах наклона камеры.\n"
+            "Требует расчёта геометрии."
+        )
+        self.pp_chk_video_use_geometry.setChecked(True)
+        video_indent_layout.addWidget(self.pp_chk_video_use_geometry)
+        video_indent_layout.addStretch()
+        layout.addWidget(video_indent)
+        
+        # Объём
+        self.pp_chk_volume = QCheckBox("📦 Объём воды")
+        self.pp_chk_volume.setToolTip("Расчёт осмотренного объёма воды и плотности организмов")
+        self.pp_chk_volume.setChecked(True)
+        layout.addWidget(self.pp_chk_volume)
+        
+        # Разделитель
+        separator2 = QFrame()
+        separator2.setFrameShape(QFrame.Shape.HLine)
+        separator2.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(separator2)
+        
+        # Анализ
+        self.pp_chk_analysis = QCheckBox("📊 Анализ и графики")
+        self.pp_chk_analysis.setToolTip("Генерация графиков вертикального распределения и отчётов")
+        self.pp_chk_analysis.setChecked(True)
+        layout.addWidget(self.pp_chk_analysis)
+        
+        # === Параметры ===
+        params_label = QLabel("Параметры:")
+        params_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
+        layout.addWidget(params_label)
+        
+        params_form = QFormLayout()
+        params_form.setContentsMargins(0, 0, 0, 0)
+        
+        self.pp_spin_fov = QDoubleSpinBox()
+        self.pp_spin_fov.setRange(60, 180)
+        self.pp_spin_fov.setValue(100.0)
+        self.pp_spin_fov.setSuffix("°")
+        self.pp_spin_fov.setToolTip("Горизонтальный угол обзора камеры (GoPro Wide ~100°)")
+        params_form.addRow("FOV камеры:", self.pp_spin_fov)
+        
+        self.pp_spin_near = QDoubleSpinBox()
+        self.pp_spin_near.setRange(0.1, 2.0)
+        self.pp_spin_near.setValue(0.3)
+        self.pp_spin_near.setSingleStep(0.1)
+        self.pp_spin_near.setSuffix(" м")
+        self.pp_spin_near.setToolTip("Ближняя граница обнаружения (мёртвая зона)")
+        params_form.addRow("Ближняя дистанция:", self.pp_spin_near)
+        
+        self.pp_spin_depth_bin = QDoubleSpinBox()
+        self.pp_spin_depth_bin.setRange(0.5, 10.0)
+        self.pp_spin_depth_bin.setValue(2.0)
+        self.pp_spin_depth_bin.setSingleStep(0.5)
+        self.pp_spin_depth_bin.setSuffix(" м")
+        self.pp_spin_depth_bin.setToolTip("Шаг биннинга по глубине для графиков распределения")
+        params_form.addRow("Бин глубины:", self.pp_spin_depth_bin)
+        
+        layout.addLayout(params_form)
+        
+        return widget
+
+    def _on_auto_postprocess_toggled(self, enabled: bool):
+        """Обработка переключения автопостобработки."""
+        self.postprocess_widget.setVisible(enabled)
+        if enabled:
+            self._update_postprocess_dependencies()
+        # Обновляем размер окна
+        self.adjustSize()
+
+    def _update_postprocess_dependencies(self):
+        """Обновляет состояние зависимых элементов постобработки."""
+        geometry_selected = self.pp_chk_geometry.isChecked()
+        size_selected = self.pp_chk_size.isChecked()
+        size_video_selected = self.pp_chk_size_video.isChecked()
+        
+        # Опции зависящие от геометрии
+        self.pp_chk_size_use_geometry.setEnabled(geometry_selected)
+        self.pp_chk_video_use_geometry.setEnabled(geometry_selected)
+        
+        if not geometry_selected:
+            self.pp_chk_size_use_geometry.setChecked(False)
+            self.pp_chk_video_use_geometry.setChecked(False)
+        
+        # Видео с размерами требует размеров
+        if size_video_selected and not size_selected:
+            self.pp_chk_size.setChecked(True)

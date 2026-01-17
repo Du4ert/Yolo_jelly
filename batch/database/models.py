@@ -212,8 +212,9 @@ class Task(Base):
     tracks_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     processing_time_s: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     
-    # Флаг автозапуска постобработки
+    # Флаг автозапуска постобработки и параметры
     auto_postprocess: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    auto_postprocess_params: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON с параметрами
     
     # Временные метки
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)

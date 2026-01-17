@@ -116,6 +116,7 @@ class Worker(QThread):
                 dive_folder = task_data.video_file.dive.folder_path
                 ctd_path = task_data.ctd_file.filepath if task_data.ctd_file else None
                 auto_postprocess = task_data.auto_postprocess
+                auto_postprocess_params = task_data.auto_postprocess_params
                 
                 task_params = {
                     "conf_threshold": task_data.conf_threshold,
@@ -184,7 +185,7 @@ class Worker(QThread):
                 
                 # Автопостобработка
                 if auto_postprocess:
-                    self.repo.create_postprocess_subtasks(task_id)
+                    self._create_auto_postprocess_subtasks(task_id, auto_postprocess_params)
                 
                 self.finished_task.emit(task_id, True, "")
             else:
@@ -499,6 +500,101 @@ class Worker(QThread):
         
         suffix = " (с геом.)" if effective_geometry_csv else ""
         return None, f"Готово{suffix}"
+
+    def _create_auto_postprocess_subtasks(self, task_id: int, params_json: Optional[str]) -> None:
+        """
+        Создаёт подзадачи автопостобработки с учётом параметров.
+        
+        Args:
+            task_id: ID родительской задачи.
+            params_json: JSON строка с параметрами постобработки.
+        """
+        # Парсим параметры
+        if params_json:
+            params = json.loads(params_json)
+        else:
+            # Параметры по умолчанию (совместимость со старым кодом)
+            params = {
+                "geometry": True,
+                "size": True,
+                "size_use_geometry": True,
+                "size_video": False,
+                "video_use_geometry": True,
+                "volume": True,
+                "analysis": True,
+                "fov": 100.0,
+                "near_distance": 0.3,
+                "depth_bin": 2.0,
+            }
+        
+        # Извлекаем флаги операций
+        do_geometry = params.get("geometry", True)
+        do_size = params.get("size", True)
+        do_size_video = params.get("size_video", False)
+        do_volume = params.get("volume", True)
+        do_analysis = params.get("analysis", True)
+        
+        # Общие параметры для всех подзадач
+        common_params = {
+            "fov": params.get("fov", 100.0),
+            "near_distance": params.get("near_distance", 0.3),
+            "depth_bin": params.get("depth_bin", 2.0),
+        }
+        
+        position = 0
+        
+        # Геометрия
+        if do_geometry:
+            self.repo.create_subtask(
+                parent_task_id=task_id,
+                subtask_type=SubTaskType.GEOMETRY,
+                position=position,
+                params_json=json.dumps(common_params),
+            )
+            position += 1
+        
+        # Размеры
+        if do_size:
+            size_params = common_params.copy()
+            size_params["use_geometry"] = params.get("size_use_geometry", True)
+            self.repo.create_subtask(
+                parent_task_id=task_id,
+                subtask_type=SubTaskType.SIZE,
+                position=position,
+                params_json=json.dumps(size_params),
+            )
+            position += 1
+        
+        # Видео с размерами
+        if do_size_video:
+            video_params = common_params.copy()
+            video_params["use_geometry"] = params.get("video_use_geometry", True)
+            self.repo.create_subtask(
+                parent_task_id=task_id,
+                subtask_type=SubTaskType.SIZE_VIDEO_RENDER,
+                position=position,
+                params_json=json.dumps(video_params),
+            )
+            position += 1
+        
+        # Объём
+        if do_volume:
+            self.repo.create_subtask(
+                parent_task_id=task_id,
+                subtask_type=SubTaskType.VOLUME,
+                position=position,
+                params_json=json.dumps(common_params),
+            )
+            position += 1
+        
+        # Анализ
+        if do_analysis:
+            self.repo.create_subtask(
+                parent_task_id=task_id,
+                subtask_type=SubTaskType.ANALYSIS,
+                position=position,
+                params_json=json.dumps(common_params),
+            )
 
     def stop(self) -> None:
         """Останавливает воркер."""
