@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox,
     QFrame,
     QWidget,
+    QScrollArea,
 )
 from PyQt6.QtCore import Qt
 
@@ -53,9 +54,24 @@ class NewTaskDialog(QDialog):
     def _setup_ui(self):
         """Настройка интерфейса."""
         self.setWindowTitle("Новая задача")
-        self.setMinimumWidth(500)
+        self.setMinimumWidth(520)
+        self.setMinimumHeight(400)
+        self.resize(520, 600)
         
-        layout = QVBoxLayout(self)
+        # Основной layout диалога
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 10)
+        
+        # Создаём область прокрутки
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        
+        # Контейнер для содержимого
+        content_widget = QWidget()
+        layout = QVBoxLayout(content_widget)
+        layout.setContentsMargins(10, 10, 10, 10)
         
         # === Информация о файлах ===
         files_group = QGroupBox("Файлы")
@@ -149,7 +165,11 @@ class NewTaskDialog(QDialog):
         
         layout.addWidget(output_group)
         
-        # === Кнопки ===
+        # Устанавливаем содержимое в область прокрутки
+        scroll_area.setWidget(content_widget)
+        main_layout.addWidget(scroll_area)
+        
+        # === Кнопки (вне области прокрутки) ===
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
@@ -157,7 +177,12 @@ class NewTaskDialog(QDialog):
         button_box.rejected.connect(self.reject)
         button_box.button(QDialogButtonBox.StandardButton.Ok).setText("Добавить в очередь")
         
-        layout.addWidget(button_box)
+        # Отступ для кнопок
+        button_container = QWidget()
+        button_layout = QHBoxLayout(button_container)
+        button_layout.setContentsMargins(10, 0, 10, 0)
+        button_layout.addWidget(button_box)
+        main_layout.addWidget(button_container)
 
     def _load_data(self):
         """Загружает данные."""
@@ -427,8 +452,6 @@ class NewTaskDialog(QDialog):
         self.postprocess_widget.setVisible(enabled)
         if enabled:
             self._update_postprocess_dependencies()
-        # Обновляем размер окна
-        self.adjustSize()
 
     def _update_postprocess_dependencies(self):
         """Обновляет состояние зависимых элементов постобработки."""

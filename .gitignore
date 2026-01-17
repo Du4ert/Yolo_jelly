@@ -6,9 +6,11 @@ test_video/
 
 # Python cache
 __pycache__/
+**/__pycache__/
 *.pyc
 *.pyo
 *.pyd
+.pytest_cache/
 
 # Virtual environments
 labelstudio_env/
