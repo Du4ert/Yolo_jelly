@@ -177,7 +177,7 @@ python src/train.py --data data.yaml --epochs 150 --model yolov8m.pt
 ```bash
 python src/detect_video.py \
     --video путь/к/видео.mp4 \
-    --model runs/jellyfish/best/weights/best.pt \
+    --model runs/best/weights/best.pt \
     --track \
     --show-trails \
     --output output/результат.mp4 \

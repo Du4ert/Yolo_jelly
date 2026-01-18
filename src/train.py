@@ -12,7 +12,11 @@ from typing import Any, Optional
 from ultralytics import YOLO
 
 
-DEFAULT_CONFIG_PATH = Path(__file__).parent.parent / "train_config.yaml"
+# Корневая директория проекта (yolo_jellyfish/)
+PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+
+# Путь к конфигу по умолчанию
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "train_config.yaml"
 
 
 def load_config(config_path: Optional[Path] = None) -> dict:
@@ -95,10 +99,35 @@ def train_model(
     config = load_config(config_path)
     
     # Основные параметры (с возможностью переопределения через CLI)
-    _data_yaml = data_yaml or get_param(config, 'base', 'data_yaml', default='data.yaml')
-    _model_name = model_name or get_param(config, 'base', 'model', default='yolov8m.pt')
-    _project = project or get_param(config, 'base', 'project', default='runs/jellyfish')
+    _data_yaml_raw = data_yaml or get_param(config, 'base', 'data_yaml', default='data.yaml')
+    _model_name_raw = model_name or get_param(config, 'base', 'model', default='yolov8m.pt')
+    _project_raw = project or get_param(config, 'base', 'project', default='runs')
     _name = name or get_param(config, 'base', 'name', default='experiment')
+    
+    # Преобразуем относительные пути к абсолютным относительно корня проекта
+    def resolve_path(path_str: str) -> str:
+        """Преобразует относительный путь к абсолютному относительно PROJECT_ROOT."""
+        p = Path(path_str)
+        if p.is_absolute():
+            return str(p)
+        return str((PROJECT_ROOT / p).resolve())
+    
+    _data_yaml = resolve_path(_data_yaml_raw)
+    _project = resolve_path(_project_raw)
+    
+    # Путь к модели: сначала ищем в корне проекта, затем в текущей директории,
+    # затем позволяем YOLO загрузить с интернета
+    _model_path = Path(_model_name_raw)
+    if not _model_path.is_absolute():
+        # Проверяем в корне проекта
+        project_model = PROJECT_ROOT / _model_path
+        if project_model.exists():
+            _model_name = str(project_model)
+        else:
+            # Оставляем как есть - YOLO загрузит из интернета или найдёт локально
+            _model_name = _model_name_raw
+    else:
+        _model_name = _model_name_raw
     
     # Параметры обучения
     _epochs = epochs if epochs is not None else get_param(config, 'training', 'epochs', default=150)
@@ -151,15 +180,25 @@ def train_model(
     if _device == "auto":
         _device = 0 if torch.cuda.is_available() else "cpu"
     
+    # Путь к результатам
+    _output_dir = Path(_project) / _name
+    _best_model_path = _output_dir / "weights" / "best.pt"
+    
     # Вывод конфигурации
     print("=" * 60)
     print("ОБУЧЕНИЕ YOLO ДЛЯ ДЕТЕКЦИИ ЖЕЛЕТЕЛЫХ")
     print("=" * 60)
+    print(f"Корень проекта: {PROJECT_ROOT}")
     print(f"Конфигурация: {config_path or DEFAULT_CONFIG_PATH}")
     print()
-    print("ОСНОВНЫЕ ПАРАМЕТРЫ:")
+    print("ПУТИ:")
     print(f"  Датасет: {_data_yaml}")
-    print(f"  Модель: {_model_name}")
+    print(f"  Результаты: {_output_dir}")
+    print(f"  Лучшая модель: {_best_model_path}")
+    print()
+    print("ОСНОВНЫЕ ПАРАМЕТРЫ:")
+    print(f"  Базовая модель: {_model_name}")
+    print(f"  Имя эксперимента: {_name}")
     print(f"  Эпох: {_epochs}")
     print(f"  Размер изображения: {_imgsz}")
     print(f"  Размер батча: {_batch}")
@@ -242,14 +281,12 @@ def train_model(
         resume=resume,
     )
     
-    # Путь к лучшей модели
-    best_model_path = Path(_project) / _name / "weights" / "best.pt"
-    
     print()
     print("=" * 60)
     print("ОБУЧЕНИЕ ЗАВЕРШЕНО")
     print("=" * 60)
-    print(f"Лучшая модель: {best_model_path}")
+    print(f"Результаты: {_output_dir}")
+    print(f"Лучшая модель: {_best_model_path}")
     print()
     
     # Валидация на тестовом наборе
@@ -265,7 +302,7 @@ def train_model(
     for i, ap in enumerate(metrics.box.ap50):
         print(f"  Класс {i}: {ap:.3f}")
     
-    return str(best_model_path)
+    return str(_best_model_path)
 
 
 def main():

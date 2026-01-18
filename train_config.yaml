@@ -4,9 +4,9 @@
 # Основные параметры
 base:
   data_yaml: data.yaml                # Путь к конфигурации датасета
-  model: yolov8n.pt                   # Базовая модель: yolov8n/s/m/l/x.pt
-  project: runs/jellyfish             # Директория для сохранения результатов
-  name: model_n_v1                    # Имя эксперимента
+  model: yolov8m.pt                   # Базовая модель: yolov8n/s/m/l/x.pt
+  project: runs             # Директория для сохранения результатов
+  name: model_m                    # Имя эксперимента
 
 # Параметры обучения
 training:
