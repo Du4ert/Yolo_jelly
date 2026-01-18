@@ -1,0 +1,77 @@
+# Конфигурация обучения YOLO для детекции желетелого макрозоопланктона
+# =========================================================================
+
+# Основные параметры
+base:
+  data_yaml: data.yaml                # Путь к конфигурации датасета
+  model: yolov8m.pt                   # Базовая модель: yolov8n/s/m/l/x.pt
+  project: runs/jellyfish             # Директория для сохранения результатов
+  name: experiment                    # Имя эксперимента
+
+# Параметры обучения
+training:
+  epochs: 150                         # Количество эпох
+  batch: 16                           # Размер батча (-1 для автоподбора)
+  imgsz: 640                          # Размер входного изображения
+  device: auto                        # Устройство: 0, 1, cpu, auto
+  workers: 4                          # Количество воркеров DataLoader
+  patience: 30                        # Early stopping patience (эпохи без улучшения)
+  save_period: 10                     # Сохранять чекпоинт каждые N эпох
+
+# Оптимизатор
+optimizer:
+  name: AdamW                         # Оптимизатор: SGD, Adam, AdamW, NAdam, RAdam, RMSProp
+  lr0: 0.001                          # Начальная скорость обучения
+  lrf: 0.01                           # Финальная lr = lr0 * lrf
+  momentum: 0.937                     # Момент для SGD или beta1 для Adam
+  weight_decay: 0.0005                # L2 регуляризация
+
+# Регуляризация
+regularization:
+  dropout: 0.1                        # Dropout (0.0 - отключено)
+
+# Аугментация изображений
+augmentation:
+  augment: true                       # Включить аугментацию
+  
+  # Цветовые преобразования (HSV)
+  hsv_h: 0.015                        # Оттенок (hue), диапазон [0, 1]
+  hsv_s: 0.7                          # Насыщенность, диапазон [0, 1]
+  hsv_v: 0.4                          # Яркость, диапазон [0, 1]
+  
+  # Геометрические преобразования
+  degrees: 180                        # Вращение ±degrees
+  translate: 0.1                      # Сдвиг ±translate (доля от размера)
+  scale: 0.5                          # Масштабирование ±scale
+  shear: 0.0                          # Скос ±shear градусов
+  perspective: 0.0                    # Перспектива [0, 0.001]
+  
+  # Отражения
+  flipud: 0.3                         # Вертикальное отражение (вероятность)
+  fliplr: 0.5                         # Горизонтальное отражение (вероятность)
+  
+  # Мозаика и смешивание
+  mosaic: 0.8                         # Мозаика из 4 изображений (вероятность)
+  mixup: 0.1                          # MixUp двух изображений (вероятность)
+  copy_paste: 0.0                     # Copy-Paste сегментов (вероятность)
+
+# Дополнительные параметры YOLO
+advanced:
+  close_mosaic: 10                    # Отключить мозаику за N эпох до конца
+  box: 7.5                            # Box loss gain
+  cls: 0.5                            # Class loss gain
+  dfl: 1.5                            # DFL loss gain
+  nbs: 64                             # Nominal batch size для масштабирования lr
+  overlap_mask: true                  # Маски могут перекрываться при сегментации
+  mask_ratio: 4                       # Downsampling ratio для масок
+  
+# Валидация
+validation:
+  val: true                           # Валидация в процессе обучения
+  plots: true                         # Сохранять графики обучения
+
+# Логирование
+logging:
+  verbose: true                       # Подробный вывод
+  tensorboard: false                  # Логирование в TensorBoard
+  wandb: false                        # Логирование в Weights & Biases
