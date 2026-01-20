@@ -2,7 +2,7 @@
 Интерактивная визуализация распределения желетелых по глубине.
 
 Строит векторный интерактивный график с возможностью фильтрации по видам
-и отображением CTD параметров.
+и отображением CTD параметров. Все данные на одном холсте с общей осью глубины.
 
 Использует Plotly для интерактивности и экспорта в векторные форматы (SVG, PDF).
 """
@@ -15,7 +15,6 @@ from typing import Optional, List
 
 try:
     import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
     PLOTLY_AVAILABLE = True
 except ImportError:
     PLOTLY_AVAILABLE = False
@@ -30,6 +29,9 @@ SPECIES_COLORS = {
     'Pleurobrachia pileus': '#9467bd'
 }
 
+# Цвета для CTD параметров
+CTD_COLORS = ['#e377c2', '#17becf', '#bcbd22', '#7f7f7f', '#8c564b']
+
 # Русские названия видов для легенды
 SPECIES_NAMES_RU = {
     'Aurelia aurita': 'Аурелия',
@@ -41,15 +43,7 @@ SPECIES_NAMES_RU = {
 
 
 def load_ctd_data(ctd_path: str) -> pd.DataFrame:
-    """
-    Загружает данные CTD с автоматическим определением разделителя.
-    
-    Args:
-        ctd_path: путь к CTD файлу
-        
-    Returns:
-        DataFrame с данными CTD
-    """
+    """Загружает данные CTD с автоматическим определением разделителя."""
     for sep in [',', ';', '|', '\t']:
         try:
             df = pd.read_csv(ctd_path, sep=sep, encoding='utf-8-sig')
@@ -57,7 +51,6 @@ def load_ctd_data(ctd_path: str) -> pd.DataFrame:
                 return df
         except:
             continue
-    
     return pd.read_csv(ctd_path, sep=None, engine='python', encoding='utf-8-sig')
 
 
@@ -67,6 +60,14 @@ def find_depth_column(df: pd.DataFrame) -> Optional[str]:
         if 'depth' in col.lower():
             return col
     return None
+
+
+def normalize_to_range(values: np.ndarray, target_min: float, target_max: float) -> np.ndarray:
+    """Нормализует значения в заданный диапазон."""
+    v_min, v_max = values.min(), values.max()
+    if v_max == v_min:
+        return np.full_like(values, (target_min + target_max) / 2)
+    return target_min + (values - v_min) / (v_max - v_min) * (target_max - target_min)
 
 
 def create_interactive_depth_plot(
@@ -81,14 +82,15 @@ def create_interactive_depth_plot(
     """
     Создаёт интерактивный векторный график распределения желетелых по глубине.
     
-    Все данные отображаются на одном холсте с возможностью:
-    - Фильтрации по видам через легенду (клик/двойной клик)
-    - Zoom и pan
-    - Hover с подробной информацией
-    - Экспорта в векторные форматы (SVG, PDF)
+    Все данные на ОДНОМ холсте:
+    - Ось Y — глубина (общая для всех данных)
+    - Организмы отображаются как точки (X ~ 0, размер = размер организма)
+    - Линии количества по глубине для каждого вида
+    - CTD параметры как дополнительные линии
+    - Все шкалы подписаны внизу графика
     
     Args:
-        track_sizes_path: путь к CSV с данными треков (detections_track_sizes.csv)
+        track_sizes_path: путь к CSV с данными треков
         output_path: путь для сохранения графика
         ctd_path: путь к CSV с данными CTD (опционально)
         ctd_columns: номера колонок CTD для отображения (0-based)
@@ -113,7 +115,6 @@ def create_interactive_depth_plot(
     missing = [col for col in required_cols if col not in df.columns]
     if missing:
         print(f"Ошибка: отсутствуют необходимые колонки: {missing}")
-        print(f"Доступные колонки: {list(df.columns)}")
         return
     
     # Фильтруем записи с глубиной
@@ -126,7 +127,7 @@ def create_interactive_depth_plot(
     # Определяем диапазон глубин
     depth_max = df_depth['object_depth_m'].max()
     
-    # Загружаем CTD данные если указаны
+    # Загружаем CTD данные
     ctd_df = None
     ctd_col_names = []
     ctd_depth_col = None
@@ -136,50 +137,38 @@ def create_interactive_depth_plot(
             ctd_df = load_ctd_data(ctd_path)
             ctd_depth_col = find_depth_column(ctd_df)
             
-            if ctd_depth_col is None:
-                print("Предупреждение: не найдена колонка глубины в CTD данных")
-                ctd_df = None
-            else:
+            if ctd_depth_col:
                 all_cols = list(ctd_df.columns)
                 for idx in ctd_columns:
                     if 0 <= idx < len(all_cols):
                         ctd_col_names.append(all_cols[idx])
-                    else:
-                        print(f"Предупреждение: индекс колонки {idx} вне диапазона")
                 
                 if ctd_col_names:
                     ctd_depth_max = ctd_df[ctd_depth_col].max()
                     if ctd_depth_max > depth_max:
                         depth_max = ctd_depth_max
-                    print(f"CTD колонки для отображения: {ctd_col_names}")
-                else:
-                    ctd_df = None
+                    print(f"CTD колонки: {ctd_col_names}")
         except Exception as e:
-            print(f"Предупреждение: не удалось загрузить CTD данные: {e}")
+            print(f"Предупреждение: не удалось загрузить CTD: {e}")
             ctd_df = None
     
-    # Определяем количество колонок для subplots
-    n_ctd = len(ctd_col_names) if ctd_df is not None else 0
-    n_cols = 2 + n_ctd  # scatter + means + CTD
-    
-    # Соотношение ширины колонок
-    column_widths = [0.4, 0.3] + [0.3 / max(n_ctd, 1)] * n_ctd if n_ctd > 0 else [0.5, 0.5]
-    
-    # Создаём subplot
-    subplot_titles = ['Организмы по глубине', 'Количество по глубине'] + ctd_col_names
-    
-    fig = make_subplots(
-        rows=1, cols=n_cols,
-        shared_yaxes=True,
-        column_widths=column_widths,
-        subplot_titles=subplot_titles,
-        horizontal_spacing=0.03
-    )
+    # Создаём фигуру
+    fig = go.Figure()
     
     # Виды в данных
     species_list = sorted(df_depth['class_name'].unique())
     
-    # Нормализация размеров для отображения
+    # === Зоны X-координат ===
+    # Организмы: X = 0..1 (с jitter)
+    # Количество по видам: X = 1.5..3 (нормализовано)
+    # CTD параметры: X = 3.5..5, 5.5..7, ... (каждый в своей зоне)
+    
+    ZONE_ORGANISMS = (0, 1)
+    ZONE_COUNTS = (1.5, 3)
+    ZONE_CTD_START = 3.5
+    ZONE_CTD_WIDTH = 1.5
+    
+    # Нормализация размеров маркеров
     size_min = df_depth['real_size_cm'].min()
     size_max = df_depth['real_size_cm'].max()
     
@@ -188,200 +177,238 @@ def create_interactive_depth_plot(
     else:
         df_depth['marker_size'] = 15
     
-    # === Scatter plot организмов ===
+    # === 1. Scatter plot организмов ===
+    np.random.seed(42)
+    
     for species in species_list:
         sp_df = df_depth[df_depth['class_name'] == species]
         color = SPECIES_COLORS.get(species, 'gray')
         species_ru = SPECIES_NAMES_RU.get(species, species)
         
-        # Jitter по X для разделения точек
-        np.random.seed(42)  # Для воспроизводимости
-        x_jitter = np.random.uniform(-0.3, 0.3, len(sp_df))
+        # X с jitter в зоне организмов
+        x_vals = np.random.uniform(ZONE_ORGANISMS[0] + 0.1, ZONE_ORGANISMS[1] - 0.1, len(sp_df))
         
-        # Hover текст
         hover_text = [
             f"<b>{species}</b><br>"
             f"Глубина: {depth:.1f} м<br>"
             f"Размер: {size:.1f} см<br>"
             f"Track ID: {tid}"
-            for depth, size, tid in zip(
-                sp_df['object_depth_m'], 
-                sp_df['real_size_cm'],
-                sp_df['track_id']
-            )
+            for depth, size, tid in zip(sp_df['object_depth_m'], sp_df['real_size_cm'], sp_df['track_id'])
         ]
         
-        fig.add_trace(
-            go.Scatter(
-                x=x_jitter,
-                y=sp_df['object_depth_m'],
-                mode='markers',
-                name=f"{species_ru} ({species})",
-                legendgroup=species,
-                marker=dict(
-                    size=sp_df['marker_size'],
-                    color=color,
-                    opacity=0.7,
-                    line=dict(width=0.5, color='black')
-                ),
-                hovertemplate="%{text}<extra></extra>",
-                text=hover_text
+        fig.add_trace(go.Scatter(
+            x=x_vals,
+            y=sp_df['object_depth_m'],
+            mode='markers',
+            name=f"● {species_ru}",
+            legendgroup=species,
+            marker=dict(
+                size=sp_df['marker_size'],
+                color=color,
+                opacity=0.7,
+                line=dict(width=0.5, color='black')
             ),
-            row=1, col=1
-        )
+            hovertemplate="%{text}<extra></extra>",
+            text=hover_text
+        ))
     
-    # === Линии средних по глубине ===
+    # === 2. Линии количества по глубине ===
     depth_bins = np.arange(0, depth_max + depth_bin, depth_bin)
     bin_centers = depth_bins[:-1] + depth_bin / 2
+    
+    # Находим максимальное количество для нормализации
+    all_counts = []
+    for species in species_list:
+        sp_df = df_depth[df_depth['class_name'] == species]
+        counts, _ = np.histogram(sp_df['object_depth_m'], bins=depth_bins)
+        all_counts.extend(counts)
+    max_count = max(all_counts) if all_counts else 1
     
     for species in species_list:
         sp_df = df_depth[df_depth['class_name'] == species]
         color = SPECIES_COLORS.get(species, 'gray')
         species_ru = SPECIES_NAMES_RU.get(species, species)
         
-        # Подсчёт по бинам
         counts, _ = np.histogram(sp_df['object_depth_m'], bins=depth_bins)
         
-        # Hover текст для линии
+        # Нормализуем X в зону количества
+        x_norm = ZONE_COUNTS[0] + counts / max_count * (ZONE_COUNTS[1] - ZONE_COUNTS[0])
+        
         hover_text = [
             f"<b>{species}</b><br>"
-            f"Глубина: {d:.1f}-{d+depth_bin:.1f} м<br>"
+            f"Глубина: {d:.1f}–{d+depth_bin:.1f} м<br>"
             f"Количество: {c}"
             for d, c in zip(depth_bins[:-1], counts)
         ]
         
-        fig.add_trace(
-            go.Scatter(
-                x=counts,
-                y=bin_centers,
-                mode='lines+markers',
-                name=f"{species_ru} (среднее)",
-                legendgroup=species,
-                showlegend=False,
-                line=dict(color=color, width=2),
-                marker=dict(size=6, color=color),
-                hovertemplate="%{text}<extra></extra>",
-                text=hover_text
-            ),
-            row=1, col=2
-        )
+        fig.add_trace(go.Scatter(
+            x=x_norm,
+            y=bin_centers,
+            mode='lines+markers',
+            name=f"― {species_ru} (N)",
+            legendgroup=species,
+            line=dict(color=color, width=2),
+            marker=dict(size=5, color=color),
+            hovertemplate="%{text}<extra></extra>",
+            text=hover_text
+        ))
     
-    # === CTD параметры ===
+    # === 3. CTD параметры ===
+    ctd_ranges = {}  # Для подписей шкал
+    
     if ctd_df is not None and ctd_col_names:
         for i, col_name in enumerate(ctd_col_names):
             ctd_plot_df = ctd_df[[ctd_depth_col, col_name]].dropna()
             
             if len(ctd_plot_df) > 0:
-                # Прореживаем данные для производительности (если слишком много точек)
-                if len(ctd_plot_df) > 5000:
-                    step = len(ctd_plot_df) // 5000
+                # Прореживаем если много точек
+                if len(ctd_plot_df) > 2000:
+                    step = len(ctd_plot_df) // 2000
                     ctd_plot_df = ctd_plot_df.iloc[::step]
+                
+                values = ctd_plot_df[col_name].values
+                depths = ctd_plot_df[ctd_depth_col].values
+                
+                # Зона для этого CTD параметра
+                zone_start = ZONE_CTD_START + i * ZONE_CTD_WIDTH
+                zone_end = zone_start + ZONE_CTD_WIDTH - 0.3
+                
+                # Нормализуем в зону
+                x_norm = normalize_to_range(values, zone_start, zone_end)
+                
+                # Сохраняем диапазон для подписи
+                ctd_ranges[col_name] = {
+                    'min': values.min(),
+                    'max': values.max(),
+                    'zone': (zone_start, zone_end),
+                    'color': CTD_COLORS[i % len(CTD_COLORS)]
+                }
                 
                 hover_text = [
                     f"<b>{col_name}</b><br>"
                     f"Глубина: {d:.2f} м<br>"
                     f"Значение: {v:.3f}"
-                    for d, v in zip(ctd_plot_df[ctd_depth_col], ctd_plot_df[col_name])
+                    for d, v in zip(depths, values)
                 ]
                 
-                fig.add_trace(
-                    go.Scatter(
-                        x=ctd_plot_df[col_name],
-                        y=ctd_plot_df[ctd_depth_col],
-                        mode='lines',
-                        name=col_name,
-                        line=dict(color='#333333', width=1.5),
-                        hovertemplate="%{text}<extra></extra>",
-                        text=hover_text
-                    ),
-                    row=1, col=3 + i
-                )
+                fig.add_trace(go.Scatter(
+                    x=x_norm,
+                    y=depths,
+                    mode='lines',
+                    name=f"― {col_name}",
+                    line=dict(color=CTD_COLORS[i % len(CTD_COLORS)], width=2),
+                    hovertemplate="%{text}<extra></extra>",
+                    text=hover_text
+                ))
     
-    # === Настройка осей ===
-    # Инвертируем ось Y (глубина вниз)
-    fig.update_yaxes(
-        autorange="reversed",
-        title_text="Глубина, м",
-        row=1, col=1
-    )
+    # === Вертикальные разделители зон ===
+    for x_pos in [ZONE_COUNTS[0] - 0.25, ZONE_CTD_START - 0.25]:
+        fig.add_vline(x=x_pos, line=dict(color='lightgray', width=1, dash='dot'))
     
-    # X-ось для scatter (скрываем)
-    fig.update_xaxes(
-        showticklabels=False,
-        title_text="",
-        row=1, col=1
-    )
+    # === Определяем общую ширину графика ===
+    n_ctd = len(ctd_col_names) if ctd_df is not None else 0
+    x_max = ZONE_CTD_START + n_ctd * ZONE_CTD_WIDTH if n_ctd > 0 else ZONE_COUNTS[1] + 0.5
     
-    # X-ось для количества
-    fig.update_xaxes(
-        title_text="Количество особей",
-        row=1, col=2
-    )
+    # === Аннотации шкал внизу графика ===
+    annotations = []
     
-    # X-оси для CTD
-    for i, col_name in enumerate(ctd_col_names):
-        fig.update_xaxes(
-            title_text=col_name,
-            row=1, col=3 + i
-        )
+    # Шкала организмов
+    annotations.append(dict(
+        x=(ZONE_ORGANISMS[0] + ZONE_ORGANISMS[1]) / 2,
+        y=1.02,
+        xref='x',
+        yref='paper',
+        text=f"<b>Организмы</b><br><span style='font-size:10px'>размер: {size_min:.1f}–{size_max:.1f} см</span>",
+        showarrow=False,
+        font=dict(size=11),
+        align='center'
+    ))
     
-    # === Общие настройки ===
+    # Шкала количества
+    annotations.append(dict(
+        x=(ZONE_COUNTS[0] + ZONE_COUNTS[1]) / 2,
+        y=1.02,
+        xref='x',
+        yref='paper',
+        text=f"<b>Количество</b><br><span style='font-size:10px'>0–{max_count} особей</span>",
+        showarrow=False,
+        font=dict(size=11),
+        align='center'
+    ))
+    
+    # Шкалы CTD
+    for col_name, info in ctd_ranges.items():
+        annotations.append(dict(
+            x=(info['zone'][0] + info['zone'][1]) / 2,
+            y=1.02,
+            xref='x',
+            yref='paper',
+            text=f"<b style='color:{info['color']}'>{col_name}</b><br>"
+                 f"<span style='font-size:10px'>{info['min']:.2f}–{info['max']:.2f}</span>",
+            showarrow=False,
+            font=dict(size=11),
+            align='center'
+        ))
+    
+    # Подсказка по фильтрации
+    annotations.append(dict(
+        x=0,
+        y=-0.08,
+        xref='paper',
+        yref='paper',
+        text="💡 Клик по легенде — скрыть/показать. Двойной клик — показать только выбранное.",
+        showarrow=False,
+        font=dict(size=10, color='gray'),
+        align='left'
+    ))
+    
+    # === Настройка layout ===
     fig.update_layout(
         title=dict(
-            text=f"<b>{title}</b><br><sub>Размер маркера пропорционален размеру организма ({size_min:.1f} - {size_max:.1f} см)</sub>",
+            text=f"<b>{title}</b>",
             x=0.5,
-            xanchor='center'
+            xanchor='center',
+            font=dict(size=16)
         ),
-        height=800,
-        width=400 * n_cols,
+        xaxis=dict(
+            range=[-0.2, x_max],
+            showticklabels=False,
+            showgrid=False,
+            zeroline=False,
+            title=''
+        ),
+        yaxis=dict(
+            autorange='reversed',
+            title='Глубина, м',
+            title_font=dict(size=14),
+            tickfont=dict(size=12),
+            gridcolor='lightgray',
+            gridwidth=0.5
+        ),
+        height=900,
+        width=max(800, 300 + n_ctd * 150),
+        margin=dict(t=120, b=80, l=80, r=200),
         legend=dict(
-            title="Виды (клик для фильтрации)",
+            title=dict(text="<b>Фильтры</b>", font=dict(size=12)),
             yanchor="top",
             y=0.99,
             xanchor="left",
             x=1.02,
-            bgcolor="rgba(255,255,255,0.9)",
+            bgcolor="rgba(255,255,255,0.95)",
             bordercolor="black",
-            borderwidth=1
+            borderwidth=1,
+            font=dict(size=11)
         ),
         hovermode='closest',
-        # Добавляем кнопки для управления
-        updatemenus=[
-            dict(
-                type="buttons",
-                direction="left",
-                buttons=[
-                    dict(
-                        args=[{"visible": True}],
-                        label="Показать все",
-                        method="restyle"
-                    ),
-                ],
-                pad={"r": 10, "t": 10},
-                showactive=False,
-                x=0.0,
-                xanchor="left",
-                y=1.15,
-                yanchor="top"
-            ),
-        ]
-    )
-    
-    # Добавляем аннотацию с инструкцией
-    fig.add_annotation(
-        text="💡 Клик по легенде — скрыть/показать вид. Двойной клик — показать только этот вид.",
-        xref="paper", yref="paper",
-        x=0, y=1.12,
-        showarrow=False,
-        font=dict(size=10, color="gray"),
-        align="left"
+        annotations=annotations,
+        plot_bgcolor='white'
     )
     
     # === Экспорт ===
     output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     
     if export_format == "html":
-        # Интерактивный HTML
         fig.write_html(
             str(output_path.with_suffix('.html')),
             include_plotlyjs=True,
@@ -389,57 +416,48 @@ def create_interactive_depth_plot(
             config={
                 'displayModeBar': True,
                 'displaylogo': False,
-                'modeBarButtonsToAdd': ['drawline', 'drawopenpath', 'eraseshape'],
                 'toImageButtonOptions': {
                     'format': 'svg',
                     'filename': output_path.stem,
-                    'height': 800,
-                    'width': 400 * n_cols,
                     'scale': 2
                 }
             }
         )
-        print(f"Интерактивный график сохранён: {output_path.with_suffix('.html')}")
+        print(f"Интерактивный график: {output_path.with_suffix('.html')}")
         
     elif export_format == "svg":
         try:
             fig.write_image(str(output_path.with_suffix('.svg')), format='svg')
-            print(f"SVG график сохранён: {output_path.with_suffix('.svg')}")
+            print(f"SVG график: {output_path.with_suffix('.svg')}")
         except Exception as e:
-            print(f"Ошибка экспорта в SVG (установите kaleido: pip install kaleido): {e}")
+            print(f"Ошибка SVG (pip install kaleido): {e}")
             
     elif export_format == "pdf":
         try:
             fig.write_image(str(output_path.with_suffix('.pdf')), format='pdf')
-            print(f"PDF график сохранён: {output_path.with_suffix('.pdf')}")
+            print(f"PDF график: {output_path.with_suffix('.pdf')}")
         except Exception as e:
-            print(f"Ошибка экспорта в PDF (установите kaleido: pip install kaleido): {e}")
+            print(f"Ошибка PDF (pip install kaleido): {e}")
             
     elif export_format == "png":
         try:
             fig.write_image(str(output_path.with_suffix('.png')), format='png', scale=2)
-            print(f"PNG график сохранён: {output_path.with_suffix('.png')}")
+            print(f"PNG график: {output_path.with_suffix('.png')}")
         except Exception as e:
-            print(f"Ошибка экспорта в PNG (установите kaleido: pip install kaleido): {e}")
+            print(f"Ошибка PNG (pip install kaleido): {e}")
     
-    # Всегда сохраняем HTML для интерактивности
+    # Всегда сохраняем HTML
     if export_format != "html":
         html_path = output_path.with_suffix('.html')
         fig.write_html(str(html_path), include_plotlyjs=True, full_html=True)
-        print(f"Также сохранён интерактивный HTML: {html_path}")
+        print(f"+ интерактивный HTML: {html_path}")
 
 
 def parse_ctd_columns(value: str) -> List[int]:
     """Парсит строку с номерами колонок CTD."""
     if not value:
         return []
-    
-    result = []
-    for part in value.split(','):
-        part = part.strip()
-        if part.isdigit():
-            result.append(int(part))
-    return result
+    return [int(p.strip()) for p in value.split(',') if p.strip().isdigit()]
 
 
 def main():
@@ -447,136 +465,72 @@ def main():
         description="Интерактивная визуализация распределения желетелых по глубине",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Примеры использования:
+Примеры:
 
-  # Интерактивный HTML график
-  python interactive_plot.py --track-sizes detections_track_sizes.csv -o output/plot
+  # Интерактивный HTML
+  python interactive_plot.py -t detections_track_sizes.csv -o output/plot
 
-  # С CTD данными (температура - колонка 6, солёность - колонка 7)
-  python interactive_plot.py --track-sizes detections_track_sizes.csv \\
-                             --ctd ctd_data.csv --ctd-columns 6,7 -o output/plot
+  # С CTD данными
+  python interactive_plot.py -t detections_track_sizes.csv \\
+      --ctd ctd.csv --ctd-columns 6,7 -o output/plot
 
-  # Экспорт в SVG (векторный)
-  python interactive_plot.py --track-sizes detections_track_sizes.csv \\
-                             --format svg -o output/plot
+  # Экспорт в SVG/PDF
+  python interactive_plot.py -t detections_track_sizes.csv -f svg -o output/plot
+  python interactive_plot.py -t detections_track_sizes.csv -f pdf -o output/plot
 
-  # Экспорт в PDF
-  python interactive_plot.py --track-sizes detections_track_sizes.csv \\
-                             --format pdf -o output/plot
+  # Посмотреть колонки CTD
+  python interactive_plot.py --ctd ctd.csv --list-ctd-columns
 
-  # Посмотреть колонки в CTD файле
-  python interactive_plot.py --ctd ctd_data.csv --list-ctd-columns
-
-Интерактивные возможности (в HTML):
-  - Клик по легенде: скрыть/показать вид
-  - Двойной клик по легенде: показать только этот вид
+Интерактивность (HTML):
+  - Клик по легенде: скрыть/показать
+  - Двойной клик: показать только выбранное
   - Колёсико мыши: zoom
-  - Перетаскивание: pan
-  - Hover: подробная информация о точке
-  - Toolbar: сохранение в SVG/PNG
+  - Hover: подробная информация
         """
     )
     
-    parser.add_argument(
-        "--track-sizes", "-t",
-        help="Путь к CSV с размерами треков (detections_track_sizes.csv)"
-    )
-    parser.add_argument(
-        "--output", "-o",
-        default="output/depth_distribution",
-        help="Путь для сохранения (без расширения)"
-    )
-    parser.add_argument(
-        "--depth-bin",
-        type=float,
-        default=1.0,
-        help="Шаг биннинга по глубине в метрах (по умолчанию: 1.0)"
-    )
-    parser.add_argument(
-        "--title",
-        default="Распределение желетелых по глубине",
-        help="Заголовок графика"
-    )
-    parser.add_argument(
-        "--format", "-f",
-        choices=["html", "svg", "pdf", "png"],
-        default="html",
-        help="Формат экспорта (по умолчанию: html)"
-    )
-    
-    # CTD параметры
-    parser.add_argument(
-        "--ctd",
-        help="Путь к CSV с данными CTD"
-    )
-    parser.add_argument(
-        "--ctd-columns",
-        type=str,
-        default="",
-        help="Номера колонок CTD через запятую (0-based), например: 5,6,7"
-    )
-    parser.add_argument(
-        "--list-ctd-columns",
-        action="store_true",
-        help="Показать список колонок в CTD файле и выйти"
-    )
+    parser.add_argument("--track-sizes", "-t", help="CSV с размерами треков")
+    parser.add_argument("--output", "-o", default="output/depth_plot", help="Путь (без расширения)")
+    parser.add_argument("--depth-bin", type=float, default=1.0, help="Шаг биннинга (м)")
+    parser.add_argument("--title", default="Распределение желетелых по глубине", help="Заголовок")
+    parser.add_argument("--format", "-f", choices=["html", "svg", "pdf", "png"], default="html")
+    parser.add_argument("--ctd", help="CSV с данными CTD")
+    parser.add_argument("--ctd-columns", type=str, default="", help="Колонки CTD (0-based): 5,6,7")
+    parser.add_argument("--list-ctd-columns", action="store_true", help="Показать колонки CTD")
     
     args = parser.parse_args()
     
-    # Проверка plotly
     if not PLOTLY_AVAILABLE:
-        print("Ошибка: plotly не установлен")
-        print("Установите: pip install plotly kaleido")
+        print("Ошибка: pip install plotly kaleido")
         return 1
     
-    # Показать колонки CTD
     if args.list_ctd_columns:
         if not args.ctd:
-            print("Ошибка: укажите путь к CTD файлу через --ctd")
+            print("Укажите --ctd")
             return 1
-        
-        try:
-            ctd_df = load_ctd_data(args.ctd)
-            print(f"\nКолонки в файле {args.ctd}:\n")
-            for i, col in enumerate(ctd_df.columns):
-                sample = ctd_df[col].dropna().head(1)
-                sample_str = str(sample.values[0]) if len(sample) > 0 else "N/A"
-                if len(sample_str) > 30:
-                    sample_str = sample_str[:27] + "..."
-                print(f"  {i:2d}: {col:<30} (пример: {sample_str})")
-            print()
-            return 0
-        except Exception as e:
-            print(f"Ошибка чтения CTD файла: {e}")
-            return 1
+        ctd_df = load_ctd_data(args.ctd)
+        print(f"\nКолонки в {args.ctd}:\n")
+        for i, col in enumerate(ctd_df.columns):
+            sample = ctd_df[col].dropna().head(1)
+            val = str(sample.values[0])[:30] if len(sample) > 0 else "N/A"
+            print(f"  {i:2d}: {col:<30} ({val})")
+        return 0
     
-    # Проверка входных файлов
     if not args.track_sizes:
-        print("Ошибка: укажите --track-sizes")
         parser.print_help()
         return 1
     
     try:
-        # Создание директории вывода
-        output_path = Path(args.output)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Парсим колонки CTD
-        ctd_columns = parse_ctd_columns(args.ctd_columns)
-        
-        # Создаём график
         create_interactive_depth_plot(
             track_sizes_path=args.track_sizes,
-            output_path=str(output_path),
+            output_path=args.output,
             ctd_path=args.ctd,
-            ctd_columns=ctd_columns if ctd_columns else None,
+            ctd_columns=parse_ctd_columns(args.ctd_columns) or None,
             depth_bin=args.depth_bin,
             title=args.title,
             export_format=args.format
         )
-        
         return 0
-        
     except Exception as e:
         print(f"Ошибка: {e}")
         import traceback
