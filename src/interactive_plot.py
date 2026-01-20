@@ -62,14 +62,6 @@ def find_depth_column(df: pd.DataFrame) -> Optional[str]:
     return None
 
 
-def normalize_to_range(values: np.ndarray, target_min: float, target_max: float) -> np.ndarray:
-    """Нормализует значения в заданный диапазон."""
-    v_min, v_max = values.min(), values.max()
-    if v_max == v_min:
-        return np.full_like(values, (target_min + target_max) / 2)
-    return target_min + (values - v_min) / (v_max - v_min) * (target_max - target_min)
-
-
 def create_interactive_depth_plot(
     track_sizes_path: str,
     output_path: str,
@@ -82,12 +74,12 @@ def create_interactive_depth_plot(
     """
     Создаёт интерактивный векторный график распределения желетелых по глубине.
     
-    Все данные на ОДНОМ холсте:
+    Все данные на ОДНОМ холсте с совмещёнными осями X:
     - Ось Y — глубина (общая для всех данных)
-    - Организмы отображаются как точки (X ~ 0, размер = размер организма)
+    - Основная ось X — количество особей
+    - Точки организмов — размер пропорционален размеру организма
     - Линии количества по глубине для каждого вида
-    - CTD параметры как дополнительные линии
-    - Все шкалы подписаны внизу графика
+    - CTD параметры — дополнительные оси X сверху
     
     Args:
         track_sizes_path: путь к CSV с данными треков
@@ -158,16 +150,6 @@ def create_interactive_depth_plot(
     # Виды в данных
     species_list = sorted(df_depth['class_name'].unique())
     
-    # === Зоны X-координат ===
-    # Организмы: X = 0..1 (с jitter)
-    # Количество по видам: X = 1.5..3 (нормализовано)
-    # CTD параметры: X = 3.5..5, 5.5..7, ... (каждый в своей зоне)
-    
-    ZONE_ORGANISMS = (0, 1)
-    ZONE_COUNTS = (1.5, 3)
-    ZONE_CTD_START = 3.5
-    ZONE_CTD_WIDTH = 1.5
-    
     # Нормализация размеров маркеров
     size_min = df_depth['real_size_cm'].min()
     size_max = df_depth['real_size_cm'].max()
@@ -177,7 +159,46 @@ def create_interactive_depth_plot(
     else:
         df_depth['marker_size'] = 15
     
-    # === 1. Scatter plot организмов ===
+    # === Вычисляем количество по глубине ===
+    depth_bins = np.arange(0, depth_max + depth_bin, depth_bin)
+    bin_centers = depth_bins[:-1] + depth_bin / 2
+    
+    # Находим максимальное количество для нормализации
+    all_counts = []
+    species_counts = {}
+    for species in species_list:
+        sp_df = df_depth[df_depth['class_name'] == species]
+        counts, _ = np.histogram(sp_df['object_depth_m'], bins=depth_bins)
+        species_counts[species] = counts
+        all_counts.extend(counts)
+    max_count = max(all_counts) if all_counts else 1
+    
+    # === 1. Линии количества по глубине (основная ось X) ===
+    for species in species_list:
+        color = SPECIES_COLORS.get(species, 'gray')
+        species_ru = SPECIES_NAMES_RU.get(species, species)
+        counts = species_counts[species]
+        
+        hover_text = [
+            f"<b>{species}</b><br>"
+            f"Глубина: {d:.1f}–{d+depth_bin:.1f} м<br>"
+            f"Количество: {c}"
+            for d, c in zip(depth_bins[:-1], counts)
+        ]
+        
+        fig.add_trace(go.Scatter(
+            x=counts,
+            y=bin_centers,
+            mode='lines+markers',
+            name=f"― {species_ru} (N)",
+            legendgroup=species,
+            line=dict(color=color, width=2),
+            marker=dict(size=6, color=color),
+            hovertemplate="%{text}<extra></extra>",
+            text=hover_text
+        ))
+    
+    # === 2. Scatter plot организмов ===
     np.random.seed(42)
     
     for species in species_list:
@@ -185,8 +206,15 @@ def create_interactive_depth_plot(
         color = SPECIES_COLORS.get(species, 'gray')
         species_ru = SPECIES_NAMES_RU.get(species, species)
         
-        # X с jitter в зоне организмов
-        x_vals = np.random.uniform(ZONE_ORGANISMS[0] + 0.1, ZONE_ORGANISMS[1] - 0.1, len(sp_df))
+        # X — небольшой jitter около количества в бине
+        x_vals = []
+        for depth in sp_df['object_depth_m']:
+            bin_idx = int(depth // depth_bin)
+            if bin_idx >= len(species_counts[species]):
+                bin_idx = len(species_counts[species]) - 1
+            base_x = species_counts[species][bin_idx] if bin_idx >= 0 else 0
+            jitter = np.random.uniform(-0.3, 0.3) * max_count * 0.1
+            x_vals.append(base_x + jitter)
         
         hover_text = [
             f"<b>{species}</b><br>"
@@ -205,56 +233,16 @@ def create_interactive_depth_plot(
             marker=dict(
                 size=sp_df['marker_size'],
                 color=color,
-                opacity=0.7,
+                opacity=0.6,
                 line=dict(width=0.5, color='black')
             ),
             hovertemplate="%{text}<extra></extra>",
             text=hover_text
         ))
     
-    # === 2. Линии количества по глубине ===
-    depth_bins = np.arange(0, depth_max + depth_bin, depth_bin)
-    bin_centers = depth_bins[:-1] + depth_bin / 2
-    
-    # Находим максимальное количество для нормализации
-    all_counts = []
-    for species in species_list:
-        sp_df = df_depth[df_depth['class_name'] == species]
-        counts, _ = np.histogram(sp_df['object_depth_m'], bins=depth_bins)
-        all_counts.extend(counts)
-    max_count = max(all_counts) if all_counts else 1
-    
-    for species in species_list:
-        sp_df = df_depth[df_depth['class_name'] == species]
-        color = SPECIES_COLORS.get(species, 'gray')
-        species_ru = SPECIES_NAMES_RU.get(species, species)
-        
-        counts, _ = np.histogram(sp_df['object_depth_m'], bins=depth_bins)
-        
-        # Нормализуем X в зону количества
-        x_norm = ZONE_COUNTS[0] + counts / max_count * (ZONE_COUNTS[1] - ZONE_COUNTS[0])
-        
-        hover_text = [
-            f"<b>{species}</b><br>"
-            f"Глубина: {d:.1f}–{d+depth_bin:.1f} м<br>"
-            f"Количество: {c}"
-            for d, c in zip(depth_bins[:-1], counts)
-        ]
-        
-        fig.add_trace(go.Scatter(
-            x=x_norm,
-            y=bin_centers,
-            mode='lines+markers',
-            name=f"― {species_ru} (N)",
-            legendgroup=species,
-            line=dict(color=color, width=2),
-            marker=dict(size=5, color=color),
-            hovertemplate="%{text}<extra></extra>",
-            text=hover_text
-        ))
-    
-    # === 3. CTD параметры ===
-    ctd_ranges = {}  # Для подписей шкал
+    # === 3. CTD параметры (дополнительные оси X) ===
+    n_ctd = len(ctd_col_names) if ctd_df is not None else 0
+    ctd_axes_info = []
     
     if ctd_df is not None and ctd_col_names:
         for i, col_name in enumerate(ctd_col_names):
@@ -269,20 +257,16 @@ def create_interactive_depth_plot(
                 values = ctd_plot_df[col_name].values
                 depths = ctd_plot_df[ctd_depth_col].values
                 
-                # Зона для этого CTD параметра
-                zone_start = ZONE_CTD_START + i * ZONE_CTD_WIDTH
-                zone_end = zone_start + ZONE_CTD_WIDTH - 0.3
+                # Нормализуем CTD значения в диапазон основной оси X
+                v_min, v_max = values.min(), values.max()
+                x_normalized = (values - v_min) / (v_max - v_min) * max_count if v_max > v_min else np.full_like(values, max_count / 2)
                 
-                # Нормализуем в зону
-                x_norm = normalize_to_range(values, zone_start, zone_end)
-                
-                # Сохраняем диапазон для подписи
-                ctd_ranges[col_name] = {
-                    'min': values.min(),
-                    'max': values.max(),
-                    'zone': (zone_start, zone_end),
+                ctd_axes_info.append({
+                    'name': col_name,
+                    'min': v_min,
+                    'max': v_max,
                     'color': CTD_COLORS[i % len(CTD_COLORS)]
-                }
+                })
                 
                 hover_text = [
                     f"<b>{col_name}</b><br>"
@@ -292,68 +276,22 @@ def create_interactive_depth_plot(
                 ]
                 
                 fig.add_trace(go.Scatter(
-                    x=x_norm,
+                    x=x_normalized,
                     y=depths,
                     mode='lines',
                     name=f"― {col_name}",
-                    line=dict(color=CTD_COLORS[i % len(CTD_COLORS)], width=2),
+                    line=dict(color=CTD_COLORS[i % len(CTD_COLORS)], width=2, dash='dash'),
                     hovertemplate="%{text}<extra></extra>",
                     text=hover_text
                 ))
     
-    # === Вертикальные разделители зон ===
-    for x_pos in [ZONE_COUNTS[0] - 0.25, ZONE_CTD_START - 0.25]:
-        fig.add_vline(x=x_pos, line=dict(color='lightgray', width=1, dash='dot'))
-    
-    # === Определяем общую ширину графика ===
-    n_ctd = len(ctd_col_names) if ctd_df is not None else 0
-    x_max = ZONE_CTD_START + n_ctd * ZONE_CTD_WIDTH if n_ctd > 0 else ZONE_COUNTS[1] + 0.5
-    
-    # === Аннотации шкал внизу графика ===
+    # === Аннотации для шкал ===
     annotations = []
-    
-    # Шкала организмов
-    annotations.append(dict(
-        x=(ZONE_ORGANISMS[0] + ZONE_ORGANISMS[1]) / 2,
-        y=1.02,
-        xref='x',
-        yref='paper',
-        text=f"<b>Организмы</b><br><span style='font-size:10px'>размер: {size_min:.1f}–{size_max:.1f} см</span>",
-        showarrow=False,
-        font=dict(size=11),
-        align='center'
-    ))
-    
-    # Шкала количества
-    annotations.append(dict(
-        x=(ZONE_COUNTS[0] + ZONE_COUNTS[1]) / 2,
-        y=1.02,
-        xref='x',
-        yref='paper',
-        text=f"<b>Количество</b><br><span style='font-size:10px'>0–{max_count} особей</span>",
-        showarrow=False,
-        font=dict(size=11),
-        align='center'
-    ))
-    
-    # Шкалы CTD
-    for col_name, info in ctd_ranges.items():
-        annotations.append(dict(
-            x=(info['zone'][0] + info['zone'][1]) / 2,
-            y=1.02,
-            xref='x',
-            yref='paper',
-            text=f"<b style='color:{info['color']}'>{col_name}</b><br>"
-                 f"<span style='font-size:10px'>{info['min']:.2f}–{info['max']:.2f}</span>",
-            showarrow=False,
-            font=dict(size=11),
-            align='center'
-        ))
     
     # Подсказка по фильтрации
     annotations.append(dict(
         x=0,
-        y=-0.08,
+        y=-0.12,
         xref='paper',
         yref='paper',
         text="💡 Клик по легенде — скрыть/показать. Двойной клик — показать только выбранное.",
@@ -362,20 +300,55 @@ def create_interactive_depth_plot(
         align='left'
     ))
     
+    # Информация о размерах маркеров
+    annotations.append(dict(
+        x=1,
+        y=-0.12,
+        xref='paper',
+        yref='paper',
+        text=f"Размер маркера: {size_min:.1f}–{size_max:.1f} см",
+        showarrow=False,
+        font=dict(size=10, color='gray'),
+        align='right'
+    ))
+    
+    # Шкалы CTD параметров вверху (используем yref='paper', значения в пределах [0,1])
+    # Аннотации будут отображаться в области margin.t
+    for i, info in enumerate(ctd_axes_info):
+        annotations.append(dict(
+            x=0,
+            y=1.0,  # Верхняя граница графика
+            xref='paper',
+            yref='paper',
+            text=f"<span style='color:{info['color']}'><b>{info['name']}</b>: {info['min']:.2f} — {info['max']:.2f}</span>",
+            showarrow=False,
+            font=dict(size=10),
+            align='left',
+            yshift=15 + i * 18  # Сдвиг вверх в пикселях
+        ))
+    
     # === Настройка layout ===
+    top_margin = 80 + n_ctd * 20
+    
     fig.update_layout(
         title=dict(
             text=f"<b>{title}</b>",
             x=0.5,
             xanchor='center',
-            font=dict(size=16)
+            font=dict(size=16),
+            yref='paper',
+            y=0.98  # Фиксированное значение в допустимом диапазоне
         ),
         xaxis=dict(
-            range=[-0.2, x_max],
-            showticklabels=False,
-            showgrid=False,
-            zeroline=False,
-            title=''
+            title='Количество особей',
+            title_font=dict(size=12),
+            tickfont=dict(size=11),
+            gridcolor='lightgray',
+            gridwidth=0.5,
+            zeroline=True,
+            zerolinecolor='gray',
+            zerolinewidth=1,
+            range=[0, max_count * 1.1]
         ),
         yaxis=dict(
             autorange='reversed',
@@ -386,8 +359,8 @@ def create_interactive_depth_plot(
             gridwidth=0.5
         ),
         height=900,
-        width=max(800, 300 + n_ctd * 150),
-        margin=dict(t=120, b=80, l=80, r=200),
+        width=800,
+        margin=dict(t=top_margin, b=100, l=80, r=150),
         legend=dict(
             title=dict(text="<b>Фильтры</b>", font=dict(size=12)),
             yanchor="top",
