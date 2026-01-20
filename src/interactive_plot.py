@@ -77,8 +77,8 @@ def create_interactive_depth_plot(
     Все данные на ОДНОМ холсте с совмещёнными осями X:
     - Ось Y — глубина (общая для всех данных)
     - Основная ось X — количество особей
-    - Точки организмов — размер пропорционален размеру организма
-    - Линии количества по глубине для каждого вида
+    - Точки организмов — размер пропорционален размеру организма (отдельная фильтрация)
+    - Линии количества по глубине для каждого вида (отдельная фильтрация)
     - CTD параметры — дополнительные оси X сверху
     
     Args:
@@ -173,7 +173,8 @@ def create_interactive_depth_plot(
         all_counts.extend(counts)
     max_count = max(all_counts) if all_counts else 1
     
-    # === 1. Линии количества по глубине (основная ось X) ===
+    # === 1. Линии количества по глубине (группа "Численность") ===
+    first_count_trace = True
     for species in species_list:
         color = SPECIES_COLORS.get(species, 'gray')
         species_ru = SPECIES_NAMES_RU.get(species, species)
@@ -190,16 +191,19 @@ def create_interactive_depth_plot(
             x=counts,
             y=bin_centers,
             mode='lines+markers',
-            name=f"― {species_ru} (N)",
-            legendgroup=species,
+            name=f"{species_ru}",
+            legendgroup="counts",
+            legendgrouptitle_text="Численность (N)" if first_count_trace else None,
             line=dict(color=color, width=2),
             marker=dict(size=6, color=color),
             hovertemplate="%{text}<extra></extra>",
             text=hover_text
         ))
+        first_count_trace = False
     
-    # === 2. Scatter plot организмов ===
+    # === 2. Scatter plot организмов (группа "Размеры") ===
     np.random.seed(42)
+    first_size_trace = True
     
     for species in species_list:
         sp_df = df_depth[df_depth['class_name'] == species]
@@ -228,8 +232,9 @@ def create_interactive_depth_plot(
             x=x_vals,
             y=sp_df['object_depth_m'],
             mode='markers',
-            name=f"● {species_ru}",
-            legendgroup=species,
+            name=f"{species_ru}",
+            legendgroup="sizes",
+            legendgrouptitle_text=f"Размеры ({size_min:.1f}–{size_max:.1f} см)" if first_size_trace else None,
             marker=dict(
                 size=sp_df['marker_size'],
                 color=color,
@@ -239,12 +244,14 @@ def create_interactive_depth_plot(
             hovertemplate="%{text}<extra></extra>",
             text=hover_text
         ))
+        first_size_trace = False
     
-    # === 3. CTD параметры (дополнительные оси X) ===
+    # === 3. CTD параметры (группа "CTD") ===
     n_ctd = len(ctd_col_names) if ctd_df is not None else 0
     ctd_axes_info = []
     
     if ctd_df is not None and ctd_col_names:
+        first_ctd_trace = True
         for i, col_name in enumerate(ctd_col_names):
             ctd_plot_df = ctd_df[[ctd_depth_col, col_name]].dropna()
             
@@ -279,11 +286,14 @@ def create_interactive_depth_plot(
                     x=x_normalized,
                     y=depths,
                     mode='lines',
-                    name=f"― {col_name}",
+                    name=f"{col_name}",
+                    legendgroup="ctd",
+                    legendgrouptitle_text="CTD параметры" if first_ctd_trace else None,
                     line=dict(color=CTD_COLORS[i % len(CTD_COLORS)], width=2, dash='dash'),
                     hovertemplate="%{text}<extra></extra>",
                     text=hover_text
                 ))
+                first_ctd_trace = False
     
     # === Аннотации для шкал ===
     annotations = []
@@ -300,31 +310,18 @@ def create_interactive_depth_plot(
         align='left'
     ))
     
-    # Информация о размерах маркеров
-    annotations.append(dict(
-        x=1,
-        y=-0.12,
-        xref='paper',
-        yref='paper',
-        text=f"Размер маркера: {size_min:.1f}–{size_max:.1f} см",
-        showarrow=False,
-        font=dict(size=10, color='gray'),
-        align='right'
-    ))
-    
-    # Шкалы CTD параметров вверху (используем yref='paper', значения в пределах [0,1])
-    # Аннотации будут отображаться в области margin.t
+    # Шкалы CTD параметров вверху
     for i, info in enumerate(ctd_axes_info):
         annotations.append(dict(
             x=0,
-            y=1.0,  # Верхняя граница графика
+            y=1.0,
             xref='paper',
             yref='paper',
             text=f"<span style='color:{info['color']}'><b>{info['name']}</b>: {info['min']:.2f} — {info['max']:.2f}</span>",
             showarrow=False,
             font=dict(size=10),
             align='left',
-            yshift=15 + i * 18  # Сдвиг вверх в пикселях
+            yshift=15 + i * 18
         ))
     
     # === Настройка layout ===
@@ -337,7 +334,7 @@ def create_interactive_depth_plot(
             xanchor='center',
             font=dict(size=16),
             yref='paper',
-            y=0.98  # Фиксированное значение в допустимом диапазоне
+            y=0.98
         ),
         xaxis=dict(
             title='Количество особей',
@@ -360,7 +357,7 @@ def create_interactive_depth_plot(
         ),
         height=900,
         width=800,
-        margin=dict(t=top_margin, b=100, l=80, r=150),
+        margin=dict(t=top_margin, b=100, l=80, r=180),
         legend=dict(
             title=dict(text="<b>Фильтры</b>", font=dict(size=12)),
             yanchor="top",
@@ -370,7 +367,9 @@ def create_interactive_depth_plot(
             bgcolor="rgba(255,255,255,0.95)",
             bordercolor="black",
             borderwidth=1,
-            font=dict(size=11)
+            font=dict(size=10),
+            groupclick="toggleitem",  # Клик переключает отдельный элемент
+            tracegroupgap=10  # Отступ между группами
         ),
         hovermode='closest',
         annotations=annotations,
@@ -455,10 +454,15 @@ def main():
   python interactive_plot.py --ctd ctd.csv --list-ctd-columns
 
 Интерактивность (HTML):
-  - Клик по легенде: скрыть/показать
-  - Двойной клик: показать только выбранное
+  - Клик по легенде: скрыть/показать отдельный элемент
+  - Двойной клик по заголовку группы: показать/скрыть всю группу
   - Колёсико мыши: zoom
   - Hover: подробная информация
+  
+Группы фильтрации:
+  - Численность (N): линии количества по глубине
+  - Размеры: точки организмов (размер = размер организма)
+  - CTD параметры: профили температуры, солёности и др.
         """
     )
     
