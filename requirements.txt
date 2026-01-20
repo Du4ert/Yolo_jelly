@@ -9,3 +9,7 @@ torch>=2.0.0
 # Batch processing
 SQLAlchemy>=2.0.0
 PyQt6>=6.5.0
+
+# Interactive visualization
+plotly>=5.18.0
+kaleido>=0.2.1
