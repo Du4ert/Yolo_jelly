@@ -336,7 +336,7 @@ class VolumeEstimationProcessor:
         output_csv: str,
         tracks_csv: Optional[str] = None,
         ctd_csv: Optional[str] = None,
-        fov: float = 100.0,
+        fov: float = 156.0,
         near_distance: float = 0.3,
         detection_distance: Optional[float] = None,
         depth_min: Optional[float] = None,

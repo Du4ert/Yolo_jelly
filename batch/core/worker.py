@@ -400,7 +400,7 @@ class Worker(QThread):
             output_csv=volume_csv,
             tracks_csv=track_sizes_csv,  # Передаём статистику размеров, а не треки детекции
             ctd_csv=ctd_csv,
-            fov=params.get("fov", 100.0),
+            fov=params.get("fov", 156.0),
             near_distance=params.get("near_distance", 0.3),
             fps=video.fps or 60.0,
             frame_width=video.width or 1920,
@@ -486,7 +486,7 @@ class Worker(QThread):
             
             # Параметры постобработки
             postprocess_params = {
-                'fov': current_params.get('fov', 100.0),
+                'fov': current_params.get('fov', 156.0),
                 'near_distance': current_params.get('near_distance', 0.3),
                 'depth_bin': current_params.get('depth_bin', 2.0),
             }
@@ -618,7 +618,7 @@ class Worker(QThread):
                 "video_use_geometry": True,
                 "volume": True,
                 "analysis": True,
-                "fov": 100.0,
+                "fov": 156.0,
                 "near_distance": 0.3,
                 "depth_bin": 2.0,
             }
@@ -632,7 +632,7 @@ class Worker(QThread):
         
         # Общие параметры для всех подзадач
         common_params = {
-            "fov": params.get("fov", 100.0),
+            "fov": params.get("fov", 156.0),
             "near_distance": params.get("near_distance", 0.3),
             "depth_bin": params.get("depth_bin", 2.0),
         }

@@ -422,9 +422,9 @@ class NewTaskDialog(QDialog):
         
         self.pp_spin_fov = QDoubleSpinBox()
         self.pp_spin_fov.setRange(60, 180)
-        self.pp_spin_fov.setValue(100.0)
+        self.pp_spin_fov.setValue(156.0)
         self.pp_spin_fov.setSuffix("°")
-        self.pp_spin_fov.setToolTip("Горизонтальный угол обзора камеры (GoPro Wide ~100°)")
+        self.pp_spin_fov.setToolTip("Горизонтальный угол обзора камеры (GoPro Wide ~156°)")
         params_form.addRow("FOV камеры:", self.pp_spin_fov)
         
         self.pp_spin_near = QDoubleSpinBox()

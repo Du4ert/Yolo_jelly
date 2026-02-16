@@ -191,9 +191,9 @@ class PostProcessDialog(QDialog):
         
         self.spin_fov = QDoubleSpinBox()
         self.spin_fov.setRange(60, 180)
-        self.spin_fov.setValue(100.0)
+        self.spin_fov.setValue(156.0)
         self.spin_fov.setSuffix("°")
-        self.spin_fov.setToolTip("Горизонтальный угол обзора камеры (GoPro Wide ~100°)")
+        self.spin_fov.setToolTip("Горизонтальный угол обзора камеры (GoPro Wide ~156°)")
         params_layout.addRow("FOV камеры:", self.spin_fov)
         
         self.spin_near = QDoubleSpinBox()

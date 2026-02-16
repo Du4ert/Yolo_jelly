@@ -10,13 +10,13 @@
     "save_video": true
   },
   "ui": {
-    "window_geometry": "AdnQywADAAAAAAC2AAAANQAABQEAAAMOAAAAtgAAAFMAAAUBAAADDgAAAAAAAAAABbcAAAC2AAAAUwAABQEAAAMO",
+    "window_geometry": "AdnQywADAAAAAAAA////+AAAB38AAAQHAAABmgAAAKYAAAXlAAADYQAAAAACAAAAB4AAAAAAAAAAFwAAB38AAAQH",
     "window_state": null,
-    "last_browse_path": "D:\\Видео",
+    "last_browse_path": "C:\\WORK\\Claude_allowed\\yolo_jellyfish\\test_video\\balls",
     "last_model_id": 1,
     "splitter_sizes": [
-      337,
-      751
+      591,
+      1317
     ]
   }
 }

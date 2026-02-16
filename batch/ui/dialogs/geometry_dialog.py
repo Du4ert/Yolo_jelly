@@ -141,7 +141,7 @@ class VolumeWorker(QThread):
         output_csv: str,
         tracks_csv: Optional[str] = None,
         ctd_csv: Optional[str] = None,
-        fov_horizontal: float = 100.0,
+        fov_horizontal: float = 156.0,
         near_distance: float = 0.3,
         detection_distance: Optional[float] = None,
         depth_min: Optional[float] = None,
@@ -523,7 +523,7 @@ class GeometryDialog(QDialog):
         
         self.vol_fov = QDoubleSpinBox()
         self.vol_fov.setRange(50.0, 180.0)
-        self.vol_fov.setValue(100.0)
+        self.vol_fov.setValue(156.0)
         self.vol_fov.setSingleStep(5.0)
         self.vol_fov.setSuffix("°")
         camera_layout.addRow("Горизонтальный FOV:", self.vol_fov)

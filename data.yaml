@@ -7,12 +7,8 @@ val: images/val
 test: images/test
 
 # Количество классов
-nc: 5
+nc: 1
 
 # Имена классов (порядок важен — соответствует class_id)
 names:
-  0: Aurelia aurita
-  1: Beroe ovata
-  2: Mnemiopsis leidyi
-  3: Pleurobrachia pileus
-  4: Rhizostoma pulmo
+  0: Ball

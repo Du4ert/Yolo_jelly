@@ -54,7 +54,7 @@ class CameraCalibration:
     frame_height: int = 2160
     
     # Угол обзора
-    fov_horizontal: float = 100.0
+    fov_horizontal: float = 156.0
     
     # === Калибровочные коэффициенты (эмпирические, GoPro 12 Wide 4K) ===
     # Формула: d = A * k^B, где k - удельный прирост размера (%/м)
@@ -62,8 +62,8 @@ class CameraCalibration:
     distance_coef_B: float = -0.644
     
     # Формула: p = C * d^D, где p - px/мм, d - дистанция (м)
-    pixel_calib_C: float = 2.432
-    pixel_calib_D: float = -1.0334
+    pixel_calib_C: float = 4.35
+    pixel_calib_D: float = -1.25
     
     # Диапазон надёжных измерений (по SNR анализу)
     min_reliable_distance: float = 0.3   # ближе - слишком крупно
