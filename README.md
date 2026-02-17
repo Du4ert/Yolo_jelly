@@ -7,10 +7,10 @@
 | Класс ID | Вид | Тип |
 |----------|-----|-----|
 | 0 | *Aurelia aurita* | Медуза |
-| 1 | *Rhizostoma pulmo* | Медуза |
-| 2 | *Beroe ovata* | Гребневик |
-| 3 | *Mnemiopsis leidyi* | Гребневик |
-| 4 | *Pleurobrachia pileus* | Гребневик |
+| 1 | *Beroe ovata* | Гребневик |
+| 2 | *Mnemiopsis leidyi* | Гребневик |
+| 3 | *Pleurobrachia pileus* | Гребневик |
+| 4 | *Rhizostoma pulmo* | Медуза |
 
 ## Структура проекта
 

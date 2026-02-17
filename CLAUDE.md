@@ -63,7 +63,7 @@ Calibrated for GoPro 12 Wide 4K (K=2365 px/m at 1m). Size formula: `size_real = 
 Defined in `data.yaml` and `dataset/classes.txt`:
 0: Aurelia aurita, 1: Beroe ovata, 2: Mnemiopsis leidyi, 3: Pleurobrachia pileus, 4: Rhizostoma pulmo
 
-Note: class ID order differs between `data.yaml` (alphabetical) and `README.md` — `data.yaml` is authoritative.
+Class IDs are in alphabetical order, defined authoritatively in `data.yaml`.
 
 ## Key Configuration Files
 
