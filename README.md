@@ -245,7 +245,7 @@ python src/camera_geometry.py geometry \
 Оценка размеров объектов по трекам.
 
 ```bash
-# Базовый вызов (камера считается вертикальной)
+# Базовый вызов (камера считается вертикальной, направление определяется автоматически)
 python src/camera_geometry.py size \
     --detections output/detections.csv \
     --output output/detections_with_size.csv \
@@ -256,6 +256,12 @@ python src/camera_geometry.py size \
     --detections output/detections.csv \
     --geometry output/geometry.csv \
     --output output/detections_with_size.csv
+
+# Явно указать направление камеры (подъём)
+python src/camera_geometry.py size \
+    --detections output/detections.csv \
+    --geometry output/geometry.csv \
+    --direction ascent
 
 # Отключить коррекцию наклона (даже если есть geometry.csv)
 python src/camera_geometry.py size \
@@ -276,6 +282,17 @@ python src/camera_geometry.py size \
 | `--min-track-points` | 3 | Мин. точек в треке |
 | `--apply-tilt-correction` | True | Применять коррекцию наклона |
 | `--no-tilt-correction` | — | Отключить коррекцию наклона |
+| `--direction` | `auto` | Направление камеры: `auto`, `descent`, `ascent` |
+
+**Направление движения камеры:**
+
+Модуль поддерживает расчёт размеров как при спуске (descent), так и при подъёме (ascent) камеры.
+
+- `auto` (по умолчанию) — направление определяется автоматически по динамике глубины
+- `descent` — спуск (глубина растёт, объекты ниже камеры)
+- `ascent` — подъём (глубина уменьшается, объекты выше камеры)
+
+Различия в формулах: при спуске `object_depth = camera_depth + distance`, при подъёме `object_depth = camera_depth - distance`.
 
 **Коррекция наклона камеры:**
 
@@ -312,6 +329,7 @@ python src/camera_geometry.py size \
 - `object_depth_m` — глубина объекта в столбе воды
 - `k_mean_pct_per_m`, `k_std_pct_per_m` — статистика k (%/м)
 - `method`, `confidence` — метаданные
+- `camera_direction` — направление движения камеры (`descent` / `ascent`)
 - `warnings` — предупреждения (включая `tilt_corrected_XXdeg` если применена коррекция)
 
 ---
@@ -321,6 +339,7 @@ python src/camera_geometry.py size \
 Расчёт осмотренного объёма воды и плотности организмов.
 
 ```bash
+# Спуск (направление определяется автоматически)
 python src/camera_geometry.py volume \
     --detections output/detections.csv \
     --tracks output/track_sizes.csv \
@@ -328,6 +347,13 @@ python src/camera_geometry.py volume \
     --output output/volume.csv \
     --fov 100 \
     --near-distance 0.3
+
+# Явно указать направление (подъём)
+python src/camera_geometry.py volume \
+    --detections output/detections.csv \
+    --tracks output/track_sizes.csv \
+    --ctd ctd_data.csv \
+    --direction ascent
 ```
 
 | Параметр | По умолчанию | Описание |
@@ -345,8 +371,9 @@ python src/camera_geometry.py volume \
 | `--fps` | 60.0 | Частота кадров |
 | `--width` | 1920 | Ширина кадра |
 | `--height` | 1080 | Высота кадра |
+| `--direction` | `auto` | Направление камеры: `auto`, `descent`, `ascent` |
 
-**Важно:** Объём считается по ВСЕМУ диапазону погружения. Пустая вода учитывается для правильного расчёта плотности.
+**Важно:** Объём считается по ВСЕМУ диапазону погружения/подъёма. Пустая вода учитывается для правильного расчёта плотности.
 
 **Выходные параметры:**
 - `total_volume_m3` — общий осмотренный объём (м³)
@@ -355,6 +382,7 @@ python src/camera_geometry.py volume \
 - `depth_min_m`, `depth_max_m` — диапазон глубин
 - `detection_distance_m` — эффективная дистанция обнаружения
 - `cross_section_area_m2` — площадь сечения
+- `camera_direction` — направление движения камеры (`descent` / `ascent`)
 - `count_<Species>` — количество особей по видам
 - `density_<Species>_per_m3` — плотность (особей/м³)
 

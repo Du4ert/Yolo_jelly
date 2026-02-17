@@ -6,6 +6,11 @@
 - Расчёт реального размера объектов по динамике изменения размера в треке
 - Определение абсолютной глубины объекта в толще воды
 
+Поддерживает оба направления движения камеры:
+- descent (спуск) — камера движется вниз, объекты ниже камеры
+- ascent (подъём) — камера движется вверх, объекты выше камеры
+- auto — автоматическое определение направления по данным глубины
+
 Калибровочные данные получены для GoPro 12 Wide 4K (3840x2160).
 
 Формулы расчёта размеров:
@@ -99,7 +104,8 @@ class TrackSizeEstimate:
     2. d = 24.68 * |k|^(-0.644)               - дистанция до объекта (м)
     3. p = 2.432 * d^(-1.0334)                - калибровка px/мм
     4. size = pixels_max / p                  - размер объекта по макс. кадру (мм)
-    5. object_depth = camera_depth + distance - глубина объекта (камера смотрит вниз)
+    5. object_depth = camera_depth ± distance - глубина объекта
+       (+ при спуске: объект ниже камеры, - при подъёме: объект выше камеры)
     """
     track_id: int
     class_name: str
@@ -118,8 +124,10 @@ class TrackSizeEstimate:
     n_points_used: int             # Количество пар для расчёта k
     warnings: List[str] = field(default_factory=list)
     # Покадровые размеры для k-method: {frame: size_mm}
-    # Расстояние вычисляется динамически: object_depth_m - camera_depth
+    # Расстояние вычисляется динамически: |object_depth_m - camera_depth|
     frame_data: Dict[int, float] = field(default_factory=dict)
+    # Направление движения камеры: 'descent' или 'ascent'
+    camera_direction: str = 'descent'
 
 
 # =============================================================================
@@ -272,6 +280,81 @@ def _get_first_frame_data(
     return first_idx, first_row, first_row['size_pix']
 
 
+def detect_camera_direction(
+    track_df: pd.DataFrame,
+    global_direction: Optional[str] = None
+) -> str:
+    """
+    Определяет направление движения камеры для данного трека.
+    
+    Логика:
+    - Если задано global_direction ('descent' или 'ascent') — используется оно
+    - Если 'auto' или None — определяется по данным глубины трека:
+      * depth увеличивается → descent (спуск)
+      * depth уменьшается → ascent (подъём)
+    
+    Args:
+        track_df: DataFrame трека с колонкой 'depth_m'
+        global_direction: 'descent', 'ascent' или 'auto'/None
+    
+    Returns:
+        'descent' или 'ascent'
+    """
+    if global_direction in ('descent', 'ascent'):
+        return global_direction
+    
+    # Автоопределение по данным глубины
+    if 'depth_m' not in track_df.columns:
+        return 'descent'  # по умолчанию
+    
+    valid = track_df[track_df['depth_m'].notna()].sort_values('frame')
+    if len(valid) < 2:
+        return 'descent'
+    
+    # Линейный тренд глубины по кадрам
+    depth_first = valid['depth_m'].iloc[0]
+    depth_last = valid['depth_m'].iloc[-1]
+    delta_depth = depth_last - depth_first
+    
+    if delta_depth >= 0:
+        return 'descent'  # глубина растёт = спуск
+    else:
+        return 'ascent'   # глубина уменьшается = подъём
+
+
+def detect_global_camera_direction(
+    df: pd.DataFrame,
+    explicit_direction: Optional[str] = None
+) -> str:
+    """
+    Определяет общее направление движения камеры по всему набору данных.
+    
+    Args:
+        df: DataFrame со всеми детекциями
+        explicit_direction: явно заданное направление ('descent', 'ascent', 'auto', None)
+    
+    Returns:
+        'descent' или 'ascent'
+    """
+    if explicit_direction in ('descent', 'ascent'):
+        return explicit_direction
+    
+    if 'depth_m' not in df.columns:
+        return 'descent'
+    
+    valid = df[df['depth_m'].notna()].sort_values('frame')
+    if len(valid) < 2:
+        return 'descent'
+    
+    # Используем первые и последние 10% данных для устойчивой оценки
+    n = len(valid)
+    n_edge = max(1, int(n * 0.1))
+    depth_start = valid['depth_m'].iloc[:n_edge].median()
+    depth_end = valid['depth_m'].iloc[-n_edge:].median()
+    
+    return 'descent' if depth_end >= depth_start else 'ascent'
+
+
 # =============================================================================
 # Основные функции оценки размеров
 # =============================================================================
@@ -333,22 +416,30 @@ def estimate_size_by_k_method(
     min_size_change_pct: float = 10.0,
     geometry_df: Optional[pd.DataFrame] = None,
     apply_tilt_correction: bool = True,
-    smoothing_window: int = 3
+    smoothing_window: int = 3,
+    camera_direction: str = 'auto'
 ) -> Optional[TrackSizeEstimate]:
     """
     Оценивает размер объекта методом удельного прироста k.
     
+    Поддерживает оба направления движения камеры:
+    - descent (спуск): глубина растёт, объект ниже камеры, object_depth = camera + distance
+    - ascent (подъём): глубина уменьшается, объект выше камеры, object_depth = camera - distance
+    - auto: автоопределение по данным глубины
+    
     Алгоритм:
     1. Берём пары точек, где размер изменился минимум на 10%
     2. Для каждой пары вычисляем:
-       - k = (Δpx/px₁) / Δdepth_camera
+       - k = (Δpx/px₁) / |Δdepth_camera|
        - k_corr = k / cos(θ) (коррекция наклона)
        - distance = 24.68 × |k|^(-0.644)
        - pixel_calib = 2.432 × d^(-1.0334)
        - size_mm = pixels_end / pixel_calib
     3. Сглаживаем ряд размеров скользящей медианой
     4. Выбираем последний стабильный размер до начала уменьшения
-    5. Глубина объекта = глубина камеры + дистанция
+    5. Глубина объекта:
+       - спуск: camera_depth + distance (объект ниже)
+       - подъём: camera_depth - distance (объект выше)
     
     Коррекция наклона:
     При наклоне камеры на угол θ от вертикали, реальное изменение дистанции
@@ -364,6 +455,7 @@ def estimate_size_by_k_method(
         geometry_df: DataFrame с данными геометрии (наклон камеры)
         apply_tilt_correction: применять ли коррекцию наклона
         smoothing_window: размер окна для сглаживания медианой
+        camera_direction: направление движения камеры: 'descent', 'ascent' или 'auto'
     """
     track_id = track_df['track_id'].iloc[0]
     class_name = track_df['class_name'].iloc[0]
@@ -387,6 +479,10 @@ def estimate_size_by_k_method(
         lambda r: _get_bbox_size_pixels(r, frame_width, frame_height), axis=1
     )
     valid_df = valid_df.sort_values('frame').reset_index(drop=True)
+    
+    # Определяем направление движения камеры
+    direction = detect_camera_direction(valid_df, camera_direction)
+    is_ascent = (direction == 'ascent')
     
     # Проверяем достаточное изменение глубины
     depth_change = valid_df['depth_m'].max() - valid_df['depth_m'].min()
@@ -436,7 +532,10 @@ def estimate_size_by_k_method(
                 continue
             
             delta_pixels = pixels2 - pixels1
-            k_raw = (delta_pixels / pixels1) / delta_depth  # доли/м (до коррекции)
+            # Используем |delta_depth| для k: при подъёме delta_depth < 0,
+            # но объект приближается и размер растёт → k должен быть > 0
+            abs_delta_depth = abs(delta_depth)
+            k_raw = (delta_pixels / pixels1) / abs_delta_depth  # доли/м (до коррекции)
             k = k_raw
             
             # Применяем коррекцию наклона камеры
@@ -466,8 +565,13 @@ def estimate_size_by_k_method(
                 
                 # Глубина камеры на конец пары
                 camera_depth_end = depth2
-                # Глубина объекта = глубина камеры + дистанция
-                object_depth = camera_depth_end + distance
+                # Глубина объекта:
+                # спуск — объект ниже камеры: camera + distance
+                # подъём — объект выше камеры: camera - distance
+                if is_ascent:
+                    object_depth = camera_depth_end - distance
+                else:
+                    object_depth = camera_depth_end + distance
                 
                 pair_data.append({
                     'frame_start': frame1,
@@ -689,17 +793,22 @@ def estimate_size_by_k_method(
         method="k_method",
         n_points_used=len(pair_data_filtered),
         warnings=warnings_list,
-        frame_data=frame_sizes  # теперь только размеры, расстояние вычисляется динамически
+        frame_data=frame_sizes,  # теперь только размеры, расстояние вычисляется динамически
+        camera_direction=direction
     )
 
 
 def estimate_size_fixed(
     track_df: pd.DataFrame,
-    calibration: CameraCalibration
+    calibration: CameraCalibration,
+    camera_direction: str = 'auto'
 ) -> Optional[TrackSizeEstimate]:
     """
     Оценивает размер для классов с фиксированным размером.
     Глубина объекта вычисляется по последнему кадру трека.
+    
+    При подъёме: объект выше камеры, object_depth = camera - distance
+    При спуске: объект ниже камеры, object_depth = camera + distance
     """
     track_id = track_df['track_id'].iloc[0]
     class_name = track_df['class_name'].iloc[0]
@@ -728,9 +837,18 @@ def estimate_size_fixed(
     # Размер в пикселях на последнем кадре
     last_size_pix = _get_bbox_size_pixels(last_row, frame_width, frame_height)
     
-    # Глубина объекта = глубина камеры + дистанция
+    # Определяем направление движения камеры
+    direction = detect_camera_direction(valid_df, camera_direction)
+    is_ascent = (direction == 'ascent')
+    
+    # Глубина объекта:
+    # спуск — объект ниже камеры: camera + distance
+    # подъём — объект выше камеры: camera - distance
     if pd.notna(camera_depth_last):
-        object_depth = camera_depth_last + distance
+        if is_ascent:
+            object_depth = camera_depth_last - distance
+        else:
+            object_depth = camera_depth_last + distance
     else:
         object_depth = np.nan
     
@@ -753,17 +871,22 @@ def estimate_size_fixed(
         confidence=0.5,  # средняя уверенность для фиксированных
         method="fixed",
         n_points_used=len(valid_df),
-        warnings=["fixed_size_estimate"]
+        warnings=["fixed_size_estimate"],
+        camera_direction=direction
     )
 
 
 def estimate_size_from_typical(
     track_df: pd.DataFrame,
-    calibration: CameraCalibration
+    calibration: CameraCalibration,
+    camera_direction: str = 'auto'
 ) -> Optional[TrackSizeEstimate]:
     """
     Оценивает размер на основе типичных размеров вида.
     Используется как fallback когда k-метод не работает.
+    
+    При подъёме: объект выше камеры, object_depth = camera - distance
+    При спуске: объект ниже камеры, object_depth = camera + distance
     """
     track_id = track_df['track_id'].iloc[0]
     class_name = track_df['class_name'].iloc[0]
@@ -804,8 +927,18 @@ def estimate_size_from_typical(
     
     distance = np.clip(distance, 0.2, 5.0)
     
+    # Определяем направление движения камеры
+    direction = detect_camera_direction(valid_df, camera_direction)
+    is_ascent = (direction == 'ascent')
+    
+    # Глубина объекта:
+    # спуск — объект ниже камеры: camera + distance
+    # подъём — объект выше камеры: camera - distance
     if pd.notna(camera_depth_max):
-        object_depth = camera_depth_max + distance  # камера смотрит вниз, объект глубже
+        if is_ascent:
+            object_depth = camera_depth_max - distance
+        else:
+            object_depth = camera_depth_max + distance
     else:
         object_depth = np.nan
     
@@ -825,7 +958,8 @@ def estimate_size_from_typical(
         confidence=0.2,
         method="typical",
         n_points_used=len(valid_df),
-        warnings=["estimated_from_typical_size"]
+        warnings=["estimated_from_typical_size"],
+        camera_direction=direction
     )
 
 
@@ -960,10 +1094,16 @@ def process_detections_with_size(
     min_depth_change: float = 0.1,
     min_track_points: int = 3,
     apply_tilt_correction: bool = True,
+    camera_direction: str = 'auto',
     verbose: bool = True
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Обрабатывает детекции и добавляет оценки размеров.
+    
+    Поддерживает оба направления движения камеры:
+    - descent (спуск): глубина растёт, объекты ниже камеры
+    - ascent (подъём): глубина уменьшается, объекты выше камеры
+    - auto: автоопределение по данным глубины
     
     Стратегия:
     1. Сначала пытаемся k-метод для треков с хорошими данными
@@ -980,6 +1120,7 @@ def process_detections_with_size(
         min_depth_change: мин. изменение глубины для k-метода
         min_track_points: мин. точек в треке
         apply_tilt_correction: применять ли коррекцию наклона камеры
+        camera_direction: направление движения камеры: 'descent', 'ascent' или 'auto'
         verbose: выводить ли информацию о прогрессе
     """
     if calibration is None:
@@ -1004,6 +1145,13 @@ def process_detections_with_size(
     if verbose and geometry_df is not None:
         print(f"Загружены данные геометрии: {len(geometry_df)} интервалов")
     
+    # Определяем общее направление движения камеры
+    global_direction = detect_global_camera_direction(df, camera_direction)
+    if verbose:
+        direction_label = 'спуск (descent)' if global_direction == 'descent' else 'подъём (ascent)'
+        auto_label = ' (авто)' if camera_direction == 'auto' else ''
+        print(f"Направление камеры: {direction_label}{auto_label}")
+    
     # Этап 0: классы с фиксированным размером (P. pileus)
     fixed_estimates = []
     
@@ -1019,7 +1167,7 @@ def process_detections_with_size(
         
         # Сначала проверяем фиксированные классы
         if class_name in FIXED_SIZE_CLASSES:
-            estimate = estimate_size_fixed(track_df, calibration)
+            estimate = estimate_size_fixed(track_df, calibration, camera_direction=global_direction)
             if estimate is not None:
                 fixed_estimates.append(estimate)
             continue
@@ -1029,7 +1177,8 @@ def process_detections_with_size(
             min_depth_change=min_depth_change,
             min_points=min_track_points,
             geometry_df=geometry_df,
-            apply_tilt_correction=apply_tilt_correction
+            apply_tilt_correction=apply_tilt_correction,
+            camera_direction=global_direction
         )
         
         if estimate is not None:
@@ -1046,7 +1195,7 @@ def process_detections_with_size(
     typical_estimates = []
     
     for track_id, track_df in tracks_for_typical:
-        estimate = estimate_size_from_typical(track_df, calibration)
+        estimate = estimate_size_from_typical(track_df, calibration, camera_direction=global_direction)
         if estimate is not None:
             typical_estimates.append(estimate)
     
@@ -1078,6 +1227,7 @@ def process_detections_with_size(
                 'confidence': e.confidence,
                 'method': e.method,
                 'n_points': e.n_points_used,
+                'camera_direction': e.camera_direction,
                 'warnings': ';'.join(e.warnings) if e.warnings else ''
             }
             for e in all_estimates
@@ -1105,11 +1255,12 @@ def process_detections_with_size(
             # Глубина объекта фиксирована для всего трека
             df.at[idx, 'object_depth_m'] = est.object_depth_m
             
-            # Расстояние вычисляется динамически: object_depth - camera_depth
-            # Оно всегда уменьшается при погружении камеры
+            # Расстояние вычисляется динамически: |object_depth - camera_depth|
+            # Оно всегда уменьшается при приближении камеры к объекту
+            # (как при спуске, так и при подъёме)
             if pd.notna(camera_depth) and est.object_depth_m is not None:
-                distance = est.object_depth_m - camera_depth
-                df.at[idx, 'distance_to_object_m'] = round(max(distance, 0.0), 3)  # не может быть отрицательным
+                distance = abs(est.object_depth_m - camera_depth)
+                df.at[idx, 'distance_to_object_m'] = round(max(distance, 0.0), 3)
             
             # Определяем размер для этого кадра
             if est.frame_data and frame in est.frame_data:
@@ -1309,7 +1460,8 @@ class VolumeEstimate:
     fov_horizontal_deg: float
     fov_vertical_deg: float
     duration_s: float
-    descent_rate_m_s: float
+    vertical_rate_m_s: float       # скорость движения (м/с), всегда > 0
+    camera_direction: str          # 'descent' или 'ascent'
     density_by_class: Dict[str, float]
     counts_by_class: Dict[str, int]
 
@@ -1382,8 +1534,14 @@ def estimate_detection_distance(
         if len(track_detections) == 0:
             continue
         
-        min_camera_depth = track_detections['depth_m'].min()
-        max_dist = abs(object_depth - min_camera_depth)
+        # Максимальная дистанция = при первом обнаружении (камера максимально далеко)
+        # При descent: первый кадр — min depth → max_dist = |obj - min_depth|
+        # При ascent: первый кадр — max depth → max_dist = |obj - max_depth|
+        # Берём максимум из обоих, т.к. abs() и так даёт правильный ответ
+        depths = track_detections['depth_m'].dropna()
+        if len(depths) == 0:
+            continue
+        max_dist = max(abs(object_depth - depths.min()), abs(object_depth - depths.max()))
         
         if 0.5 < max_dist < 5.0:
             max_distances.append(max_dist)
@@ -1405,6 +1563,7 @@ def calculate_surveyed_volume(
     depth_range: Optional[Tuple[float, float]] = None,
     total_duration_s: Optional[float] = None,
     fps: float = 60.0,
+    camera_direction: str = 'auto',
     verbose: bool = True
 ) -> VolumeEstimate:
     """Вычисляет осмотренный объём воды на основе данных погружения."""
@@ -1439,6 +1598,9 @@ def calculate_surveyed_volume(
     
     depth_traversed = depth_max - depth_min
     
+    # Определяем направление движения камеры
+    direction = detect_global_camera_direction(detections_df, camera_direction)
+    
     if total_duration_s is not None:
         duration = total_duration_s
     elif ctd_df is not None and 'timestamp_s' in ctd_df.columns:
@@ -1452,7 +1614,7 @@ def calculate_surveyed_volume(
             timestamps = detections_df['timestamp_s'].dropna()
             duration = timestamps.max() - timestamps.min() if len(timestamps) > 1 else 0
     
-    descent_rate = depth_traversed / duration if duration > 0 else 0
+    vertical_rate = depth_traversed / duration if duration > 0 else 0
     
     if detection_distance_m is None:
         d_far = estimate_detection_distance(tracks_df, detections_df, calibration)
@@ -1462,8 +1624,10 @@ def calculate_surveyed_volume(
     d_near = near_distance_m
     
     if verbose:
+        direction_label = 'спуск (descent)' if direction == 'descent' else 'подъём (ascent)'
         print(f"=== РАСЧЁТ ОСМОТРЕННОГО ОБЪЁМА ===")
         print(f"Источник: {source}")
+        print(f"Направление: {direction_label}")
         print(f"Диапазон глубин: {depth_min:.1f} - {depth_max:.1f} м")
         print(f"Дистанция обнаружения: {d_near:.1f} - {d_far:.2f} м")
     
@@ -1500,7 +1664,8 @@ def calculate_surveyed_volume(
         fov_horizontal_deg=fov_h_deg,
         fov_vertical_deg=round(fov_v_deg, 1),
         duration_s=round(duration, 1),
-        descent_rate_m_s=round(descent_rate, 3),
+        vertical_rate_m_s=round(vertical_rate, 3),
+        camera_direction=direction,
         density_by_class=density_by_class,
         counts_by_class=counts_by_class
     )
@@ -1520,6 +1685,7 @@ def process_volume_estimation(
     fps: float = 60.0,
     frame_width: int = 3840,
     frame_height: int = 2160,
+    camera_direction: str = 'auto',
     verbose: bool = True
 ) -> VolumeEstimate:
     """Обрабатывает файлы и вычисляет осмотренный объём."""
@@ -1561,6 +1727,7 @@ def process_volume_estimation(
         depth_range=depth_range,
         total_duration_s=total_duration,
         fps=fps,
+        camera_direction=camera_direction,
         verbose=verbose
     )
     
@@ -1570,13 +1737,15 @@ def process_volume_estimation(
                 'total_volume_m3', 'frustum_volume_m3', 'swept_volume_m3',
                 'depth_min_m', 'depth_max_m', 'depth_traversed_m',
                 'detection_distance_m', 'near_distance_m', 'cross_section_area_m2',
-                'fov_horizontal_deg', 'fov_vertical_deg', 'duration_s', 'descent_rate_m_s'
+                'fov_horizontal_deg', 'fov_vertical_deg', 'duration_s',
+                'vertical_rate_m_s', 'camera_direction'
             ],
             'value': [
                 result.total_volume_m3, result.frustum_volume_m3, result.swept_volume_m3,
                 result.depth_range_m[0], result.depth_range_m[1], result.depth_traversed_m,
                 result.detection_distance_m, result.near_distance_m, result.cross_section_area_m2,
-                result.fov_horizontal_deg, result.fov_vertical_deg, result.duration_s, result.descent_rate_m_s
+                result.fov_horizontal_deg, result.fov_vertical_deg, result.duration_s,
+                result.vertical_rate_m_s, result.camera_direction
             ]
         }
         
@@ -1624,6 +1793,8 @@ def main():
                       help='Применять коррекцию наклона камеры (по умолчанию: вкл.)')
     size.add_argument('--no-tilt-correction', dest='apply_tilt_correction', action='store_false',
                       help='Отключить коррекцию наклона камеры')
+    size.add_argument('--direction', choices=['auto', 'descent', 'ascent'], default='auto',
+                      help='Направление движения камеры: auto, descent, ascent (по умолчанию: auto)')
     
     # volume
     vol = subparsers.add_parser('volume', help='Расчёт осмотренного объёма воды')
@@ -1640,6 +1811,8 @@ def main():
     vol.add_argument('--fps', type=float, default=60.0)
     vol.add_argument('--width', type=int, default=3840)
     vol.add_argument('--height', type=int, default=2160)
+    vol.add_argument('--direction', choices=['auto', 'descent', 'ascent'], default='auto',
+                      help='Направление движения камеры: auto, descent, ascent (по умолчанию: auto)')
     
     args = parser.parse_args()
     
@@ -1654,7 +1827,8 @@ def main():
             frame_width=args.width, frame_height=args.height,
             min_depth_change=args.min_depth_change,
             min_track_points=args.min_track_points,
-            apply_tilt_correction=args.apply_tilt_correction
+            apply_tilt_correction=args.apply_tilt_correction,
+            camera_direction=args.direction
         )
     
     elif args.command == 'volume':
@@ -1672,7 +1846,8 @@ def main():
             total_duration=args.duration,
             fps=args.fps,
             frame_width=args.width,
-            frame_height=args.height
+            frame_height=args.height,
+            camera_direction=args.direction
         )
     
     else:
