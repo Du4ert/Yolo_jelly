@@ -195,9 +195,14 @@ class TaskTable(QWidget):
         item.setTextAlignment(0, Qt.AlignmentFlag.AlignCenter)
         
         # Видео + модель
-        video_name = video.filename if video else "???"
         model_name = model.name if model else "???"
-        item.setText(1, f"🎬 {video_name}")
+        if video:
+            dive = self.repo.get_dive(video.dive_id)
+            dive_name = dive.name if dive else Path(video.filepath).parent.name
+            video_label = f"{dive_name} / {video.filename}"
+        else:
+            video_label = "???"
+        item.setText(1, f"🎬 {video_label}")
         item.setToolTip(1, f"Видео: {video.filepath if video else '???'}\nМодель: {model_name}")
         
         # Статус
