@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QLabel,
+    QLineEdit,
     QDoubleSpinBox,
     QCheckBox,
     QPushButton,
@@ -182,7 +183,25 @@ class PostProcessDialog(QDialog):
         self.chk_analysis = QCheckBox("📊 Анализ и графики")
         self.chk_analysis.setToolTip("Генерация графиков вертикального распределения и отчётов")
         ops_layout.addWidget(self.chk_analysis)
-        
+
+        # Колонки CTD для интерактивного графика
+        indent_widget_ctd = QWidget()
+        indent_layout_ctd = QHBoxLayout(indent_widget_ctd)
+        indent_layout_ctd.setContentsMargins(20, 0, 0, 0)
+
+        self.edit_ctd_columns = QLineEdit("6")
+        self.edit_ctd_columns.setMaximumWidth(120)
+        self.edit_ctd_columns.setToolTip(
+            "Колонки CTD для интерактивного графика (0-based индексы), через запятую.\n"
+            "Например: 6 или 5,6,7\n"
+            "Используется только если к задаче привязан CTD-файл."
+        )
+        ctd_col_label = QLabel("Колонки CTD:")
+        indent_layout_ctd.addWidget(ctd_col_label)
+        indent_layout_ctd.addWidget(self.edit_ctd_columns)
+        indent_layout_ctd.addStretch()
+        ops_layout.addWidget(indent_widget_ctd)
+
         layout.addWidget(ops_group)
         
         # === Параметры ===
@@ -409,6 +428,7 @@ class PostProcessDialog(QDialog):
             "fov": self.spin_fov.value(),
             "near_distance": self.spin_near.value(),
             "depth_bin": self.spin_depth_bin.value(),
+            "ctd_columns": self.edit_ctd_columns.text().strip() or "6",
         }
         
         # Создаём подзадачи в правильном порядке

@@ -311,6 +311,7 @@ class NewTaskDialog(QDialog):
                 "fov": self.pp_spin_fov.value(),
                 "near_distance": self.pp_spin_near.value(),
                 "depth_bin": self.pp_spin_depth_bin.value(),
+                "ctd_columns": self.pp_edit_ctd_columns.text().strip() or "6",
             }
             params["auto_postprocess_params"] = json.dumps(postprocess_params)
         
@@ -411,7 +412,24 @@ class NewTaskDialog(QDialog):
         self.pp_chk_analysis.setToolTip("Генерация графиков вертикального распределения и отчётов")
         self.pp_chk_analysis.setChecked(True)
         layout.addWidget(self.pp_chk_analysis)
-        
+
+        # Колонки CTD для интерактивного графика
+        ctd_col_indent = QWidget()
+        ctd_col_indent_layout = QHBoxLayout(ctd_col_indent)
+        ctd_col_indent_layout.setContentsMargins(20, 0, 0, 0)
+        ctd_col_label = QLabel("Колонки CTD:")
+        self.pp_edit_ctd_columns = QLineEdit("6")
+        self.pp_edit_ctd_columns.setMaximumWidth(120)
+        self.pp_edit_ctd_columns.setToolTip(
+            "Колонки CTD для интерактивного графика (0-based индексы), через запятую.\n"
+            "Например: 6 или 5,6,7\n"
+            "Используется только если к задаче привязан CTD-файл."
+        )
+        ctd_col_indent_layout.addWidget(ctd_col_label)
+        ctd_col_indent_layout.addWidget(self.pp_edit_ctd_columns)
+        ctd_col_indent_layout.addStretch()
+        layout.addWidget(ctd_col_indent)
+
         # === Параметры ===
         params_label = QLabel("Параметры:")
         params_label.setStyleSheet("font-weight: bold; margin-top: 10px;")

@@ -273,7 +273,7 @@ class Worker(QThread):
                 )
             elif subtask.subtask_type == SubTaskType.ANALYSIS:
                 result_value, result_text = self._run_analysis(
-                    detections_csv, size_csv, output_dir, base_name, params, parent_task.id
+                    detections_csv, size_csv, track_sizes_csv, output_dir, base_name, params, parent_task.id
                 )
             elif subtask.subtask_type == SubTaskType.SIZE_VIDEO_RENDER:
                 result_value, result_text = self._run_size_video_render(
@@ -414,18 +414,35 @@ class Worker(QThread):
         
         return result.total_volume_m3, f"{result.total_volume_m3:.2f} м³" if result.total_volume_m3 else None
 
-    def _run_analysis(self, detections_csv: str, size_csv: Optional[str], output_dir: Path, 
-                      base_name: str, params: dict, task_id: int):
+    def _run_analysis(self, detections_csv: str, size_csv: Optional[str], track_sizes_csv: Optional[str],
+                      output_dir: Path, base_name: str, params: dict, task_id: int):
         """Выполняет подзадачу анализа."""
         analysis_dir = output_dir / "analysis"
         analysis_dir.mkdir(exist_ok=True)
-        
+
         # Используем CSV с размерами если есть
         input_csv = size_csv if size_csv and os.path.exists(size_csv) else detections_csv
-        
+
         # Собираем информацию об обработке
         processing_info = self._collect_processing_info(task_id, params)
-        
+
+        # Путь к CTD-файлу из задачи
+        ctd_path = None
+        task = self.repo.get_task(task_id)
+        if task and task.ctd_id:
+            ctd_file = self.repo.get_ctd_file(task.ctd_id)
+            if ctd_file:
+                ctd_path = ctd_file.filepath
+
+        # Колонки CTD (0-based индексы), по умолчанию колонка 6
+        ctd_columns_raw = params.get("ctd_columns", "6")
+        if isinstance(ctd_columns_raw, list):
+            ctd_columns = [int(x) for x in ctd_columns_raw]
+        elif isinstance(ctd_columns_raw, str) and ctd_columns_raw.strip():
+            ctd_columns = [int(x.strip()) for x in ctd_columns_raw.split(',') if x.strip().isdigit()]
+        else:
+            ctd_columns = [6]
+
         processor = AnalyzeProcessor()
         result = processor.process(
             csv_path=input_csv,
@@ -433,21 +450,28 @@ class Worker(QThread):
             depth_bin=params.get("depth_bin", 2.0),
             video_name=base_name,
             processing_info=processing_info,
+            generate_interactive_plot=True,
+            track_sizes_path=track_sizes_csv if track_sizes_csv and os.path.exists(track_sizes_csv) else None,
+            ctd_path=ctd_path,
+            ctd_columns=ctd_columns if ctd_path else None,
         )
-        
+
         if not result.success:
             raise Exception(result.error_message or "Analysis failed")
-        
+
         # Сохраняем outputs
         for plot_file in ["vertical_distribution.png", "detection_timeline.png", "species_summary.png"]:
             plot_path = analysis_dir / plot_file
             if plot_path.exists():
                 self.repo.add_task_output(task_id, OutputType.ANALYSIS_PLOT, str(plot_path))
-        
+
         report_path = analysis_dir / "report.txt"
         if report_path.exists():
             self.repo.add_task_output(task_id, OutputType.ANALYSIS_REPORT, str(report_path))
-        
+
+        if result.interactive_plot_path and Path(result.interactive_plot_path).exists():
+            self.repo.add_task_output(task_id, OutputType.INTERACTIVE_PLOT, result.interactive_plot_path)
+
         return float(result.total_detections), f"{result.total_detections} дет."
 
     def _collect_processing_info(self, task_id: int, current_params: dict) -> dict:
@@ -685,11 +709,13 @@ class Worker(QThread):
         
         # Анализ
         if do_analysis:
+            analysis_params = common_params.copy()
+            analysis_params["ctd_columns"] = params.get("ctd_columns", "6")
             self.repo.create_subtask(
                 parent_task_id=task_id,
                 subtask_type=SubTaskType.ANALYSIS,
                 position=position,
-                params_json=json.dumps(common_params),
+                params_json=json.dumps(analysis_params),
             )
 
     def stop(self) -> None:

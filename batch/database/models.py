@@ -63,6 +63,7 @@ class OutputType(enum.Enum):
     SIZE_VIDEO = "size_video"  # Видео с размерами
     ANALYSIS_PLOT = "analysis_plot"
     ANALYSIS_REPORT = "analysis_report"
+    INTERACTIVE_PLOT = "interactive_plot"
 
 
 class Catalog(Base):

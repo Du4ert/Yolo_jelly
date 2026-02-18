@@ -30,6 +30,7 @@ class AnalyzeResult:
     detection_timeline_path: Optional[str] = None
     species_summary_path: Optional[str] = None
     report_path: Optional[str] = None
+    interactive_plot_path: Optional[str] = None
     total_detections: int = 0
     unique_species: int = 0
     species_counts: dict = field(default_factory=dict)
@@ -65,8 +66,12 @@ class AnalyzeProcessor:
         generate_timeline: bool = True,
         generate_species_summary: bool = True,
         generate_report: bool = True,
+        generate_interactive_plot: bool = True,
         video_name: Optional[str] = None,
         processing_info: Optional[dict] = None,
+        track_sizes_path: Optional[str] = None,
+        ctd_path: Optional[str] = None,
+        ctd_columns: Optional[List[int]] = None,
     ) -> AnalyzeResult:
         """
         Запускает анализ данных.
@@ -169,7 +174,7 @@ class AnalyzeProcessor:
                 if self._cancelled:
                     result.cancelled = True
                     return result
-                
+
                 report_file = str(output_path / report_name)
                 vn = video_name or Path(csv_path).stem.replace("_detections", "")
                 try:
@@ -177,7 +182,29 @@ class AnalyzeProcessor:
                     result.report_path = report_file
                 except Exception as e:
                     print(f"Ошибка при генерации отчёта: {e}")
-            
+
+            # Интерактивный график
+            if generate_interactive_plot and track_sizes_path and Path(track_sizes_path).exists():
+                if self._cancelled:
+                    result.cancelled = True
+                    return result
+
+                ip_path = str(output_path / "depth_interactive")
+                try:
+                    from interactive_plot import create_interactive_depth_plot
+                    create_interactive_depth_plot(
+                        track_sizes_path=track_sizes_path,
+                        output_path=ip_path,
+                        ctd_path=ctd_path,
+                        ctd_columns=ctd_columns,
+                        depth_bin=depth_bin,
+                    )
+                    html_path = Path(ip_path).with_suffix('.html')
+                    if html_path.exists():
+                        result.interactive_plot_path = str(html_path)
+                except Exception as e:
+                    print(f"Ошибка при построении интерактивного графика: {e}")
+
             result.processing_time_s = time.time() - start_time
             return result
             
