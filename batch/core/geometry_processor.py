@@ -100,8 +100,8 @@ class GeometryProcessor:
         video_path: str,
         output_csv: str,
         frame_interval: int = 30,
-        frame_width: int = 1920,
-        frame_height: int = 1080,
+        frame_width: int = 3840,
+        frame_height: int = 2160,
     ) -> GeometryResult:
         """
         Запускает анализ геометрии камеры.
@@ -211,8 +211,8 @@ class SizeEstimationProcessor:
         output_csv: str,
         tracks_csv: Optional[str] = None,
         geometry_csv: Optional[str] = None,
-        frame_width: int = 1920,
-        frame_height: int = 1080,
+        frame_width: int = 3840,
+        frame_height: int = 2160,
         min_depth_change: float = 0.3,
         min_track_points: int = 3,
         min_r_squared: float = 0.5,
@@ -343,8 +343,8 @@ class VolumeEstimationProcessor:
         depth_max: Optional[float] = None,
         duration: Optional[float] = None,
         fps: float = 60.0,
-        frame_width: int = 1920,
-        frame_height: int = 1080,
+        frame_width: int = 3840,
+        frame_height: int = 2160,
     ) -> VolumeEstimationResult:
         """
         Запускает расчёт объёма.

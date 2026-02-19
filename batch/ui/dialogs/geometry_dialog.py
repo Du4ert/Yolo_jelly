@@ -352,12 +352,12 @@ class GeometryDialog(QDialog):
         
         self.geom_width = QSpinBox()
         self.geom_width.setRange(640, 7680)
-        self.geom_width.setValue(1920)
+        self.geom_width.setValue(3840)
         params_layout.addRow("Ширина кадра:", self.geom_width)
-        
+
         self.geom_height = QSpinBox()
         self.geom_height.setRange(480, 4320)
-        self.geom_height.setValue(1080)
+        self.geom_height.setValue(2160)
         params_layout.addRow("Высота кадра:", self.geom_height)
         
         layout.addWidget(params_group)

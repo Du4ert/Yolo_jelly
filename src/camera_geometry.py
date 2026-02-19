@@ -25,6 +25,9 @@ from scipy.optimize import minimize
 import argparse
 
 
+# Ширина кадра, для которой получены калибровочные коэффициенты (GoPro 12 Wide 4K)
+REFERENCE_FRAME_WIDTH = 3840
+
 # Классы с фиксированным размером (слишком мелкие для k-метода)
 FIXED_SIZE_CLASSES = {
     'Pleurobrachia pileus': {
@@ -72,10 +75,19 @@ class CameraCalibration:
     @property
     def pixels_per_degree(self) -> float:
         return self.frame_width / self.fov_horizontal
-    
+
     @property
     def frame_center(self) -> Tuple[float, float]:
         return self.frame_width / 2, self.frame_height / 2
+
+    @property
+    def resolution_scale(self) -> float:
+        """Масштаб разрешения относительно референсного (3840x2160).
+
+        Используется для нормализации пикселей перед применением калибровочных
+        коэффициентов, которые получены для разрешения REFERENCE_FRAME_WIDTH.
+        """
+        return self.frame_width / REFERENCE_FRAME_WIDTH
 
 
 @dataclass
@@ -347,7 +359,10 @@ def _find_size_pairs(
                 k_percent = k * 100
                 distance = _calculate_distance_from_k(k_percent, calibration)
                 pixel_calib = _calculate_pixel_calibration(distance, calibration)
-                size_mm = _calculate_size_mm(pixels2, pixel_calib)
+                # Нормализуем пиксели к референсному разрешению (3840px),
+                # т.к. pixel_calib откалиброван для REFERENCE_FRAME_WIDTH
+                pixels2_ref = pixels2 / calibration.resolution_scale
+                size_mm = _calculate_size_mm(pixels2_ref, pixel_calib)
                 camera_depth_end = depth2
                 object_depth = camera_depth_end + distance
 
@@ -802,8 +817,11 @@ def estimate_size_from_typical(
     camera_depth_max = max_row.get('depth_m', np.nan)
     max_frame = int(max_row['frame'])
     
-    # Обратная калибровка: из типичного размера и пикселей находим p, затем d
-    pixel_calib = max_size_pix / typical_size_mm
+    # Обратная калибровка: из типичного размера и пикселей находим p, затем d.
+    # Нормализуем пиксели к референсному разрешению (3840px),
+    # т.к. коэффициент C в формуле p = C * d^D получен для REFERENCE_FRAME_WIDTH.
+    max_size_pix_ref = max_size_pix / calibration.resolution_scale
+    pixel_calib = max_size_pix_ref / typical_size_mm
     
     C = calibration.pixel_calib_C
     D = calibration.pixel_calib_D
