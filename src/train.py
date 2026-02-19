@@ -291,7 +291,12 @@ def train_model(
     
     # Валидация на тестовом наборе
     print("Валидация модели...")
-    metrics = model.val()
+    metrics = model.val(
+        data=_data_yaml,
+        project=_project,
+        name=_name,
+        exist_ok=True,
+    )
     
     print()
     print("МЕТРИКИ:")
@@ -364,6 +369,11 @@ def main():
         help="Устройство: 0, 1, cpu, auto (переопределяет конфиг)"
     )
     parser.add_argument(
+        "--project", "-p",
+        default=None,
+        help="Директория для сохранения результатов (переопределяет конфиг)"
+    )
+    parser.add_argument(
         "--name", "-n",
         default=None,
         help="Имя эксперимента (переопределяет конфиг)"
@@ -385,6 +395,7 @@ def main():
             imgsz=args.imgsz,
             batch=args.batch,
             device=args.device,
+            project=args.project,
             name=args.name,
             resume=args.resume
         )
