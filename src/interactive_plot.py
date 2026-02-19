@@ -19,27 +19,10 @@ try:
 except ImportError:
     PLOTLY_AVAILABLE = False
 
-
-# Цвета для видов
-SPECIES_COLORS = {
-    'Aurelia aurita': '#1f77b4',
-    'Rhizostoma pulmo': '#ff7f0e',
-    'Beroe ovata': '#2ca02c',
-    'Mnemiopsis leidyi': '#d62728',
-    'Pleurobrachia pileus': '#9467bd'
-}
+from constants import SPECIES_COLORS, SPECIES_NAMES_RU
 
 # Цвета для CTD параметров
 CTD_COLORS = ['#e377c2', '#17becf', '#bcbd22', '#7f7f7f', '#8c564b']
-
-# Русские названия видов для легенды
-SPECIES_NAMES_RU = {
-    'Aurelia aurita': 'Аурелия',
-    'Rhizostoma pulmo': 'Ризостома',
-    'Beroe ovata': 'Берое',
-    'Mnemiopsis leidyi': 'Мнемиопсис',
-    'Pleurobrachia pileus': 'Плевробрахия'
-}
 
 
 def load_ctd_data(ctd_path: str) -> pd.DataFrame:

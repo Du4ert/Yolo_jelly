@@ -12,15 +12,7 @@ from collections import defaultdict, Counter
 import time
 from ultralytics import YOLO
 
-
-# Соответствие классов
-CLASS_NAMES = {
-    0: 'Aurelia aurita',
-    1: 'Beroe ovata',
-    2: 'Mnemiopsis leidyi',
-    3: 'Pleurobrachia pileus',
-    4: 'Rhizostoma pulmo'
-}
+from constants import CLASS_NAMES
 
 
 def load_ctd_data(ctd_path: str) -> pd.DataFrame:

@@ -276,6 +276,190 @@ def _get_first_frame_data(
 # Основные функции оценки размеров
 # =============================================================================
 
+def _find_size_pairs(
+    valid_df: pd.DataFrame,
+    min_change_ratio: float,
+    apply_tilt_correction: bool,
+    geometry_df: Optional[pd.DataFrame],
+    calibration: 'CameraCalibration',
+) -> Tuple[List[dict], bool, float]:
+    """
+    Жадно ищет пары кадров с достаточным приростом размера.
+    Для каждой пары вычисляет k, distance, size_mm и object_depth.
+
+    Возвращает:
+        pair_data: список словарей с данными каждой пары
+        tilt_correction_applied: была ли применена коррекция наклона
+        avg_tilt_deg: максимальный угол наклона среди пар
+    """
+    pair_data = []
+    tilt_correction_applied = False
+    avg_tilt_deg = 0.0
+
+    i = 0
+    while i < len(valid_df):
+        row1 = valid_df.iloc[i]
+        pixels1 = row1['size_pix']
+        depth1 = row1['depth_m']
+        frame1 = row1['frame']
+
+        if pixels1 <= 0:
+            i += 1
+            continue
+
+        target_size = pixels1 * min_change_ratio
+
+        found_j = None
+        for j in range(i + 1, len(valid_df)):
+            if valid_df.iloc[j]['size_pix'] >= target_size:
+                found_j = j
+                break
+
+        if found_j is not None:
+            row2 = valid_df.iloc[found_j]
+            pixels2 = row2['size_pix']
+            depth2 = row2['depth_m']
+            frame2 = row2['frame']
+
+            delta_depth = depth2 - depth1
+
+            if abs(delta_depth) < 0.01:
+                i = found_j
+                continue
+
+            delta_pixels = pixels2 - pixels1
+            k_raw = (delta_pixels / pixels1) / delta_depth
+            k = k_raw
+
+            cos_tilt = 1.0
+            tilt_deg_pair = 0.0
+            if apply_tilt_correction and geometry_df is not None:
+                cos_tilt, tilt_deg_pair = get_average_tilt_for_range(
+                    int(frame1), int(frame2), geometry_df
+                )
+                if cos_tilt < 1.0:
+                    tilt_correction_applied = True
+                    avg_tilt_deg = max(avg_tilt_deg, tilt_deg_pair)
+                cos_tilt = max(cos_tilt, 0.17)
+                k = k_raw / cos_tilt
+
+            if k > 0:
+                k_percent = k * 100
+                distance = _calculate_distance_from_k(k_percent, calibration)
+                pixel_calib = _calculate_pixel_calibration(distance, calibration)
+                size_mm = _calculate_size_mm(pixels2, pixel_calib)
+                camera_depth_end = depth2
+                object_depth = camera_depth_end + distance
+
+                pair_data.append({
+                    'frame_start': frame1,
+                    'frame_end': frame2,
+                    'frame_mid': (frame1 + frame2) / 2,
+                    'k': k,
+                    'k_percent': k_percent,
+                    'k_raw_percent': k_raw * 100,
+                    'cos_tilt': cos_tilt,
+                    'tilt_deg': tilt_deg_pair,
+                    'distance': distance,
+                    'pixel_calib': pixel_calib,
+                    'size_mm': size_mm,
+                    'size_pixels': pixels2,
+                    'depth_camera': camera_depth_end,
+                    'object_depth': object_depth,
+                    'size_change_pct': (pixels2 / pixels1 - 1) * 100
+                })
+
+            i = found_j
+        else:
+            break
+
+    return pair_data, tilt_correction_applied, avg_tilt_deg
+
+
+def _filter_pairs_by_mad(pair_data: List[dict]) -> List[dict]:
+    """
+    Фильтрует выбросы по k с помощью MAD (Median Absolute Deviation).
+    Порог: 3 * MAD * 1.4826.
+    Если всё отфильтровалось — возвращает исходный список без изменений.
+    """
+    k_values_raw = [p['k_percent'] for p in pair_data]
+    k_median = np.median(k_values_raw)
+    k_mad = np.median(np.abs(np.array(k_values_raw) - k_median))
+
+    if k_mad > 0:
+        max_k_threshold = k_median + 3 * k_mad * 1.4826
+        min_k_threshold = max(k_median - 3 * k_mad * 1.4826, 1.0)
+    else:
+        max_k_threshold = k_median * 3 if k_median > 0 else 500
+        min_k_threshold = 1.0
+
+    filtered = [
+        p for p in pair_data
+        if min_k_threshold <= p['k_percent'] <= max_k_threshold
+    ]
+
+    return filtered if filtered else pair_data
+
+
+def _apply_moving_median(pair_data: List[dict], smoothing_window: int) -> None:
+    """
+    Применяет скользящую медиану к size_mm в pair_data.
+    Добавляет ключ 'size_mm_smoothed' в каждый элемент (изменение на месте).
+    """
+    sizes_raw = [p['size_mm'] for p in pair_data]
+
+    if len(sizes_raw) >= smoothing_window:
+        half_window = smoothing_window // 2
+        for i in range(len(sizes_raw)):
+            start_idx = max(0, i - half_window)
+            end_idx = min(len(sizes_raw), i + half_window + 1)
+            window_values = sizes_raw[start_idx:end_idx]
+            pair_data[i]['size_mm_smoothed'] = np.median(window_values)
+    else:
+        for p in pair_data:
+            p['size_mm_smoothed'] = p['size_mm']
+
+
+def _select_final_size(
+    smoothed_sizes: List[float],
+    pair_data_filtered: List[dict],
+) -> Tuple[float, int]:
+    """
+    Выбирает финальный размер как последнюю стабильную точку
+    до начала устойчивого уменьшения (≥2 подряд снижений > 2%).
+
+    Если выбранный размер отличается от медианы > 50% — fallback на медиану.
+
+    Возвращает: (final_size_mm, final_idx)
+    """
+    final_idx = len(smoothed_sizes) - 1
+
+    consecutive_decreases = 0
+    for i in range(1, len(smoothed_sizes)):
+        if smoothed_sizes[i] < smoothed_sizes[i - 1] * 0.98:
+            consecutive_decreases += 1
+            if consecutive_decreases >= 2:
+                final_idx = max(0, i - consecutive_decreases)
+                break
+        else:
+            consecutive_decreases = 0
+
+    final_size_mm = smoothed_sizes[final_idx]
+    median_size_mm = np.median(smoothed_sizes)
+
+    if abs(final_size_mm - median_size_mm) > median_size_mm * 0.5:
+        for i in range(len(smoothed_sizes) - 1, -1, -1):
+            if abs(smoothed_sizes[i] - median_size_mm) <= median_size_mm * 0.5:
+                final_idx = i
+                final_size_mm = smoothed_sizes[i]
+                break
+        else:
+            final_size_mm = median_size_mm
+            final_idx = len(smoothed_sizes) // 2
+
+    return final_size_mm, final_idx
+
+
 def _find_max_size_frame(
     track_df: pd.DataFrame,
     frame_width: int,
@@ -393,192 +577,20 @@ def estimate_size_by_k_method(
     if depth_change < min_depth_change:
         return None
     
-    # Ищем пары с изменением размера >= min_size_change_pct%
-    # Для каждой пары вычисляем k, distance, size
-    pair_data = []
-    min_change_ratio = 1.0 + min_size_change_pct / 100.0  # 1.10 для 10%
-    
-    # Флаг, была ли применена коррекция наклона
-    tilt_correction_applied = False
-    avg_tilt_deg = 0.0
-    
-    i = 0
-    while i < len(valid_df):
-        row1 = valid_df.iloc[i]
-        pixels1 = row1['size_pix']
-        depth1 = row1['depth_m']
-        frame1 = row1['frame']
-        
-        if pixels1 <= 0:
-            i += 1
-            continue
-        
-        # Ищем следующую точку, где размер вырос на min_size_change_pct%
-        target_size = pixels1 * min_change_ratio
-        
-        found_j = None
-        for j in range(i + 1, len(valid_df)):
-            if valid_df.iloc[j]['size_pix'] >= target_size:
-                found_j = j
-                break
-        
-        if found_j is not None:
-            row2 = valid_df.iloc[found_j]
-            pixels2 = row2['size_pix']
-            depth2 = row2['depth_m']
-            frame2 = row2['frame']
-            
-            delta_depth = depth2 - depth1
-            
-            # Пропускаем если глубина не изменилась (избегаем деления на 0)
-            if abs(delta_depth) < 0.01:
-                i = found_j
-                continue
-            
-            delta_pixels = pixels2 - pixels1
-            k_raw = (delta_pixels / pixels1) / delta_depth  # доли/м (до коррекции)
-            k = k_raw
-            
-            # Применяем коррекцию наклона камеры
-            cos_tilt = 1.0
-            tilt_deg_pair = 0.0
-            if apply_tilt_correction and geometry_df is not None:
-                cos_tilt, tilt_deg_pair = get_average_tilt_for_range(
-                    int(frame1), int(frame2), geometry_df
-                )
-                if cos_tilt < 1.0:
-                    tilt_correction_applied = True
-                    avg_tilt_deg = max(avg_tilt_deg, tilt_deg_pair)
-                # Защита от деления на очень малые значения
-                cos_tilt = max(cos_tilt, 0.17)  # ~80° максимальный учитываемый наклон
-                k = k_raw / cos_tilt
-            
-            # k должен быть положительным (размер растёт при погружении)
-            if k > 0:
-                k_percent = k * 100  # в %/м
-                
-                # Вычисляем дистанцию, калибровку и размер ДЛЯ ЭТОЙ ПАРЫ
-                distance = _calculate_distance_from_k(k_percent, calibration)
-                pixel_calib = _calculate_pixel_calibration(distance, calibration)
-                
-                # Размер по конечному (большему) кадру пары
-                size_mm = _calculate_size_mm(pixels2, pixel_calib)
-                
-                # Глубина камеры на конец пары
-                camera_depth_end = depth2
-                # Глубина объекта = глубина камеры + дистанция
-                object_depth = camera_depth_end + distance
-                
-                pair_data.append({
-                    'frame_start': frame1,
-                    'frame_end': frame2,
-                    'frame_mid': (frame1 + frame2) / 2,
-                    'k': k,
-                    'k_percent': k_percent,
-                    'k_raw_percent': k_raw * 100,
-                    'cos_tilt': cos_tilt,
-                    'tilt_deg': tilt_deg_pair,
-                    'distance': distance,
-                    'pixel_calib': pixel_calib,
-                    'size_mm': size_mm,
-                    'size_pixels': pixels2,
-                    'depth_camera': camera_depth_end,
-                    'object_depth': object_depth,
-                    'size_change_pct': (pixels2 / pixels1 - 1) * 100
-                })
-            
-            # Переходим к найденной точке для следующей пары
-            i = found_j
-        else:
-            # Не нашли точку с нужным приростом — выходим
-            break
-    
+    min_change_ratio = 1.0 + min_size_change_pct / 100.0
+    pair_data, tilt_correction_applied, avg_tilt_deg = _find_size_pairs(
+        valid_df, min_change_ratio, apply_tilt_correction, geometry_df, calibration
+    )
+
     if len(pair_data) == 0:
         return None
     
     # ===== Фильтрация выбросов и сглаживание =====
-    
-    # 1. Первичная фильтрация по k (удаляем экстремальные значения)
-    k_values_raw = [p['k_percent'] for p in pair_data]
-    k_median = np.median(k_values_raw)
-    k_mad = np.median(np.abs(np.array(k_values_raw) - k_median))  # MAD
-    
-    # Используем MAD для устойчивой фильтрации (порог 3*MAD)
-    if k_mad > 0:
-        max_k_threshold = k_median + 3 * k_mad * 1.4826  # 1.4826 для нормализации MAD
-        min_k_threshold = max(k_median - 3 * k_mad * 1.4826, 1.0)  # минимум 1%/м
-    else:
-        max_k_threshold = k_median * 3 if k_median > 0 else 500
-        min_k_threshold = 1.0
-    
-    # Фильтруем выбросы по k
-    pair_data_filtered = [
-        p for p in pair_data 
-        if min_k_threshold <= p['k_percent'] <= max_k_threshold
-    ]
-    
-    if len(pair_data_filtered) == 0:
-        pair_data_filtered = pair_data  # если всё отфильтровали, вернём исходные
-    
-    # 2. Сглаживание размеров скользящей медианой
-    sizes_raw = [p['size_mm'] for p in pair_data_filtered]
-    
-    if len(sizes_raw) >= smoothing_window:
-        # Применяем скользящую медиану
-        sizes_smoothed = []
-        half_window = smoothing_window // 2
-        
-        for i in range(len(sizes_raw)):
-            start_idx = max(0, i - half_window)
-            end_idx = min(len(sizes_raw), i + half_window + 1)
-            window_values = sizes_raw[start_idx:end_idx]
-            sizes_smoothed.append(np.median(window_values))
-        
-        # Обновляем размеры в pair_data_filtered
-        for i, p in enumerate(pair_data_filtered):
-            p['size_mm_smoothed'] = sizes_smoothed[i]
-    else:
-        # Недостаточно данных для сглаживания
-        for p in pair_data_filtered:
-            p['size_mm_smoothed'] = p['size_mm']
-    
-    # 3. Выбор финального размера: последний до начала уменьшения (не выброс)
-    # Ищем последний кадр, где сглаженный размер ещё растёт или стабилен
-    
+    pair_data_filtered = _filter_pairs_by_mad(pair_data)
+    _apply_moving_median(pair_data_filtered, smoothing_window)
+
     smoothed_sizes = [p['size_mm_smoothed'] for p in pair_data_filtered]
-    
-    # Находим индекс последнего размера до начала устойчивого уменьшения
-    final_idx = len(smoothed_sizes) - 1  # по умолчанию - последний
-    
-    # Ищем начало устойчивого уменьшения (2+ подряд уменьшений)
-    consecutive_decreases = 0
-    for i in range(1, len(smoothed_sizes)):
-        if smoothed_sizes[i] < smoothed_sizes[i-1] * 0.98:  # уменьшение > 2%
-            consecutive_decreases += 1
-            if consecutive_decreases >= 2:
-                # Нашли устойчивое уменьшение - берём кадр до начала
-                final_idx = max(0, i - consecutive_decreases)
-                break
-        else:
-            consecutive_decreases = 0
-    
-    # Проверка: выбранный размер не должен быть выбросом
-    # Если он сильно отличается от медианы - берём медиану
-    final_size_mm = smoothed_sizes[final_idx]
-    median_size_mm = np.median(smoothed_sizes)
-    
-    # Если финальный размер отличается от медианы больше чем на 50% - это выброс
-    if abs(final_size_mm - median_size_mm) > median_size_mm * 0.5:
-        # Ищем ближайший к медиане невыброс в конце ряда
-        for i in range(len(smoothed_sizes) - 1, -1, -1):
-            if abs(smoothed_sizes[i] - median_size_mm) <= median_size_mm * 0.5:
-                final_idx = i
-                final_size_mm = smoothed_sizes[i]
-                break
-        else:
-            # Все значения - выбросы, берём медиану
-            final_size_mm = median_size_mm
-            final_idx = len(smoothed_sizes) // 2
+    final_size_mm, final_idx = _select_final_size(smoothed_sizes, pair_data_filtered)
     
     # Берём данные финальной пары
     final_pair = pair_data_filtered[final_idx]
@@ -587,7 +599,6 @@ def estimate_size_by_k_method(
     size_cm = size_mm / 10.0
     distance_final = final_pair['distance']
     camera_depth_final = final_pair['depth_camera']
-    object_depth = final_pair['object_depth']
     pixel_calib = final_pair['pixel_calib']
     final_frame = int(final_pair['frame_end'])
     final_size_pixels = final_pair['size_pixels']
@@ -949,6 +960,96 @@ def get_average_tilt_for_range(
 # Основная функция обработки детекций
 # =============================================================================
 
+def _build_tracks_dataframe(all_estimates: List['TrackSizeEstimate']) -> pd.DataFrame:
+    """Преобразует список оценок треков в DataFrame для сохранения."""
+    if not all_estimates:
+        return pd.DataFrame()
+    return pd.DataFrame([
+        {
+            'track_id': e.track_id,
+            'class_name': e.class_name,
+            'real_size_mm': e.real_size_mm,
+            'real_size_cm': e.real_size_cm,
+            'distance_m': e.distance_m,
+            'object_depth_m': e.object_depth_m,
+            'first_frame': e.first_frame,
+            'first_size_pixels': e.first_size_pixels,
+            'camera_depth_first_m': e.camera_depth_first,
+            'k_mean_pct_per_m': e.k_mean,
+            'k_std_pct_per_m': e.k_std,
+            'pixel_calibration': e.pixel_calibration,
+            'confidence': e.confidence,
+            'method': e.method,
+            'n_points': e.n_points_used,
+            'warnings': ';'.join(e.warnings) if e.warnings else ''
+        }
+        for e in all_estimates
+    ])
+
+
+def _assign_size_columns_to_detections(
+    df: pd.DataFrame,
+    size_map: dict,
+) -> pd.DataFrame:
+    """
+    Добавляет к DataFrame детекций колонки размеров:
+    estimated_size_mm, estimated_size_cm, object_depth_m,
+    distance_to_object_m, size_confidence, size_method.
+
+    Для k-method: размер интерполируется между кадрами трека.
+    Расстояние вычисляется динамически: object_depth - camera_depth.
+    """
+    df['estimated_size_mm'] = None
+    df['estimated_size_cm'] = None
+    df['object_depth_m'] = None
+    df['distance_to_object_m'] = None
+    df['size_confidence'] = None
+    df['size_method'] = None
+
+    for idx, row in df.iterrows():
+        track_id = row['track_id']
+        if pd.isna(track_id) or track_id not in size_map:
+            continue
+
+        est = size_map[track_id]
+        frame = int(row['frame'])
+        camera_depth = row.get('depth_m')
+
+        df.at[idx, 'object_depth_m'] = est.object_depth_m
+
+        if pd.notna(camera_depth) and est.object_depth_m is not None:
+            distance = est.object_depth_m - camera_depth
+            df.at[idx, 'distance_to_object_m'] = round(max(distance, 0.0), 3)
+
+        if est.frame_data and frame in est.frame_data:
+            size_mm = est.frame_data[frame]
+        elif est.frame_data:
+            available_frames = sorted(est.frame_data.keys())
+            if frame < available_frames[0]:
+                size_mm = est.frame_data[available_frames[0]]
+            elif frame > available_frames[-1]:
+                size_mm = est.frame_data[available_frames[-1]]
+            else:
+                frame_before = max(f for f in available_frames if f <= frame)
+                frame_after = min(f for f in available_frames if f >= frame)
+                if frame_before == frame_after:
+                    size_mm = est.frame_data[frame_before]
+                else:
+                    size_before = est.frame_data[frame_before]
+                    size_after = est.frame_data[frame_after]
+                    t = (frame - frame_before) / (frame_after - frame_before)
+                    size_mm = round(size_before + t * (size_after - size_before), 1)
+        else:
+            size_mm = est.real_size_mm
+
+        df.at[idx, 'estimated_size_mm'] = size_mm
+        df.at[idx, 'estimated_size_cm'] = round(size_mm / 10.0, 2)
+        df.at[idx, 'size_confidence'] = est.confidence
+        df.at[idx, 'size_method'] = est.method
+
+    return df
+
+
 def process_detections_with_size(
     detections_csv: str,
     output_csv: Optional[str] = None,
@@ -1059,92 +1160,10 @@ def process_detections_with_size(
     if verbose:
         print(f"\nВсего треков с оценкой: {len(all_estimates)}")
     
-    # Создаём DataFrame треков
-    if all_estimates:
-        tracks_df = pd.DataFrame([
-            {
-                'track_id': e.track_id,
-                'class_name': e.class_name,
-                'real_size_mm': e.real_size_mm,
-                'real_size_cm': e.real_size_cm,
-                'distance_m': e.distance_m,
-                'object_depth_m': e.object_depth_m,
-                'first_frame': e.first_frame,
-                'first_size_pixels': e.first_size_pixels,
-                'camera_depth_first_m': e.camera_depth_first,
-                'k_mean_pct_per_m': e.k_mean,
-                'k_std_pct_per_m': e.k_std,
-                'pixel_calibration': e.pixel_calibration,
-                'confidence': e.confidence,
-                'method': e.method,
-                'n_points': e.n_points_used,
-                'warnings': ';'.join(e.warnings) if e.warnings else ''
-            }
-            for e in all_estimates
-        ])
-    else:
-        tracks_df = pd.DataFrame()
-    
-    # Добавляем к детекциям
+    tracks_df = _build_tracks_dataframe(all_estimates)
+
     size_map = {e.track_id: e for e in all_estimates}
-    
-    df['estimated_size_mm'] = None
-    df['estimated_size_cm'] = None
-    df['object_depth_m'] = None
-    df['distance_to_object_m'] = None
-    df['size_confidence'] = None
-    df['size_method'] = None
-    
-    for idx, row in df.iterrows():
-        track_id = row['track_id']
-        if pd.notna(track_id) and track_id in size_map:
-            est = size_map[track_id]
-            frame = int(row['frame'])
-            camera_depth = row.get('depth_m')
-            
-            # Глубина объекта фиксирована для всего трека
-            df.at[idx, 'object_depth_m'] = est.object_depth_m
-            
-            # Расстояние вычисляется динамически: object_depth - camera_depth
-            # Оно всегда уменьшается при погружении камеры
-            if pd.notna(camera_depth) and est.object_depth_m is not None:
-                distance = est.object_depth_m - camera_depth
-                df.at[idx, 'distance_to_object_m'] = round(max(distance, 0.0), 3)  # не может быть отрицательным
-            
-            # Определяем размер для этого кадра
-            if est.frame_data and frame in est.frame_data:
-                # Точные данные для этого кадра
-                size_mm = est.frame_data[frame]
-            elif est.frame_data:
-                # Интерполяция размера
-                available_frames = sorted(est.frame_data.keys())
-                
-                if frame < available_frames[0]:
-                    # Кадр до первого измерения
-                    size_mm = est.frame_data[available_frames[0]]
-                elif frame > available_frames[-1]:
-                    # Кадр после последнего измерения
-                    size_mm = est.frame_data[available_frames[-1]]
-                else:
-                    # Линейная интерполяция
-                    frame_before = max(f for f in available_frames if f <= frame)
-                    frame_after = min(f for f in available_frames if f >= frame)
-                    
-                    if frame_before == frame_after:
-                        size_mm = est.frame_data[frame_before]
-                    else:
-                        size_before = est.frame_data[frame_before]
-                        size_after = est.frame_data[frame_after]
-                        t = (frame - frame_before) / (frame_after - frame_before)
-                        size_mm = round(size_before + t * (size_after - size_before), 1)
-            else:
-                # Нет покадровых данных (typical/fixed method)
-                size_mm = est.real_size_mm
-            
-            df.at[idx, 'estimated_size_mm'] = size_mm
-            df.at[idx, 'estimated_size_cm'] = round(size_mm / 10.0, 2)
-            df.at[idx, 'size_confidence'] = est.confidence
-            df.at[idx, 'size_method'] = est.method
+    df = _assign_size_columns_to_detections(df, size_map)
     
     # Сохранение
     if output_csv:

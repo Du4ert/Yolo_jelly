@@ -20,15 +20,7 @@ from pathlib import Path
 from typing import Optional, Dict, Tuple, Any
 import time
 
-
-# Соответствие классов (для цветов)
-CLASS_COLORS = {
-    'Aurelia aurita': (255, 165, 0),      # Оранжевый
-    'Beroe ovata': (0, 255, 0),           # Зелёный
-    'Mnemiopsis leidyi': (255, 0, 255),   # Пурпурный
-    'Pleurobrachia pileus': (0, 255, 255), # Голубой
-    'Rhizostoma pulmo': (0, 0, 255)       # Красный
-}
+from constants import CLASS_COLORS_BGR
 
 
 def load_size_data(detections_csv: str, size_csv: str) -> pd.DataFrame:
@@ -176,7 +168,7 @@ def draw_size_info(
     text_y = min(text_y, frame_height - 5)
     
     # Цвет текста по классу
-    color = CLASS_COLORS.get(class_name, (255, 255, 255))
+    color = CLASS_COLORS_BGR.get(class_name, (255, 255, 255))
     
     # Фон для текста (полупрозрачный чёрный)
     bg_x1 = text_x - 3

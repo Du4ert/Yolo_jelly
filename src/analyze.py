@@ -9,15 +9,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from typing import Optional
 
-
-# Цвета для видов
-SPECIES_COLORS = {
-    'Aurelia aurita': '#1f77b4',
-    'Rhizostoma pulmo': '#ff7f0e',
-    'Beroe ovata': '#2ca02c',
-    'Mnemiopsis leidyi': '#d62728',
-    'Pleurobrachia pileus': '#9467bd'
-}
+from constants import SPECIES_COLORS
 
 
 def plot_vertical_distribution(
