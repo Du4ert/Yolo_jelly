@@ -54,7 +54,7 @@ class CameraCalibration:
     frame_height: int = 2160
     
     # Угол обзора
-    fov_horizontal: float = 100.0
+    fov_horizontal: float = 156.0
     
     # === Калибровочные коэффициенты (эмпирические, GoPro 12 Wide 4K) ===
     # Формула: d = A * k^B, где k - удельный прирост размера (%/м)
@@ -162,7 +162,7 @@ def estimate_foe(
     foe_x, foe_y = result.x
     confidence = 1 - result.fun
     
-    pixels_per_degree = width / 100.0
+    pixels_per_degree = width / 156.0
     tilt_h = (foe_x - cx) / pixels_per_degree
     tilt_v = (foe_y - cy) / pixels_per_degree
     
@@ -1399,7 +1399,7 @@ def calculate_surveyed_volume(
     tracks_df: Optional[pd.DataFrame] = None,
     ctd_df: Optional[pd.DataFrame] = None,
     calibration: CameraCalibration = None,
-    fov_horizontal_deg: float = 100.0,
+    fov_horizontal_deg: float = 156.0,
     near_distance_m: float = 0.3,
     detection_distance_m: Optional[float] = None,
     depth_range: Optional[Tuple[float, float]] = None,
@@ -1511,7 +1511,7 @@ def process_volume_estimation(
     tracks_csv: Optional[str] = None,
     ctd_csv: Optional[str] = None,
     output_csv: Optional[str] = None,
-    fov_horizontal: float = 100.0,
+    fov_horizontal: float = 156.0,
     near_distance: float = 0.3,
     detection_distance: Optional[float] = None,
     depth_min: Optional[float] = None,
@@ -1631,7 +1631,7 @@ def main():
     vol.add_argument('--tracks', '-t')
     vol.add_argument('--ctd', '-c')
     vol.add_argument('--output', '-o')
-    vol.add_argument('--fov', type=float, default=100.0)
+    vol.add_argument('--fov', type=float, default=156.0)
     vol.add_argument('--near-distance', type=float, default=0.3)
     vol.add_argument('--detection-distance', type=float)
     vol.add_argument('--depth-min', type=float)
