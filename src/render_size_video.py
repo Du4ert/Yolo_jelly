@@ -272,7 +272,8 @@ def render_size_video(
     size_csv: str,
     geometry_csv: Optional[str] = None,
     output_video: Optional[str] = None,
-    verbose: bool = True
+    verbose: bool = True,
+    progress_callback=None,
 ) -> str:
     """
     Рендерит видео с информацией о размерах объектов.
@@ -369,8 +370,10 @@ def render_size_video(
         
         out.write(frame)
         frame_idx += 1
-        
+
         # Прогресс
+        if progress_callback is not None and frame_idx % 100 == 0:
+            progress_callback(frame_idx, total_frames)
         if verbose and frame_idx % 500 == 0:
             progress = frame_idx / total_frames * 100
             elapsed = time.time() - start_time

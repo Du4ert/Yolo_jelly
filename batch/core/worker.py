@@ -208,7 +208,14 @@ class Worker(QThread):
         
         self.repo.update_subtask_status(subtask_id, TaskStatus.RUNNING)
         self.started_subtask.emit(subtask_id)
-        
+        self.subtask_progress.emit(subtask_id, 0.0)
+
+        def on_subtask_progress(current: int, total: int) -> None:
+            if total > 0:
+                percent = (current / total) * 100
+                self.repo.update_subtask_progress(subtask_id, percent)
+                self.subtask_progress.emit(subtask_id, percent)
+
         try:
             parent_task = self.repo.get_task(subtask.parent_task_id)
             if not parent_task:
@@ -278,13 +285,16 @@ class Worker(QThread):
             elif subtask.subtask_type == SubTaskType.SIZE_VIDEO_RENDER:
                 result_value, result_text = self._run_size_video_render(
                     detected_video, detections_csv, size_csv, geometry_csv,
-                    output_dir, base_name, params, parent_task.id
+                    output_dir, base_name, params, parent_task.id,
+                    progress_callback=on_subtask_progress
                 )
             else:
                 raise ValueError(f"Unknown subtask type: {subtask.subtask_type}")
-            
+
             self._current_subtask_id = None
-            
+
+            self.repo.update_subtask_progress(subtask_id, 100.0)
+            self.subtask_progress.emit(subtask_id, 100.0)
             self.repo.update_subtask_status(
                 subtask_id, TaskStatus.DONE,
                 result_value=result_value,
@@ -575,7 +585,8 @@ class Worker(QThread):
         output_dir: Path,
         base_name: str,
         params: dict,
-        task_id: int
+        task_id: int,
+        progress_callback=None,
     ):
         """
         Выполняет подзадачу рендеринга видео с размерами.
@@ -611,6 +622,7 @@ class Worker(QThread):
             size_csv=size_csv,
             output_video=output_video,
             geometry_csv=effective_geometry_csv,
+            progress_callback=progress_callback,
         )
         
         if not result.success:

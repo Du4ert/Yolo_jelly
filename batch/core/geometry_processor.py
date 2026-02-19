@@ -476,7 +476,8 @@ class SizeVideoRenderProcessor:
                 size_csv=size_csv,
                 geometry_csv=geometry_csv,
                 output_video=output_video,
-                verbose=True
+                verbose=True,
+                progress_callback=progress_callback,
             )
             
             processing_time = time.time() - start_time

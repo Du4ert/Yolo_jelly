@@ -616,6 +616,18 @@ class Repository:
             session.execute(stmt)
             session.commit()
 
+    def update_subtask_progress(self, subtask_id: int, progress_percent: float) -> None:
+        """Обновляет прогресс подзадачи."""
+        from .models import SubTask
+        with self.get_session() as session:
+            stmt = (
+                update(SubTask)
+                .where(SubTask.id == subtask_id)
+                .values(progress_percent=progress_percent)
+            )
+            session.execute(stmt)
+            session.commit()
+
     def move_task(self, task_id: int, new_position: int) -> bool:
         """Перемещает задачу в очереди."""
         with self.get_session() as session:
