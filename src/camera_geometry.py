@@ -11,7 +11,7 @@
 Формулы расчёта размеров:
 1. k = (Δpixels/pixels₁) / Δd  - удельный прирост размера (%/м)
 2. d = 24.68 * |k|^(-0.644)    - дистанция до объекта (м)
-3. p = 2.432 * d^(-1.0334)     - калибровка (px/мм)
+3. p = 4.35 * d^(-1.25)     - калибровка (px/мм)
 4. size = pixels / p           - размер объекта (мм)
 """
 
@@ -62,8 +62,8 @@ class CameraCalibration:
     distance_coef_B: float = -0.644
     
     # Формула: p = C * d^D, где p - px/мм, d - дистанция (м)
-    pixel_calib_C: float = 2.432
-    pixel_calib_D: float = -1.0334
+    pixel_calib_C: float = 4.35
+    pixel_calib_D: float = -1.25
     
     # Диапазон надёжных измерений (по SNR анализу)
     min_reliable_distance: float = 0.3   # ближе - слишком крупно
@@ -97,7 +97,7 @@ class TrackSizeEstimate:
     Метод расчёта:
     1. k = (Δpixels/pixels₁) / Δdepth_camera  - удельный прирост размера для каждой пары
     2. d = 24.68 * |k|^(-0.644)               - дистанция до объекта (м)
-    3. p = 2.432 * d^(-1.0334)                - калибровка px/мм
+    3. p = 4.35 * d^(-1.25)                - калибровка px/мм
     4. size = pixels_max / p                  - размер объекта по макс. кадру (мм)
     5. object_depth = camera_depth + distance - глубина объекта (камера смотрит вниз)
     """
@@ -344,7 +344,7 @@ def estimate_size_by_k_method(
        - k = (Δpx/px₁) / Δdepth_camera
        - k_corr = k / cos(θ) (коррекция наклона)
        - distance = 24.68 × |k|^(-0.644)
-       - pixel_calib = 2.432 × d^(-1.0334)
+       - pixel_calib = 4.35 × d^(-1.25)
        - size_mm = pixels_end / pixel_calib
     3. Сглаживаем ряд размеров скользящей медианой
     4. Выбираем последний стабильный размер до начала уменьшения
