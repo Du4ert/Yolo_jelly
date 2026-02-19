@@ -53,35 +53,39 @@ class Worker(QThread):
     def run(self):
         """Основной цикл воркера."""
         self._stop_requested = False
-        
-        while not self._stop_requested:
-            # Проверяем паузу
-            self._mutex.lock()
-            while self._pause_requested and not self._stop_requested:
-                self._pause_condition.wait(self._mutex)
-            self._mutex.unlock()
-            
-            if self._stop_requested:
-                break
-            
-            # Сначала ищем ожидающие подзадачи (у завершённых родителей)
-            pending_subtasks = self.repo.get_pending_subtasks()
-            if pending_subtasks:
-                subtask = pending_subtasks[0]
-                parent = self.repo.get_task(subtask.parent_task_id)
-                if parent and parent.status == TaskStatus.DONE:
-                    self._execute_subtask(subtask)
-                    continue
-            
-            # Если нет подзадач, ищем основные задачи
-            pending_tasks = self.repo.get_pending_tasks()
-            if not pending_tasks:
-                break
-            
-            task = pending_tasks[0]
-            self._execute_task(task)
-        
-        self.all_finished.emit()
+
+        try:
+            while not self._stop_requested:
+                # Проверяем паузу
+                self._mutex.lock()
+                while self._pause_requested and not self._stop_requested:
+                    self._pause_condition.wait(self._mutex)
+                self._mutex.unlock()
+
+                if self._stop_requested:
+                    break
+
+                # Сначала ищем ожидающие подзадачи (у завершённых родителей)
+                pending_subtasks = self.repo.get_pending_subtasks()
+                if pending_subtasks:
+                    subtask = pending_subtasks[0]
+                    parent = self.repo.get_task(subtask.parent_task_id)
+                    if parent and parent.status == TaskStatus.DONE:
+                        self._execute_subtask(subtask)
+                        continue
+
+                # Если нет подзадач, ищем основные задачи
+                pending_tasks = self.repo.get_pending_tasks()
+                if not pending_tasks:
+                    break
+
+                task = pending_tasks[0]
+                self._execute_task(task)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+        finally:
+            self.all_finished.emit()
 
     def _execute_task(self, task: Task) -> None:
         """Выполняет основную задачу детекции."""
@@ -205,7 +209,14 @@ class Worker(QThread):
         """Выполняет подзадачу постобработки."""
         subtask_id = subtask.id
         self._current_subtask_id = subtask_id
-        
+
+        # Не запускаем подзадачу, если уже запрошена остановка
+        if self._stop_requested:
+            self._current_subtask_id = None
+            self.repo.update_subtask_status(subtask_id, TaskStatus.CANCELLED, "Отменено пользователем")
+            self.finished_subtask.emit(subtask_id, False, "Отменено пользователем")
+            return
+
         self.repo.update_subtask_status(subtask_id, TaskStatus.RUNNING)
         self.started_subtask.emit(subtask_id)
         self.subtask_progress.emit(subtask_id, 0.0)

@@ -6,15 +6,15 @@ base:
   data_yaml: data.yaml                # Путь к конфигурации датасета
   model: yolo11m.pt                   # Базовая модель: yolov8n/s/m/l/x.pt
   project: runs             # Директория для сохранения результатов
-  name: model_11m                    # Имя эксперимента
+  name: model_11m_1280                    # Имя эксперимента
 
 # Параметры обучения
 training:
   epochs: 150                         # Количество эпох
-  batch: 4                           # Размер батча (-1 для автоподбора)
-  imgsz: 1920                          # Размер входного изображения
+  batch: 8                           # Размер батча (-1 для автоподбора)
+  imgsz: 1280                          # Размер входного изображения
   device: auto                        # Устройство: 0, 1, cpu, auto
-  workers: 4                          # Количество воркеров DataLoader
+  workers: 8                          # Количество воркеров DataLoader
   patience: 30                        # Early stopping patience (эпохи без улучшения)
   save_period: 10                     # Сохранять чекпоинт каждые N эпох
 

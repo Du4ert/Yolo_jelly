@@ -12,8 +12,8 @@
   "ui": {
     "window_geometry": "AdnQywADAAAAAAGaAAAAhwAABeUAAANhAAABmgAAAKYAAAXlAAADYQAAAAAAAAAAB4AAAAGaAAAApgAABeUAAANh",
     "window_state": null,
-    "last_browse_path": "C:\\WORK\\Claude_allowed\\yolo_jellyfish\\test_video\\balls",
-    "last_model_id": 5,
+    "last_browse_path": "C:\\WORK\\Claude_allowed\\yolo_jellyfish\\runs\\model_11s_1280\\weights",
+    "last_model_id": 7,
     "splitter_sizes": [
       337,
       751
