@@ -145,6 +145,40 @@ class NewTaskDialog(QDialog):
         tracking_layout.addLayout(tracking_form)
         layout.addWidget(tracking_group)
         
+        # === GPU / Ускорение ===
+        gpu_group = QGroupBox("GPU / Ускорение")
+        gpu_layout = QFormLayout(gpu_group)
+
+        self.combo_device = QComboBox()
+        self.combo_device.addItem("Автоматически", "auto")
+        self.combo_device.addItem("CPU", "cpu")
+        self.combo_device.addItem("GPU 0", "0")
+        self.combo_device.setToolTip(
+            "Устройство для инференса YOLO.\n"
+            "auto — GPU если доступен, иначе CPU."
+        )
+        gpu_layout.addRow("Устройство:", self.combo_device)
+
+        self.spin_imgsz = QSpinBox()
+        self.spin_imgsz.setRange(320, 3840)
+        self.spin_imgsz.setSingleStep(32)
+        self.spin_imgsz.setToolTip(
+            "Размер изображения для YOLO-инференса.\n"
+            "Должен совпадать с imgsz при обучении модели (обычно 1280).\n"
+            "Больше = точнее, но медленнее и больше памяти GPU."
+        )
+        gpu_layout.addRow("Размер изображения (imgsz):", self.spin_imgsz)
+
+        self.check_half = QCheckBox("FP16 (half precision)")
+        self.check_half.setToolTip(
+            "Использовать половинную точность для инференса.\n"
+            "Ускоряет обработку в ~2 раза на GPU с минимальным влиянием на точность.\n"
+            "Не поддерживается на CPU."
+        )
+        gpu_layout.addRow("", self.check_half)
+
+        layout.addWidget(gpu_group)
+
         # === Выход ===
         output_group = QGroupBox("Выход")
         output_layout = QVBoxLayout(output_group)
@@ -251,7 +285,15 @@ class NewTaskDialog(QDialog):
         self.spin_trail_length.setValue(params.trail_length)
         self.spin_min_track.setValue(params.min_track_length)
         self.check_save_video.setChecked(params.save_video)
-        
+
+        # GPU / Ускорение
+        for i in range(self.combo_device.count()):
+            if self.combo_device.itemData(i) == params.device:
+                self.combo_device.setCurrentIndex(i)
+                break
+        self.spin_imgsz.setValue(params.imgsz)
+        self.check_half.setChecked(params.half)
+
         # По умолчанию автопостобработка выключена
         self.check_auto_postprocess.setChecked(False)
         
@@ -290,6 +332,10 @@ class NewTaskDialog(QDialog):
             "min_track_length": self.spin_min_track.value(),
             "save_video": self.check_save_video.isChecked(),
             "auto_postprocess": self.check_auto_postprocess.isChecked(),
+            # GPU / Ускорение
+            "device": self.combo_device.currentData(),
+            "imgsz": self.spin_imgsz.value(),
+            "half": self.check_half.isChecked(),
         }
         
         # Скорость погружения только если нет CTD
@@ -312,6 +358,7 @@ class NewTaskDialog(QDialog):
                 "near_distance": self.pp_spin_near.value(),
                 "depth_bin": self.pp_spin_depth_bin.value(),
                 "ctd_columns": self.pp_edit_ctd_columns.text().strip() or "6",
+                "frame_step": self.pp_spin_frame_step.value(),
             }
             params["auto_postprocess_params"] = json.dumps(postprocess_params)
         
@@ -343,7 +390,27 @@ class NewTaskDialog(QDialog):
         self.pp_chk_geometry.setChecked(True)
         self.pp_chk_geometry.toggled.connect(self._update_postprocess_dependencies)
         layout.addWidget(self.pp_chk_geometry)
-        
+
+        # Опция frame_step для геометрии
+        geom_step_indent = QWidget()
+        geom_step_layout = QHBoxLayout(geom_step_indent)
+        geom_step_layout.setContentsMargins(20, 0, 0, 0)
+        geom_step_label = QLabel("Шаг кадров:")
+        geom_step_layout.addWidget(geom_step_label)
+        self.pp_spin_frame_step = QSpinBox()
+        self.pp_spin_frame_step.setRange(1, 5)
+        self.pp_spin_frame_step.setValue(1)
+        self.pp_spin_frame_step.setMaximumWidth(60)
+        self.pp_spin_frame_step.setToolTip(
+            "Шаг чтения кадров для optical flow.\n"
+            "1 = каждый кадр (максимальная точность)\n"
+            "2 = через кадр (~2x быстрее)\n"
+            "3 = каждый 3-й (~3x быстрее)"
+        )
+        geom_step_layout.addWidget(self.pp_spin_frame_step)
+        geom_step_layout.addStretch()
+        layout.addWidget(geom_step_indent)
+
         # Разделитель
         separator1 = QFrame()
         separator1.setFrameShape(QFrame.Shape.HLine)

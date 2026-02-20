@@ -131,6 +131,10 @@ class Worker(QThread):
                     "min_track_length": task_data.min_track_length,
                     "depth_rate": task_data.depth_rate,
                     "save_video": task_data.save_video,
+                    # GPU-ускорение (из задачи, fallback — дефолты)
+                    "device": task_data.device or "auto",
+                    "imgsz": task_data.imgsz or 1280,
+                    "half": task_data.half if task_data.half is not None else True,
                 }
             
             processor = ProcessorFactory.from_task_data(
@@ -332,6 +336,7 @@ class Worker(QThread):
             frame_interval=params.get("frame_interval", 30),
             frame_width=video.width or 1920,
             frame_height=video.height or 1080,
+            frame_step=params.get("frame_step", 1),
         )
         
         if not result.success:
@@ -688,11 +693,13 @@ class Worker(QThread):
         
         # Геометрия
         if do_geometry:
+            geom_params = common_params.copy()
+            geom_params["frame_step"] = params.get("frame_step", 1)
             self.repo.create_subtask(
                 parent_task_id=task_id,
                 subtask_type=SubTaskType.GEOMETRY,
                 position=position,
-                params_json=json.dumps(common_params),
+                params_json=json.dumps(geom_params),
             )
             position += 1
         

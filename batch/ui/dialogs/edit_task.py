@@ -186,14 +186,37 @@ class EditTaskDialog(QDialog):
         tracking_layout.addLayout(tracking_form)
         params_layout.addWidget(tracking_group)
         
+        # GPU / Ускорение
+        gpu_group = QGroupBox("GPU / Ускорение")
+        gpu_layout = QFormLayout(gpu_group)
+
+        self.combo_device = QComboBox()
+        self.combo_device.addItem("Автоматически", "auto")
+        self.combo_device.addItem("CPU", "cpu")
+        self.combo_device.addItem("GPU 0", "0")
+        self.combo_device.setEnabled(self._is_editable)
+        gpu_layout.addRow("Устройство:", self.combo_device)
+
+        self.spin_imgsz = QSpinBox()
+        self.spin_imgsz.setRange(320, 3840)
+        self.spin_imgsz.setSingleStep(32)
+        self.spin_imgsz.setEnabled(self._is_editable)
+        gpu_layout.addRow("Размер изображения (imgsz):", self.spin_imgsz)
+
+        self.check_half = QCheckBox("FP16 (half precision)")
+        self.check_half.setEnabled(self._is_editable)
+        gpu_layout.addRow("", self.check_half)
+
+        params_layout.addWidget(gpu_group)
+
         # Выход
         output_group = QGroupBox("Выход")
         output_layout = QVBoxLayout(output_group)
-        
+
         self.check_save_video = QCheckBox("Сохранять видео с разметкой")
         self.check_save_video.setEnabled(self._is_editable)
         output_layout.addWidget(self.check_save_video)
-        
+
         params_layout.addWidget(output_group)
         params_layout.addStretch()
         
@@ -293,7 +316,16 @@ class EditTaskDialog(QDialog):
         self.spin_trail_length.setValue(task.trail_length)
         self.spin_min_track.setValue(task.min_track_length)
         self.check_save_video.setChecked(task.save_video)
-        
+
+        # GPU / Ускорение
+        device_val = task.device or "auto"
+        for i in range(self.combo_device.count()):
+            if self.combo_device.itemData(i) == device_val:
+                self.combo_device.setCurrentIndex(i)
+                break
+        self.spin_imgsz.setValue(task.imgsz or 1280)
+        self.check_half.setChecked(task.half if task.half is not None else True)
+
         # Выходные файлы
         outputs = self.repo.get_task_outputs(task.id)
         if outputs:
@@ -316,6 +348,10 @@ class EditTaskDialog(QDialog):
             "trail_length": self.spin_trail_length.value(),
             "min_track_length": self.spin_min_track.value(),
             "save_video": self.check_save_video.isChecked(),
+            # GPU / Ускорение
+            "device": self.combo_device.currentData(),
+            "imgsz": self.spin_imgsz.value(),
+            "half": self.check_half.isChecked(),
         }
         
         self.repo.update_task(self.task_id, **params)

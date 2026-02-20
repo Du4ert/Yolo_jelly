@@ -47,6 +47,29 @@ class Repository:
         # Создаём таблицы, если их нет
         Base.metadata.create_all(self.engine)
 
+        # Миграция: добавляем новые колонки к существующим таблицам
+        self._migrate()
+
+    def _migrate(self):
+        """Добавляет недостающие колонки в существующие таблицы."""
+        from sqlalchemy import text, inspect
+        insp = inspect(self.engine)
+
+        # Колонки GPU-ускорения для таблицы tasks
+        if 'tasks' in insp.get_table_names():
+            existing = {c['name'] for c in insp.get_columns('tasks')}
+            migrations = [
+                ("device", "VARCHAR(20) DEFAULT 'auto'"),
+                ("imgsz", "INTEGER DEFAULT 1280"),
+                ("half", "BOOLEAN DEFAULT 1"),
+            ]
+            with self.engine.begin() as conn:
+                for col_name, col_def in migrations:
+                    if col_name not in existing:
+                        conn.execute(text(
+                            f"ALTER TABLE tasks ADD COLUMN {col_name} {col_def}"
+                        ))
+
     def get_session(self) -> Session:
         """Создаёт новую сессию."""
         return self.SessionLocal()

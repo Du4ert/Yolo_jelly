@@ -202,7 +202,12 @@ class Task(Base):
     min_track_length: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
     depth_rate: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     save_video: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    
+
+    # Параметры GPU-ускорения
+    device: Mapped[Optional[str]] = mapped_column(String(20), default="auto", nullable=True)
+    imgsz: Mapped[Optional[int]] = mapped_column(Integer, default=1280, nullable=True)
+    half: Mapped[Optional[bool]] = mapped_column(Boolean, default=True, nullable=True)
+
     # Прогресс детекции
     progress_percent: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     current_frame: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

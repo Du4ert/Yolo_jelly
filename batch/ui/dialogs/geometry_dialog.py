@@ -44,6 +44,7 @@ class GeometryWorker(QThread):
         frame_interval: int = 30,
         frame_width: int = 1920,
         frame_height: int = 1080,
+        frame_step: int = 1,
     ):
         super().__init__()
         self.video_path = video_path
@@ -51,19 +52,21 @@ class GeometryWorker(QThread):
         self.frame_interval = frame_interval
         self.frame_width = frame_width
         self.frame_height = frame_height
+        self.frame_step = frame_step
         self._processor = None
-    
+
     def run(self):
         from ...core import GeometryProcessor
-        
+
         self._processor = GeometryProcessor()
-        
+
         result = self._processor.process(
             video_path=self.video_path,
             output_csv=self.output_csv,
             frame_interval=self.frame_interval,
             frame_width=self.frame_width,
             frame_height=self.frame_height,
+            frame_step=self.frame_step,
         )
         self.finished.emit(result)
     
@@ -359,7 +362,18 @@ class GeometryDialog(QDialog):
         self.geom_height.setRange(480, 4320)
         self.geom_height.setValue(2160)
         params_layout.addRow("Высота кадра:", self.geom_height)
-        
+
+        self.geom_frame_step = QSpinBox()
+        self.geom_frame_step.setRange(1, 5)
+        self.geom_frame_step.setValue(1)
+        self.geom_frame_step.setToolTip(
+            "Шаг чтения кадров для optical flow.\n"
+            "1 = каждый кадр (максимальная точность)\n"
+            "2 = через кадр (~2x быстрее, немного менее точные FOE)\n"
+            "3 = каждый 3-й (~3x быстрее)"
+        )
+        params_layout.addRow("Шаг кадров (ускорение):", self.geom_frame_step)
+
         layout.addWidget(params_group)
         
         # Группа: Выход
@@ -792,6 +806,7 @@ class GeometryDialog(QDialog):
             frame_interval=self.geom_interval.value(),
             frame_width=self.geom_width.value(),
             frame_height=self.geom_height.value(),
+            frame_step=self.geom_frame_step.value(),
         )
         self._worker.finished.connect(self._on_geometry_finished)
         self._worker.start()

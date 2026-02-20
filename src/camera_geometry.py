@@ -23,6 +23,7 @@ from typing import Optional, Tuple, Dict, List
 from dataclasses import dataclass, field
 from scipy.optimize import minimize
 import argparse
+from video_utils import ThreadedVideoCapture
 
 
 # Ширина кадра, для которой получены калибровочные коэффициенты (GoPro 12 Wide 4K)
@@ -308,12 +309,17 @@ def _find_size_pairs(
     tilt_correction_applied = False
     avg_tilt_deg = 0.0
 
+    # Извлекаем массивы для быстрого поиска (numpy вместо iloc)
+    sizes_arr = valid_df['size_pix'].values
+    depths_arr = valid_df['depth_m'].values
+    frames_arr = valid_df['frame'].values
+    n = len(valid_df)
+
     i = 0
-    while i < len(valid_df):
-        row1 = valid_df.iloc[i]
-        pixels1 = row1['size_pix']
-        depth1 = row1['depth_m']
-        frame1 = row1['frame']
+    while i < n:
+        pixels1 = sizes_arr[i]
+        depth1 = depths_arr[i]
+        frame1 = frames_arr[i]
 
         if pixels1 <= 0:
             i += 1
@@ -321,72 +327,69 @@ def _find_size_pairs(
 
         target_size = pixels1 * min_change_ratio
 
-        found_j = None
-        for j in range(i + 1, len(valid_df)):
-            if valid_df.iloc[j]['size_pix'] >= target_size:
-                found_j = j
-                break
-
-        if found_j is not None:
-            row2 = valid_df.iloc[found_j]
-            pixels2 = row2['size_pix']
-            depth2 = row2['depth_m']
-            frame2 = row2['frame']
-
-            delta_depth = depth2 - depth1
-
-            if abs(delta_depth) < 0.01:
-                i = found_j
-                continue
-
-            delta_pixels = pixels2 - pixels1
-            k_raw = (delta_pixels / pixels1) / delta_depth
-            k = k_raw
-
-            cos_tilt = 1.0
-            tilt_deg_pair = 0.0
-            if apply_tilt_correction and geometry_df is not None:
-                cos_tilt, tilt_deg_pair = get_average_tilt_for_range(
-                    int(frame1), int(frame2), geometry_df
-                )
-                if cos_tilt < 1.0:
-                    tilt_correction_applied = True
-                    avg_tilt_deg = max(avg_tilt_deg, tilt_deg_pair)
-                cos_tilt = max(cos_tilt, 0.17)
-                k = k_raw / cos_tilt
-
-            if k > 0:
-                k_percent = k * 100
-                distance = _calculate_distance_from_k(k_percent, calibration)
-                pixel_calib = _calculate_pixel_calibration(distance, calibration)
-                # Нормализуем пиксели к референсному разрешению (3840px),
-                # т.к. pixel_calib откалиброван для REFERENCE_FRAME_WIDTH
-                pixels2_ref = pixels2 / calibration.resolution_scale
-                size_mm = _calculate_size_mm(pixels2_ref, pixel_calib)
-                camera_depth_end = depth2
-                object_depth = camera_depth_end + distance
-
-                pair_data.append({
-                    'frame_start': frame1,
-                    'frame_end': frame2,
-                    'frame_mid': (frame1 + frame2) / 2,
-                    'k': k,
-                    'k_percent': k_percent,
-                    'k_raw_percent': k_raw * 100,
-                    'cos_tilt': cos_tilt,
-                    'tilt_deg': tilt_deg_pair,
-                    'distance': distance,
-                    'pixel_calib': pixel_calib,
-                    'size_mm': size_mm,
-                    'size_pixels': pixels2,
-                    'depth_camera': camera_depth_end,
-                    'object_depth': object_depth,
-                    'size_change_pct': (pixels2 / pixels1 - 1) * 100
-                })
-
-            i = found_j
-        else:
+        # Векторизованный поиск первого элемента >= target_size
+        remaining = sizes_arr[i + 1:]
+        candidates = np.where(remaining >= target_size)[0]
+        if len(candidates) == 0:
             break
+        found_j = candidates[0] + i + 1
+
+        pixels2 = sizes_arr[found_j]
+        depth2 = depths_arr[found_j]
+        frame2 = frames_arr[found_j]
+
+        delta_depth = depth2 - depth1
+
+        if abs(delta_depth) < 0.01:
+            i = found_j
+            continue
+
+        delta_pixels = pixels2 - pixels1
+        k_raw = (delta_pixels / pixels1) / delta_depth
+        k = k_raw
+
+        cos_tilt = 1.0
+        tilt_deg_pair = 0.0
+        if apply_tilt_correction and geometry_df is not None:
+            cos_tilt, tilt_deg_pair = get_average_tilt_for_range(
+                int(frame1), int(frame2), geometry_df
+            )
+            if cos_tilt < 1.0:
+                tilt_correction_applied = True
+                avg_tilt_deg = max(avg_tilt_deg, tilt_deg_pair)
+            cos_tilt = max(cos_tilt, 0.17)
+            k = k_raw / cos_tilt
+
+        if k > 0:
+            k_percent = k * 100
+            distance = _calculate_distance_from_k(k_percent, calibration)
+            pixel_calib = _calculate_pixel_calibration(distance, calibration)
+            # Нормализуем пиксели к референсному разрешению (3840px),
+            # т.к. pixel_calib откалиброван для REFERENCE_FRAME_WIDTH
+            pixels2_ref = pixels2 / calibration.resolution_scale
+            size_mm = _calculate_size_mm(pixels2_ref, pixel_calib)
+            camera_depth_end = depth2
+            object_depth = camera_depth_end + distance
+
+            pair_data.append({
+                'frame_start': frame1,
+                'frame_end': frame2,
+                'frame_mid': (frame1 + frame2) / 2,
+                'k': k,
+                'k_percent': k_percent,
+                'k_raw_percent': k_raw * 100,
+                'cos_tilt': cos_tilt,
+                'tilt_deg': tilt_deg_pair,
+                'distance': distance,
+                'pixel_calib': pixel_calib,
+                'size_mm': size_mm,
+                'size_pixels': pixels2,
+                'depth_camera': camera_depth_end,
+                'object_depth': object_depth,
+                'size_change_pct': (pixels2 / pixels1 - 1) * 100
+            })
+
+        i = found_j
 
     return pair_data, tilt_correction_applied, avg_tilt_deg
 
@@ -1024,46 +1027,69 @@ def _assign_size_columns_to_detections(
     df['size_confidence'] = None
     df['size_method'] = None
 
-    for idx, row in df.iterrows():
-        track_id = row['track_id']
-        if pd.isna(track_id) or track_id not in size_map:
-            continue
+    if not size_map:
+        return df
 
-        est = size_map[track_id]
-        frame = int(row['frame'])
-        camera_depth = row.get('depth_m')
+    # Маска строк с валидным track_id, присутствующим в size_map
+    has_track = df['track_id'].notna()
+    if not has_track.any():
+        return df
 
-        df.at[idx, 'object_depth_m'] = est.object_depth_m
+    valid_track_ids = set(size_map.keys())
+    mask = has_track & df['track_id'].isin(valid_track_ids)
+    if not mask.any():
+        return df
 
-        if pd.notna(camera_depth) and est.object_depth_m is not None:
-            distance = est.object_depth_m - camera_depth
-            df.at[idx, 'distance_to_object_m'] = round(max(distance, 0.0), 3)
+    # Построить массивы скалярных атрибутов из size_map по track_id
+    track_ids_col = df.loc[mask, 'track_id']
+    object_depths = track_ids_col.map(lambda tid: size_map[tid].object_depth_m)
+    confidences = track_ids_col.map(lambda tid: size_map[tid].confidence)
+    methods = track_ids_col.map(lambda tid: size_map[tid].method)
 
-        if est.frame_data and frame in est.frame_data:
-            size_mm = est.frame_data[frame]
-        elif est.frame_data:
-            available_frames = sorted(est.frame_data.keys())
-            if frame < available_frames[0]:
-                size_mm = est.frame_data[available_frames[0]]
-            elif frame > available_frames[-1]:
-                size_mm = est.frame_data[available_frames[-1]]
-            else:
-                frame_before = max(f for f in available_frames if f <= frame)
-                frame_after = min(f for f in available_frames if f >= frame)
-                if frame_before == frame_after:
-                    size_mm = est.frame_data[frame_before]
-                else:
-                    size_before = est.frame_data[frame_before]
-                    size_after = est.frame_data[frame_after]
-                    t = (frame - frame_before) / (frame_after - frame_before)
-                    size_mm = round(size_before + t * (size_after - size_before), 1)
+    df.loc[mask, 'object_depth_m'] = object_depths.values
+    df.loc[mask, 'size_confidence'] = confidences.values
+    df.loc[mask, 'size_method'] = methods.values
+
+    # distance_to_object_m = max(object_depth - camera_depth, 0)
+    dist_mask = mask & df['depth_m'].notna() & df['object_depth_m'].notna()
+    if dist_mask.any():
+        obj_d = df.loc[dist_mask, 'object_depth_m'].astype(float)
+        cam_d = df.loc[dist_mask, 'depth_m'].astype(float)
+        distances = (obj_d - cam_d).clip(lower=0.0).round(3)
+        df.loc[dist_mask, 'distance_to_object_m'] = distances.values
+
+    # Интерполяция размеров по кадрам для каждого трека
+    # Предварительно подготовим кеш отсортированных frame_data
+    _interp_cache = {}
+    for tid, est in size_map.items():
+        if est.frame_data:
+            frames_sorted = sorted(est.frame_data.keys())
+            sizes_sorted = [est.frame_data[f] for f in frames_sorted]
+            _interp_cache[tid] = (np.array(frames_sorted, dtype=float),
+                                  np.array(sizes_sorted, dtype=float))
         else:
-            size_mm = est.real_size_mm
+            _interp_cache[tid] = None
 
-        df.at[idx, 'estimated_size_mm'] = size_mm
-        df.at[idx, 'estimated_size_cm'] = round(size_mm / 10.0, 2)
-        df.at[idx, 'size_confidence'] = est.confidence
-        df.at[idx, 'size_method'] = est.method
+    # Группируем по track_id для эффективной интерполяции
+    for tid, group_idx in df.loc[mask].groupby('track_id').groups.items():
+        est = size_map[tid]
+        cache = _interp_cache[tid]
+
+        if cache is not None:
+            xp, fp = cache
+            frames = df.loc[group_idx, 'frame'].astype(float).values
+            # np.interp делает линейную интерполяцию с clamp на краях —
+            # точно повторяет логику оригинала
+            sizes = np.round(np.interp(frames, xp, fp), 1)
+            df.loc[group_idx, 'estimated_size_mm'] = sizes
+        else:
+            df.loc[group_idx, 'estimated_size_mm'] = est.real_size_mm
+
+    # estimated_size_cm из estimated_size_mm
+    size_assigned = mask & df['estimated_size_mm'].notna()
+    if size_assigned.any():
+        sizes_mm = df.loc[size_assigned, 'estimated_size_mm'].astype(float)
+        df.loc[size_assigned, 'estimated_size_cm'] = (sizes_mm / 10.0).round(2).values
 
     return df
 
@@ -1125,45 +1151,62 @@ def process_detections_with_size(
     
     # Этап 0: классы с фиксированным размером (P. pileus)
     fixed_estimates = []
-    
-    # Этап 1: k-метод для хороших треков
-    k_method_estimates = []
+
+    # Разделяем треки по типу обработки
+    tracks_for_k_method = []
     tracks_for_typical = []
-    
+
     for track_id, track_df in df.groupby('track_id'):
         if pd.isna(track_id):
             continue
-        
+
         class_name = track_df['class_name'].iloc[0]
-        
+
         # Сначала проверяем фиксированные классы
         if class_name in FIXED_SIZE_CLASSES:
             estimate = estimate_size_fixed(track_df, calibration)
             if estimate is not None:
                 fixed_estimates.append(estimate)
             continue
-        
-        estimate = estimate_size_by_k_method(
+
+        tracks_for_k_method.append(track_df)
+
+    # Этап 1: k-метод с параллельной обработкой треков
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import os
+
+    def _process_track_k_method(track_df):
+        return estimate_size_by_k_method(
             track_df, calibration,
             min_depth_change=min_depth_change,
             min_points=min_track_points,
             geometry_df=geometry_df,
             apply_tilt_correction=apply_tilt_correction
         )
-        
-        if estimate is not None:
-            k_method_estimates.append(estimate)
-        else:
-            tracks_for_typical.append((track_id, track_df))
-    
+
+    k_method_estimates = []
+    max_workers = min(os.cpu_count() or 4, len(tracks_for_k_method) or 1)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_process_track_k_method, tdf): tdf
+                   for tdf in tracks_for_k_method}
+        for future in as_completed(futures):
+            estimate = future.result()
+            if estimate is not None:
+                k_method_estimates.append(estimate)
+            else:
+                tdf = futures[future]
+                track_id = tdf['track_id'].iloc[0]
+                tracks_for_typical.append((track_id, tdf))
+
     if verbose:
         print(f"\nТреков с фиксированным размером: {len(fixed_estimates)}")
         print(f"Треков с k-методом: {len(k_method_estimates)}")
         print(f"Треков для типичной оценки: {len(tracks_for_typical)}")
-    
+
     # Этап 2: оценка по типичным размерам
     typical_estimates = []
-    
+
     for track_id, track_df in tracks_for_typical:
         estimate = estimate_size_from_typical(track_df, calibration)
         if estimate is not None:
@@ -1226,16 +1269,24 @@ def process_video_geometry(
     output_csv: Optional[str] = None,
     frame_interval: int = 30,
     calibration: CameraCalibration = None,
-    verbose: bool = True
+    verbose: bool = True,
+    frame_step: int = 1,
 ) -> pd.DataFrame:
-    """Обрабатывает видео и оценивает наклон камеры."""
+    """Обрабатывает видео и оценивает наклон камеры.
+
+    Args:
+        frame_step: шаг обработки кадров для optical flow (1 = каждый кадр,
+                    2 = через кадр и т.д.). Увеличение ускоряет обработку,
+                    но может незначительно повлиять на точность FOE.
+    """
     if calibration is None:
         calibration = CameraCalibration()
     
-    cap = cv2.VideoCapture(video_path)
+    cap = ThreadedVideoCapture(video_path).start()
     if not cap.isOpened():
+        cap.release()
         raise ValueError(f"Не удалось открыть видео: {video_path}")
-    
+
     fps = cap.get(cv2.CAP_PROP_FPS)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -1265,10 +1316,15 @@ def process_video_geometry(
         ret, frame = cap.read()
         if not ret:
             break
-        
+
         frame_idx += 1
+
+        # Пропуск кадров для ускорения (frame_step > 1)
+        if frame_step > 1 and frame_idx % frame_step != 0:
+            continue
+
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
+
         points1 = cv2.goodFeaturesToTrack(prev_gray, mask=None, **feature_params)
         if points1 is not None and len(points1) > 10:
             points2, status, _ = cv2.calcOpticalFlowPyrLK(prev_gray, gray, points1, None, **lk_params)
@@ -1276,12 +1332,12 @@ def process_video_geometry(
             good_new = points2[status == 1].reshape(-1, 2)
             interval_points.extend(good_old)
             interval_vectors.extend(good_new - good_old)
-        
+
         if frame_idx % frame_interval == 0 and len(interval_points) > 50:
             points_arr = np.array(interval_points)
             vectors_arr = np.array(interval_vectors)
             foe = estimate_foe(points_arr, vectors_arr, (width, height))
-            
+
             results.append({
                 'frame_start': interval_start,
                 'frame_end': frame_idx,
@@ -1293,13 +1349,13 @@ def process_video_geometry(
                 'confidence': round(foe.confidence, 3),
                 'n_vectors': foe.n_vectors
             })
-            
+
             interval_points = []
             interval_vectors = []
             interval_start = frame_idx
-        
+
         prev_gray = gray
-    
+
     cap.release()
     
     df = pd.DataFrame(results)
@@ -1646,6 +1702,8 @@ def main():
     geom.add_argument('--video', '-v', required=True)
     geom.add_argument('--output', '-o', default='output/geometry.csv')
     geom.add_argument('--interval', '-i', type=int, default=30)
+    geom.add_argument('--frame-step', type=int, default=1,
+                      help='Шаг обработки кадров для optical flow (1=каждый, 2=через один). Ускоряет обработку.')
     
     # size
     size = subparsers.add_parser('size', help='Оценка размеров по трекам')
@@ -1681,7 +1739,8 @@ def main():
     args = parser.parse_args()
     
     if args.command == 'geometry':
-        process_video_geometry(args.video, args.output, args.interval)
+        process_video_geometry(args.video, args.output, args.interval,
+                              frame_step=args.frame_step)
     
     elif args.command == 'size':
         output = args.output or args.detections.replace('.csv', '_with_size.csv')

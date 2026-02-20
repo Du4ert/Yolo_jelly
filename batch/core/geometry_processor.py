@@ -102,6 +102,7 @@ class GeometryProcessor:
         frame_interval: int = 30,
         frame_width: int = 3840,
         frame_height: int = 2160,
+        frame_step: int = 1,
     ) -> GeometryResult:
         """
         Запускает анализ геометрии камеры.
@@ -139,7 +140,8 @@ class GeometryProcessor:
                 output_csv=output_csv,
                 frame_interval=frame_interval,
                 calibration=calibration,
-                verbose=True
+                verbose=True,
+                frame_step=frame_step,
             )
             
             processing_time = time.time() - start_time

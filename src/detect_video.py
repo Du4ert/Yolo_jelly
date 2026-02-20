@@ -10,9 +10,11 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict, Counter
 import time
+import torch
 from ultralytics import YOLO
 
 from constants import CLASS_NAMES
+from video_utils import ThreadedVideoCapture, NvencVideoWriter
 
 
 def load_ctd_data(ctd_path: str) -> pd.DataFrame:
@@ -122,7 +124,10 @@ def detect_on_video(
     show_trails: bool = False,
     trail_length: int = 30,
     min_track_length: int = 3,
-    use_dominant_class: bool = True
+    use_dominant_class: bool = True,
+    device: str = "auto",
+    imgsz: int = 1280,
+    half: bool = True,
 ) -> pd.DataFrame:
     """
     Запускает детекцию на видео и экспортирует результаты.
@@ -146,19 +151,39 @@ def detect_on_video(
     Returns:
         DataFrame с детекциями
     """
-    # Загрузка модели
-    print(f"Загрузка модели: {model_path}")
-    model = YOLO(model_path)
-    
+    # Определение устройства
+    if device == "auto":
+        _device = 0 if torch.cuda.is_available() else "cpu"
+    else:
+        _device = device
+
+    # Загрузка модели (приоритет TensorRT engine если есть)
+    engine_path = Path(model_path).with_suffix('.engine')
+    if engine_path.exists():
+        print(f"Загрузка TensorRT модели: {engine_path}")
+        model = YOLO(str(engine_path))
+    else:
+        print(f"Загрузка модели: {model_path}")
+        model = YOLO(model_path)
+
+    if _device != "cpu":
+        print(f"  Устройство: GPU ({torch.cuda.get_device_name(0)})")
+        print(f"  FP16 (half): {'да' if half else 'нет'}")
+    else:
+        print(f"  Устройство: CPU")
+        half = False  # FP16 не поддерживается на CPU
+    print(f"  Размер входного изображения: {imgsz}")
+
     # Загрузка CTD данных
     ctd_data = None
     if ctd_path:
         print(f"Загрузка CTD данных: {ctd_path}")
         ctd_data = load_ctd_data(ctd_path)
     
-    # Открытие видео
-    cap = cv2.VideoCapture(video_path)
+    # Открытие видео (фоновое декодирование в отдельном потоке)
+    cap = ThreadedVideoCapture(video_path).start()
     if not cap.isOpened():
+        cap.release()
         raise ValueError(f"Не удалось открыть видео: {video_path}")
     
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -189,13 +214,12 @@ def detect_on_video(
     print("="*60)
     print()
     
-    # Подготовка выходного видео
+    # Подготовка выходного видео (NVENC GPU-кодирование если доступно)
     out = None
     if save_video and output_video:
         output_path = Path(output_video)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
+        out = NvencVideoWriter(str(output_path), fps, width, height)
     
     # Список детекций
     detections = []
@@ -230,14 +254,24 @@ def detect_on_video(
         # Детекция или трекинг
         if enable_tracking:
             results = model.track(
-                frame, 
-                conf=conf_threshold, 
+                frame,
+                conf=conf_threshold,
                 persist=True,
                 tracker=tracker_type,
-                verbose=False
+                verbose=False,
+                imgsz=imgsz,
+                device=_device,
+                half=half,
             )[0]
         else:
-            results = model(frame, conf=conf_threshold, verbose=False)[0]
+            results = model(
+                frame,
+                conf=conf_threshold,
+                verbose=False,
+                imgsz=imgsz,
+                device=_device,
+                half=half,
+            )[0]
         
         # Обработка результатов
         boxes = results.boxes
@@ -448,14 +482,13 @@ def detect_on_video(
         
         # 4. Обновляем классы на доминирующие (если включено)
         if use_dominant_class:
-            def update_class(row):
-                if pd.notna(row['track_id']) and row['track_id'] in track_dominant_class:
-                    dominant_id = track_dominant_class[row['track_id']]
-                    row['class_id'] = dominant_id
-                    row['class_name'] = CLASS_NAMES.get(dominant_id, f'unknown_{dominant_id}')
-                return row
-            
-            df = df.apply(update_class, axis=1)
+            dominant_map = pd.Series(track_dominant_class)
+            mask = df['track_id'].notna() & df['track_id'].isin(dominant_map.index)
+            if mask.any():
+                df.loc[mask, 'class_id'] = df.loc[mask, 'track_id'].map(dominant_map).values
+                df.loc[mask, 'class_name'] = df.loc[mask, 'class_id'].map(
+                    lambda cid: CLASS_NAMES.get(int(cid), f'unknown_{int(cid)}')
+                ).values
             
             # Подсчитываем треки с изменёнными классами
             changed_tracks = 0
@@ -644,9 +677,47 @@ def main():
         action="store_true",
         help="Не присваивать доминирующий класс детекциям трека"
     )
-    
+    parser.add_argument(
+        "--device",
+        default="auto",
+        help="Устройство для инференса: auto, cpu, 0, 1, ... (по умолчанию: auto)"
+    )
+    parser.add_argument(
+        "--imgsz",
+        type=int,
+        default=1280,
+        help="Размер входного изображения для YOLO (по умолчанию: 1280)"
+    )
+    parser.add_argument(
+        "--no-half",
+        action="store_true",
+        help="Отключить FP16 (half precision) инференс"
+    )
+
+    parser.add_argument(
+        "--export-engine",
+        action="store_true",
+        help="Экспортировать модель в TensorRT (.engine) и выйти. Требует TensorRT."
+    )
+
     args = parser.parse_args()
-    
+
+    # Экспорт TensorRT engine
+    if args.export_engine:
+        try:
+            model = YOLO(args.model)
+            imgsz = args.imgsz
+            use_half = not args.no_half
+            print(f"Экспорт модели в TensorRT: imgsz={imgsz}, half={use_half}")
+            model.export(format='engine', imgsz=imgsz, half=use_half, device=0)
+            print("Экспорт завершён.")
+            return 0
+        except Exception as e:
+            print(f"Ошибка экспорта: {e}")
+            import traceback
+            traceback.print_exc()
+            return 1
+
     try:
         detect_on_video(
             video_path=args.video,
@@ -662,7 +733,10 @@ def main():
             show_trails=args.show_trails,
             trail_length=args.trail_length,
             min_track_length=args.min_track_length,
-            use_dominant_class=not args.no_dominant_class
+            use_dominant_class=not args.no_dominant_class,
+            device=args.device,
+            imgsz=args.imgsz,
+            half=not args.no_half,
         )
         return 0
     except Exception as e:

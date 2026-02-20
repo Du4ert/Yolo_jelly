@@ -7,13 +7,16 @@
     "show_trails": false,
     "trail_length": 30,
     "min_track_length": 5,
-    "save_video": true
+    "save_video": true,
+    "device": "auto",
+    "imgsz": 1280,
+    "half": true
   },
   "ui": {
     "window_geometry": "AdnQywADAAAAAAGaAAAAhwAABeUAAANhAAABmgAAAKYAAAXlAAADYQAAAAAAAAAAB4AAAAGaAAAApgAABeUAAANh",
     "window_state": null,
-    "last_browse_path": "C:\\WORK\\Claude_allowed\\yolo_jellyfish\\runs\\model_11s_1280\\weights",
-    "last_model_id": 7,
+    "last_browse_path": "C:\\WORK\\Claude_allowed\\yolo_jellyfish\\test_video",
+    "last_model_id": 8,
     "splitter_sizes": [
       337,
       751

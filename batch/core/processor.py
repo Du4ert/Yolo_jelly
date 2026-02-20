@@ -13,6 +13,7 @@ import time
 import cv2
 import numpy as np
 import pandas as pd
+import torch
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Callable, Dict, Any, List
@@ -22,6 +23,8 @@ from collections import defaultdict, Counter
 # Добавляем путь к src для импорта
 ROOT_DIR = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(ROOT_DIR / "src"))
+
+from video_utils import ThreadedVideoCapture, NvencVideoWriter
 
 
 @dataclass
@@ -121,6 +124,9 @@ class Processor:
         min_track_length: int = 3,
         depth_rate: Optional[float] = None,
         save_video: bool = True,
+        device: str = "auto",
+        imgsz: int = 1280,
+        half: bool = True,
     ):
         self.video_path = video_path
         self.model_path = model_path
@@ -134,6 +140,16 @@ class Processor:
         self.min_track_length = min_track_length
         self.depth_rate = depth_rate
         self.save_video = save_video
+        self.imgsz = imgsz
+        self.half = half
+
+        # Определение устройства
+        if device == "auto":
+            self._device = 0 if torch.cuda.is_available() else "cpu"
+        else:
+            self._device = device
+        if self._device == "cpu":
+            self.half = False
         
         # Callbacks
         self.progress_callback: Optional[Callable[[int, int, int, int], None]] = None
@@ -181,17 +197,22 @@ class Processor:
         try:
             from ultralytics import YOLO
             
-            # Загрузка модели
-            model = YOLO(self.model_path)
+            # Загрузка модели (приоритет TensorRT engine если есть)
+            engine_path = Path(self.model_path).with_suffix('.engine')
+            if engine_path.exists():
+                model = YOLO(str(engine_path))
+            else:
+                model = YOLO(self.model_path)
             
             # Загрузка CTD
             ctd_data = None
             if self.ctd_path and os.path.exists(self.ctd_path):
                 ctd_data = load_ctd_data(self.ctd_path)
             
-            # Открытие видео
-            cap = cv2.VideoCapture(self.video_path)
+            # Открытие видео (фоновое декодирование в отдельном потоке)
+            cap = ThreadedVideoCapture(self.video_path).start()
             if not cap.isOpened():
+                cap.release()
                 raise ValueError(f"Не удалось открыть видео: {self.video_path}")
             
             fps = cap.get(cv2.CAP_PROP_FPS)
@@ -199,11 +220,10 @@ class Processor:
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             
-            # Подготовка выходного видео
+            # Подготовка выходного видео (NVENC GPU-кодирование если доступно)
             out = None
             if self.save_video:
-                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                out = cv2.VideoWriter(output_paths["video"], fourcc, fps, (width, height))
+                out = NvencVideoWriter(output_paths["video"], fps, width, height)
             
             # Данные
             detections = []
@@ -258,10 +278,20 @@ class Processor:
                         conf=self.conf_threshold,
                         persist=True,
                         tracker=self.tracker_type,
-                        verbose=False
+                        verbose=False,
+                        imgsz=self.imgsz,
+                        device=self._device,
+                        half=self.half,
                     )[0]
                 else:
-                    results = model(frame, conf=self.conf_threshold, verbose=False)[0]
+                    results = model(
+                        frame,
+                        conf=self.conf_threshold,
+                        verbose=False,
+                        imgsz=self.imgsz,
+                        device=self._device,
+                        half=self.half,
+                    )[0]
                 
                 # Обработка результатов
                 boxes = results.boxes
@@ -373,15 +403,14 @@ class Processor:
                 
                 df = df[df['track_id'].isin(valid_tracks) | df['track_id'].isna()].copy()
                 
-                # Обновляем классы
-                def update_class(row):
-                    if pd.notna(row['track_id']) and row['track_id'] in track_dominant_class:
-                        dominant_id = track_dominant_class[row['track_id']]
-                        row['class_id'] = dominant_id
-                        row['class_name'] = CLASS_NAMES.get(dominant_id, f'unknown_{dominant_id}')
-                    return row
-                
-                df = df.apply(update_class, axis=1)
+                # Обновляем классы (векторизованно)
+                dominant_map = pd.Series(track_dominant_class)
+                upd_mask = df['track_id'].notna() & df['track_id'].isin(dominant_map.index)
+                if upd_mask.any():
+                    df.loc[upd_mask, 'class_id'] = df.loc[upd_mask, 'track_id'].map(dominant_map).values
+                    df.loc[upd_mask, 'class_name'] = df.loc[upd_mask, 'class_id'].map(
+                        lambda cid: CLASS_NAMES.get(int(cid), f'unknown_{int(cid)}')
+                    ).values
                 
                 for tid in short_tracks:
                     if tid in track_info:
@@ -474,4 +503,7 @@ class ProcessorFactory:
             min_track_length=task_params.get("min_track_length", 3),
             depth_rate=task_params.get("depth_rate"),
             save_video=task_params.get("save_video", True),
+            device=task_params.get("device", "auto"),
+            imgsz=task_params.get("imgsz", 1280),
+            half=task_params.get("half", True),
         )

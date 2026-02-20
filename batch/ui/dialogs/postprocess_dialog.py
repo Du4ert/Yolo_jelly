@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QLabel,
     QLineEdit,
+    QSpinBox,
     QDoubleSpinBox,
     QCheckBox,
     QPushButton,
@@ -106,7 +107,29 @@ class PostProcessDialog(QDialog):
         self.chk_geometry = QCheckBox("📐 Геометрия камеры (FOE)")
         self.chk_geometry.setToolTip("Оценка наклона камеры по Focus of Expansion.\nРекомендуется для коррекции размеров.")
         ops_layout.addWidget(self.chk_geometry)
-        
+
+        # Опция frame_step для геометрии
+        indent_widget_geom = QWidget()
+        indent_layout_geom = QHBoxLayout(indent_widget_geom)
+        indent_layout_geom.setContentsMargins(20, 0, 0, 0)
+
+        geom_step_label = QLabel("Шаг кадров:")
+        indent_layout_geom.addWidget(geom_step_label)
+
+        self.spin_frame_step = QSpinBox()
+        self.spin_frame_step.setRange(1, 5)
+        self.spin_frame_step.setValue(1)
+        self.spin_frame_step.setMaximumWidth(60)
+        self.spin_frame_step.setToolTip(
+            "Шаг чтения кадров для optical flow.\n"
+            "1 = каждый кадр (максимальная точность)\n"
+            "2 = через кадр (~2x быстрее, немного менее точные FOE)\n"
+            "3 = каждый 3-й (~3x быстрее)"
+        )
+        indent_layout_geom.addWidget(self.spin_frame_step)
+        indent_layout_geom.addStretch()
+        ops_layout.addWidget(indent_widget_geom)
+
         # Разделитель
         ops_layout.addSpacing(5)
         separator1 = QFrame()
@@ -437,11 +460,13 @@ class PostProcessDialog(QDialog):
         
         # Сначала геометрия (если нужна)
         if geometry:
+            geom_params = params.copy()
+            geom_params["frame_step"] = self.spin_frame_step.value()
             st = self.repo.create_subtask(
                 parent_task_id=self.task_id,
                 subtask_type=SubTaskType.GEOMETRY,
                 position=position,
-                params_json=json.dumps(params),
+                params_json=json.dumps(geom_params),
             )
             if st:
                 created.append(st)
