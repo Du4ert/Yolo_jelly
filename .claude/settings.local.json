@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m py_compile:*)",
+      "Bash(ls -la \"c:\\\\WORK\\\\Claude_allowed\\\\yolo_jellyfish\\\\batch\\\\ui\\\\dialogs\"\" 2>/dev/null || echo \"Directory check failed \")",
+      "Bash(python -c:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}
