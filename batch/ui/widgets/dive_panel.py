@@ -20,11 +20,26 @@ from PyQt6.QtWidgets import (
     QGroupBox,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QBrush
+from PyQt6.QtGui import QColor, QBrush, QDropEvent
+
 
 from ...database import Repository, Catalog, Dive, VideoFile, CTDFile
 from ...core import get_config, save_config
 from ..dialogs import AddDiveDialog, EditDiveDialog, CatalogDialog
+
+
+class _DiveTree(QTreeWidget):
+    """QTreeWidget с перехватом drag-drop для сохранения перемещений в БД."""
+
+    item_moved = pyqtSignal(object, object, object)  # item, old_parent, new_parent
+
+    def dropEvent(self, event: QDropEvent):
+        item = self.currentItem()
+        old_parent = item.parent() if item else None
+        super().dropEvent(event)
+        new_parent = item.parent() if item else None
+        if item is not None and old_parent is not new_parent:
+            self.item_moved.emit(item, old_parent, new_parent)
 
 
 class DivePanel(QWidget):
@@ -62,7 +77,7 @@ class DivePanel(QWidget):
         group_layout.setSpacing(4)
         
         # Дерево
-        self.tree = QTreeWidget()
+        self.tree = _DiveTree()
         self.tree.setHeaderLabels(["Название", "Инфо"])
         self.tree.setColumnWidth(0, 220)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -71,7 +86,7 @@ class DivePanel(QWidget):
         self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
         self.tree.setDragDropMode(QTreeWidget.DragDropMode.InternalMove)
         self.tree.setAcceptDrops(True)
-        self.tree.itemMoved = self._on_item_moved
+        self.tree.item_moved.connect(self._on_item_moved)
         group_layout.addWidget(self.tree)
         
         # Кнопки
@@ -129,6 +144,11 @@ class DivePanel(QWidget):
             uncat_item.setData(0, Qt.ItemDataRole.UserRole, None)
             uncat_item.setData(0, Qt.ItemDataRole.UserRole + 1, self.TYPE_UNCATEGORIZED)
             uncat_item.setForeground(0, QBrush(QColor(128, 128, 128)))
+            # Принимаем drop, но сам узел не перетаскиваем
+            uncat_item.setFlags(
+                (uncat_item.flags() | Qt.ItemFlag.ItemIsDropEnabled)
+                & ~Qt.ItemFlag.ItemIsDragEnabled
+            )
             self.tree.addTopLevelItem(uncat_item)
             
             for dive in uncategorized_dives:
@@ -142,18 +162,24 @@ class DivePanel(QWidget):
         """Создаёт элемент для каталога."""
         item = QTreeWidgetItem()
         item.setText(0, f"🗂 {catalog.name}")
-        
+
         # Считаем погружения
         dives = self.repo.get_dives_by_catalog(catalog.id)
         item.setText(1, f"{len(dives)} погр.")
-        
+
         item.setData(0, Qt.ItemDataRole.UserRole, catalog.id)
         item.setData(0, Qt.ItemDataRole.UserRole + 1, self.TYPE_CATALOG)
-        
+
+        # Каталоги не перетаскиваем, но принимаем drop
+        item.setFlags(
+            (item.flags() | Qt.ItemFlag.ItemIsDropEnabled)
+            & ~Qt.ItemFlag.ItemIsDragEnabled
+        )
+
         # Цвет
         if catalog.color:
             item.setForeground(0, QBrush(QColor(catalog.color)))
-        
+
         return item
 
     def _create_dive_item(self, dive: Dive) -> QTreeWidgetItem:
@@ -163,6 +189,11 @@ class DivePanel(QWidget):
         item.setText(1, dive.location or "")
         item.setData(0, Qt.ItemDataRole.UserRole, dive.id)
         item.setData(0, Qt.ItemDataRole.UserRole + 1, self.TYPE_DIVE)
+        # Погружения можно перетаскивать, но нельзя принимать drop внутрь
+        item.setFlags(
+            (item.flags() | Qt.ItemFlag.ItemIsDragEnabled)
+            & ~Qt.ItemFlag.ItemIsDropEnabled
+        )
         return item
 
     def _create_video_item(self, video: VideoFile) -> QTreeWidgetItem:
@@ -181,22 +212,24 @@ class DivePanel(QWidget):
         item.setText(1, " | ".join(info_parts))
         item.setData(0, Qt.ItemDataRole.UserRole, video.id)
         item.setData(0, Qt.ItemDataRole.UserRole + 1, self.TYPE_VIDEO)
+        item.setFlags(item.flags() & ~(Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled))
         return item
 
     def _create_ctd_item(self, ctd: CTDFile) -> QTreeWidgetItem:
         """Создаёт элемент для CTD."""
         item = QTreeWidgetItem()
         item.setText(0, f"📊 {ctd.filename}")
-        
+
         info_parts = []
         if ctd.max_depth:
             info_parts.append(f"до {ctd.max_depth:.1f}м")
         if ctd.records_count:
             info_parts.append(f"{ctd.records_count} зап.")
-        
+
         item.setText(1, " | ".join(info_parts))
         item.setData(0, Qt.ItemDataRole.UserRole, ctd.id)
         item.setData(0, Qt.ItemDataRole.UserRole + 1, self.TYPE_CTD)
+        item.setFlags(item.flags() & ~(Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled))
         return item
 
     def _add_dive_children(self, dive_item: QTreeWidgetItem, dive_id: int):
@@ -246,8 +279,34 @@ class DivePanel(QWidget):
             self._add_video_to_queue(item)
 
     def _on_item_moved(self, item, old_parent, new_parent):
-        """Обработка перетаскивания (TODO: реализовать drag-drop)."""
-        pass
+        """Обработка перетаскивания — сохраняет перемещение погружения в БД."""
+        item_type = self._get_item_type(item)
+        if item_type != self.TYPE_DIVE:
+            # Каталоги и файлы перетаскивать нельзя — откатываем визуально
+            self._load_data()
+            return
+
+        dive_id = self._get_item_id(item)
+        if not dive_id:
+            self._load_data()
+            return
+
+        # Определяем новый catalog_id по новому родителю
+        if new_parent is None:
+            catalog_id = None  # top-level → без экспедиции
+        else:
+            parent_type = self._get_item_type(new_parent)
+            if parent_type == self.TYPE_CATALOG:
+                catalog_id = self._get_item_id(new_parent)
+            elif parent_type == self.TYPE_UNCATEGORIZED:
+                catalog_id = None
+            else:
+                # Вложили в погружение или видео — некорректно, откатываем
+                self._load_data()
+                return
+
+        self.repo.move_dive_to_catalog(dive_id, catalog_id)
+        self._load_data()
 
     def _on_context_menu(self, position):
         """Контекстное меню."""
