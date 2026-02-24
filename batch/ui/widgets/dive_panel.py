@@ -112,30 +112,59 @@ class DivePanel(QWidget):
         group_layout.addLayout(btn_layout)
         layout.addWidget(group)
 
+    def _save_expanded_state(self) -> set:
+        """Возвращает множество (item_type, item_id) развёрнутых узлов."""
+        expanded = set()
+        root = self.tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            top = root.child(i)
+            if top.isExpanded():
+                expanded.add((self._get_item_type(top), self._get_item_id(top)))
+            for j in range(top.childCount()):
+                child = top.child(j)
+                if child.isExpanded():
+                    expanded.add((self._get_item_type(child), self._get_item_id(child)))
+        return expanded
+
+    def _restore_expanded_state(self, expanded: set):
+        """Восстанавливает развёрнутость узлов по сохранённому множеству."""
+        root = self.tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            top = root.child(i)
+            top.setExpanded((self._get_item_type(top), self._get_item_id(top)) in expanded)
+            for j in range(top.childCount()):
+                child = top.child(j)
+                child.setExpanded((self._get_item_type(child), self._get_item_id(child)) in expanded)
+
     def _load_data(self):
         """Загружает данные из БД."""
+        # Сохраняем состояние разворота перед перестройкой
+        first_load = self.tree.topLevelItemCount() == 0
+        if not first_load:
+            saved_expanded = self._save_expanded_state()
+
         self.tree.clear()
-        
+
         # Загружаем каталоги
         catalogs = self.repo.get_all_catalogs()
-        
+
         for catalog in catalogs:
             catalog_item = self._create_catalog_item(catalog)
             self.tree.addTopLevelItem(catalog_item)
-            
+
             # Погружения в каталоге
             dives = self.repo.get_dives_by_catalog(catalog.id)
             for dive in dives:
                 dive_item = self._create_dive_item(dive)
                 catalog_item.addChild(dive_item)
                 self._add_dive_children(dive_item, dive.id)
-            
-            if dives:
+
+            if first_load and dives:
                 catalog_item.setExpanded(True)
-        
+
         # Погружения без каталога
         uncategorized_dives = self.repo.get_dives_by_catalog(None)
-        
+
         if uncategorized_dives:
             # Создаём виртуальный узел
             uncat_item = QTreeWidgetItem()
@@ -150,13 +179,17 @@ class DivePanel(QWidget):
                 & ~Qt.ItemFlag.ItemIsDragEnabled
             )
             self.tree.addTopLevelItem(uncat_item)
-            
+
             for dive in uncategorized_dives:
                 dive_item = self._create_dive_item(dive)
                 uncat_item.addChild(dive_item)
                 self._add_dive_children(dive_item, dive.id)
-            
-            uncat_item.setExpanded(True)
+
+            if first_load:
+                uncat_item.setExpanded(True)
+
+        if not first_load:
+            self._restore_expanded_state(saved_expanded)
 
     def _create_catalog_item(self, catalog: Catalog) -> QTreeWidgetItem:
         """Создаёт элемент для каталога."""
