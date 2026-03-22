@@ -333,7 +333,7 @@ python src/camera_geometry.py calibrate \
     --detections output/ball_detected.csv \
     --geometry output/ball_geometry.csv \
     --known-size 1:67.0 --known-size 3:67.0 \
-    --known-depth 67.076 \
+    --known-depth 1:67.076 --known-depth 3:67.076 \
     --output calibration_result.json
 
 # Калибровка без известной глубины (оптимизация всех 6 параметров)
@@ -347,7 +347,7 @@ python src/camera_geometry.py calibrate \
 |----------|--------------|----------|
 | `--detections`, `-d` | — | CSV с детекциями (обязательный) |
 | `--known-size` | — | Размер объекта `track_id:size_mm`, можно указать несколько раз (обязательный) |
-| `--known-depth` | None | Известная глубина объектов (м), повышает точность калибровки |
+| `--known-depth` | None | Глубина объекта `track_id:depth_m`, можно указать несколько раз |
 | `--geometry`, `-g` | None | CSV с геометрией камеры (для tilt-коррекции) |
 | `--output`, `-o` | `calibration_result.json` | Выходной JSON с коэффициентами |
 | `--width` | 3840 | Ширина кадра |
