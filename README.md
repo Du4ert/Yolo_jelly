@@ -282,6 +282,7 @@ python src/camera_geometry.py size \
 | `--min-track-points` | 3 | Мин. точек в треке |
 | `--apply-tilt-correction` | True | Применять коррекцию наклона |
 | `--no-tilt-correction` | — | Отключить коррекцию наклона |
+| `--calibration` | None | JSON с откалиброванными коэффициентами (из `calibrate`) |
 
 **Коррекция наклона камеры:**
 
@@ -319,6 +320,79 @@ python src/camera_geometry.py size \
 - `k_mean_pct_per_m`, `k_std_pct_per_m` — статистика k (%/м)
 - `method`, `confidence` — метаданные
 - `warnings` — предупреждения (включая `tilt_corrected_XXdeg` если применена коррекция)
+
+---
+
+#### Подкоманда: calibrate
+
+Автоматическая калибровка коэффициентов размера по объектам с известными размерами.
+
+```bash
+# Калибровка по тестовому видео с шариками 6.7 см на глубине 67.076 м
+python src/camera_geometry.py calibrate \
+    --detections output/ball_detected.csv \
+    --geometry output/ball_geometry.csv \
+    --known-size 1:67.0 --known-size 3:67.0 \
+    --known-depth 67.076 \
+    --output calibration_result.json
+
+# Калибровка без известной глубины (оптимизация всех 6 параметров)
+python src/camera_geometry.py calibrate \
+    --detections output/detections.csv \
+    --known-size 1:120.0 --known-size 5:80.0 \
+    --output calibration_result.json
+```
+
+| Параметр | По умолчанию | Описание |
+|----------|--------------|----------|
+| `--detections`, `-d` | — | CSV с детекциями (обязательный) |
+| `--known-size` | — | Размер объекта `track_id:size_mm`, можно указать несколько раз (обязательный) |
+| `--known-depth` | None | Известная глубина объектов (м), повышает точность калибровки |
+| `--geometry`, `-g` | None | CSV с геометрией камеры (для tilt-коррекции) |
+| `--output`, `-o` | `calibration_result.json` | Выходной JSON с коэффициентами |
+| `--width` | 3840 | Ширина кадра |
+| `--height` | 2160 | Высота кадра |
+
+**Режимы калибровки:**
+
+- **С `--known-depth`** (рекомендуется) — декомпозированная калибровка: сначала фитируются C, D (pixel calibration) по истинной дистанции, затем k1, k2 (дисторсия) по остаткам, затем локальная доводка. Оптимизация A, B (distance) отдельно. Более робастный подход.
+- **Без `--known-depth`** — совместная оптимизация всех 6 параметров (A, B, C, D, k1, k2) через `differential_evolution`. Требует больше данных для надёжного результата.
+
+**Выходной JSON:**
+```json
+{
+  "distance_coef_A": 2.76,
+  "distance_coef_B": -0.21,
+  "pixel_calib_C": 2.10,
+  "pixel_calib_D": -0.56,
+  "distortion_k1": 0.14,
+  "distortion_k2": -0.40,
+  "optical_center_x": 0.5,
+  "optical_center_y": 0.5,
+  "n_pairs_used": 20,
+  "n_tracks_used": 2,
+  "mean_error_direct_pct": 0.58,
+  "mean_error_pipeline_pct": 12.24
+}
+```
+
+**Коррекция дисторсии:**
+
+GoPro Wide 156° FOV вносит радиальное искажение — объекты на периферии кадра имеют завышенный пиксельный размер. Калибровка подбирает коэффициенты k1 и k2, корректирующие размер в зависимости от расстояния от оптического центра: `size_corrected = size_raw * (1 + k1*r² + k2*r⁴)`.
+
+---
+
+#### Использование калибровки в size
+
+```bash
+# Применить откалиброванные коэффициенты
+python src/camera_geometry.py size \
+    --detections output/detections.csv \
+    --geometry output/geometry.csv \
+    --calibration calibration_result.json
+```
+
+Флаг `--calibration` загружает JSON и заменяет дефолтные коэффициенты (A, B, C, D) и параметры дисторсии (k1, k2) на откалиброванные.
 
 ---
 
