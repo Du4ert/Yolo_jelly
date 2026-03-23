@@ -1951,63 +1951,147 @@ def _fit_power_law(x: np.ndarray, y: np.ndarray) -> Tuple[float, float]:
     return A, B
 
 
+def _parse_size_depth_file(path: str) -> Dict[int, tuple]:
+    """
+    Парсит size-depth.txt.
+    Формат строки: track_idN:размер_мм:глубина_м
+    Возвращает {track_id: (size_mm, depth_m)}
+    """
+    import re
+    result = {}
+    with open(path, encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            m = re.match(r'track_id(\d+):([0-9.]+):([0-9.]+)', line)
+            if m:
+                tid = int(m.group(1))
+                size_mm = float(m.group(2))
+                depth_m = float(m.group(3))
+                result[tid] = (size_mm, depth_m)
+    return result
+
+
+def _discover_test_dirs(parent_dir: str,
+                        detections_name: str = 'ball_detections.csv',
+                        geometry_name: str = 'ball_geometry.csv') -> List[dict]:
+    """
+    Автоматически находит подпапки с калибровочными данными.
+
+    Ищет в каждой подпапке parent_dir:
+    - size-depth.txt (в корне подпапки или в output/)
+    - output/<detections_name>
+    - output/<geometry_name>
+
+    Возвращает список video_spec словарей для calibrate_coefficients().
+    """
+    parent = Path(parent_dir)
+    specs = []
+    for subdir in sorted(parent.iterdir()):
+        if not subdir.is_dir():
+            continue
+        # Ищем size-depth.txt
+        sd_path = subdir / 'size-depth.txt'
+        if not sd_path.exists():
+            sd_path = subdir / 'output' / 'size-depth.txt'
+        if not sd_path.exists():
+            continue
+        # Ищем CSV файлы
+        det_path = subdir / 'output' / detections_name
+        geom_path = subdir / 'output' / geometry_name
+        if not det_path.exists():
+            continue
+
+        ground_truth = _parse_size_depth_file(str(sd_path))
+        if not ground_truth:
+            continue
+
+        known_sizes = {tid: vals[0] for tid, vals in ground_truth.items()}
+        known_depths = {tid: vals[1] for tid, vals in ground_truth.items()}
+
+        specs.append({
+            'detections_csv': str(det_path),
+            'geometry_csv': str(geom_path) if geom_path.exists() else None,
+            'known_sizes': known_sizes,
+            'known_depths': known_depths,
+            'name': subdir.name,
+        })
+
+    return specs
+
+
 def calibrate_coefficients(
-    detections_csv: str,
-    known_sizes: Dict[int, float],
-    geometry_csv: Optional[str] = None,
+    video_specs: List[dict],
     output_json: Optional[str] = None,
     frame_width: int = 3840,
     frame_height: int = 2160,
-    known_depths: Optional[Dict[int, float]] = None,
     apply_tilt_correction: bool = True,
     verbose: bool = True
 ) -> CameraCalibration:
     """
-    Оптимизирует калибровочные коэффициенты A, B, C, D, k1, k2 по ground truth данным.
+    Оптимизирует калибровочные коэффициенты A, B, C, D, k1, k2 по набору видео.
 
-    Если known_depths задан — используется декомпозированный подход:
-    1. Фит A, B из (k_percent → true_distance)
-    2. Фит C, D из (true_distance → pixel_calib_true)
-    3. Фит k1, k2 из остатков с учётом радиальной позиции
+    Каждый элемент video_specs — словарь:
+      detections_csv: путь к CSV с детекциями
+      geometry_csv: путь к CSV с геометрией (или None)
+      known_sizes: {track_id: size_mm}
+      known_depths: {track_id: depth_m}
+      name: имя видео (для отображения)
 
-    Без known_depths — совместная оптимизация всех 6 параметров.
-
-    Args:
-        detections_csv: CSV с детекциями
-        known_sizes: {track_id: known_size_mm}
-        geometry_csv: CSV с геометрией камеры
-        output_json: путь для JSON результата
-        frame_width, frame_height: размер кадра
-        known_depths: {track_id: depth_m} — известные глубины объектов
-        apply_tilt_correction: применять ли коррекцию наклона
-        verbose: печатать ли ход оптимизации
+    Track ID из разных видео разделяются через namespace (video_idx * 100000 + track_id).
     """
     from scipy.optimize import differential_evolution
 
-    if verbose:
-        print(f"Извлечение пар из {detections_csv}...")
-        print(f"Известные размеры: {known_sizes}")
-        if known_depths:
-            print(f"Известные глубины: {known_depths}")
+    if not video_specs:
+        raise ValueError("Нет видео для калибровки")
 
-    all_track_pairs = _extract_calibration_pairs(
-        detections_csv, geometry_csv, frame_width, frame_height,
-        apply_tilt_correction=apply_tilt_correction
-    )
+    # Объединяем данные из всех видео с namespace track IDs
+    all_track_pairs = {}
+    known_sizes = {}
+    known_depths = {}
+    track_to_video = {}  # namespaced_tid -> (video_name, original_tid)
+
+    for vid_idx, spec in enumerate(video_specs):
+        if verbose:
+            print(f"\n[{spec['name']}] Извлечение пар из {spec['detections_csv']}...")
+
+        video_pairs = _extract_calibration_pairs(
+            spec['detections_csv'], spec.get('geometry_csv'),
+            frame_width, frame_height,
+            apply_tilt_correction=apply_tilt_correction
+        )
+
+        spec_known = spec.get('known_sizes', {})
+        spec_depths = spec.get('known_depths', {})
+
+        for orig_tid, pairs in video_pairs.items():
+            if orig_tid not in spec_known:
+                continue
+            ns_tid = vid_idx * 100000 + orig_tid
+            all_track_pairs[ns_tid] = pairs
+            known_sizes[ns_tid] = spec_known[orig_tid]
+            if orig_tid in spec_depths:
+                known_depths[ns_tid] = spec_depths[orig_tid]
+            track_to_video[ns_tid] = (spec['name'], orig_tid)
+
+        if verbose:
+            for orig_tid in sorted(spec_known.keys()):
+                ns_tid = vid_idx * 100000 + orig_tid
+                if ns_tid in all_track_pairs:
+                    n_pairs = len(all_track_pairs[ns_tid])
+                    depth_info = f", глубина {spec_depths[orig_tid]:.1f} м" if orig_tid in spec_depths else ""
+                    print(f"  Трек {orig_tid}: {n_pairs} пар, размер {spec_known[orig_tid]:.0f} мм{depth_info}")
+                else:
+                    print(f"  Трек {orig_tid}: нет пар (пропущен)")
 
     available_tracks = set(all_track_pairs.keys()) & set(known_sizes.keys())
     if not available_tracks:
-        raise ValueError(
-            f"Нет пар для указанных треков. "
-            f"Доступные треки: {sorted(all_track_pairs.keys())}, "
-            f"запрошенные: {sorted(known_sizes.keys())}"
-        )
+        raise ValueError("Нет пар для калибровки ни в одном из видео")
 
     if verbose:
-        for tid in sorted(available_tracks):
-            n_pairs = len(all_track_pairs[tid])
-            depth_info = f", глубина {known_depths[tid]:.3f} м" if known_depths and tid in known_depths else ""
-            print(f"  Трек {tid}: {n_pairs} пар, известный размер {known_sizes[tid]:.1f} мм{depth_info}")
+        n_total_pairs = sum(len(all_track_pairs[t]) for t in available_tracks)
+        print(f"\nВсего: {len(available_tracks)} треков, {n_total_pairs} пар из {len(video_specs)} видео")
 
     resolution_scale = frame_width / REFERENCE_FRAME_WIDTH
 
@@ -2230,26 +2314,22 @@ def calibrate_coefficients(
         distortion_k2=round(k2, 6),
     )
 
+    # Вспомогательная функция для отображения имени трека
+    def _track_label(tid):
+        if tid in track_to_video:
+            vname, orig_tid = track_to_video[tid]
+            return f"{vname}/t{orig_tid}"
+        return str(tid)
+
     # Валидация
-    if verbose:
-        # 1) Точность при известной дистанции (прямая калибровка C, D, k1, k2)
-        if tracks_with_depth:
-            print("\n" + "=" * 70)
-            print("Валидация (прямая, с известной дистанцией):")
-            print(f"{'Трек':>6}  {'Истинный':>10}  {'Оценка':>10}  {'Ошибка%':>9}  {'Дист.':>8}  {'r_med':>7}")
-            print("-" * 70)
-
-        # 2) Точность через pipeline (k → distance → size)
-        print("\n" + "=" * 70)
-        print("Валидация (pipeline: k -> d=A*k^B -> size):")
-        print(f"{'Трек':>6}  {'Истинный':>10}  {'Оценка':>10}  {'Ошибка%':>9}  {'Дист.(м)':>9}  {'r_med':>7}")
-        print("-" * 70)
-
     errors_direct = []
     errors_pipeline = []
+    direct_rows = []  # Собираем строки прямой валидации
+
     for tid in sorted(available_tracks):
         pairs = all_track_pairs[tid]
         known = known_sizes[tid]
+        label = _track_label(tid)
 
         # Прямая оценка (через true_dist) — только для треков с известной глубиной
         if known_depths and tid in known_depths:
@@ -2269,36 +2349,46 @@ def calibrate_coefficients(
                 med_direct = np.median(direct_sizes)
                 err_direct = (med_direct - known) / known * 100
                 errors_direct.append(abs(err_direct))
-                if verbose:
-                    r_meds = [p.get('r_norm', 0) for p in pairs]
-                    true_dists = [track_depth - p['depth_camera'] for p in pairs]
-                    print(f"{tid:>6}  {known:>8.1f}мм  {med_direct:>8.1f}мм  {err_direct:>+8.1f}%  {np.median(true_dists):>7.2f}м  {np.median(r_meds):>7.3f}")
+                r_meds = [p.get('r_norm', 0) for p in pairs]
+                true_dists = [track_depth - p['depth_camera'] for p in pairs]
+                direct_rows.append(
+                    f"{label:<18}  {known:>8.1f}мм  {med_direct:>8.1f}мм  {err_direct:>+8.1f}%  {np.median(true_dists):>7.2f}м  {np.median(r_meds):>7.3f}"
+                )
 
         # Pipeline оценка (через k → A*k^B)
         estimated = _compute_sizes_from_pairs(pairs, A, B, C, D, k1, k2, resolution_scale)
         median_est = np.median(estimated)
         rel_err = (median_est - known) / known * 100
-        distances = [A * (max(p['k_percent'], 1.0) ** B) for p in pairs]
-        r_norms = [p.get('r_norm', 0) for p in pairs]
         errors_pipeline.append(abs(rel_err))
 
     if verbose:
-        if tracks_with_depth and errors_direct:
-            print("-" * 70)
+        # Прямая валидация (только если есть данные)
+        if direct_rows:
+            print("\n" + "=" * 85)
+            print("Валидация (прямая, с известной дистанцией):")
+            print(f"{'Трек':<18}  {'Истинный':>10}  {'Оценка':>10}  {'Ошибка%':>9}  {'Дист.':>8}  {'r_med':>7}")
+            print("-" * 85)
+            for row in direct_rows:
+                print(row)
+            print("-" * 85)
             print(f"Средняя ошибка (прямая): {np.mean(errors_direct):.1f}%")
 
         # Pipeline таблица
-        print()
+        print("\n" + "=" * 85)
+        print("Валидация (pipeline: k -> d=A*k^B -> size):")
+        print(f"{'Трек':<18}  {'Истинный':>10}  {'Оценка':>10}  {'Ошибка%':>9}  {'Дист.(м)':>9}  {'r_med':>7}")
+        print("-" * 85)
         for tid in sorted(available_tracks):
             pairs = all_track_pairs[tid]
             known = known_sizes[tid]
+            label = _track_label(tid)
             estimated = _compute_sizes_from_pairs(pairs, A, B, C, D, k1, k2, resolution_scale)
             median_est = np.median(estimated)
             rel_err = (median_est - known) / known * 100
             distances = [A * (max(p['k_percent'], 1.0) ** B) for p in pairs]
             r_norms = [p.get('r_norm', 0) for p in pairs]
-            print(f"{tid:>6}  {known:>8.1f}мм  {median_est:>8.1f}мм  {rel_err:>+8.1f}%  {np.median(distances):>8.2f}  {np.median(r_norms):>7.3f}")
-        print("-" * 70)
+            print(f"{label:<18}  {known:>8.1f}мм  {median_est:>8.1f}мм  {rel_err:>+8.1f}%  {np.median(distances):>8.2f}  {np.median(r_norms):>7.3f}")
+        print("-" * 85)
         print(f"Средняя ошибка (pipeline): {np.mean(errors_pipeline):.1f}%")
 
         print(f"\nКоэффициенты:")
@@ -2320,6 +2410,8 @@ def calibrate_coefficients(
             'optical_center_y': calibration.optical_center_y,
             'n_pairs_used': sum(len(all_track_pairs[t]) for t in available_tracks),
             'n_tracks_used': len(available_tracks),
+            'n_videos_used': len(video_specs),
+            'videos': [s['name'] for s in video_specs],
             'mean_error_direct_pct': round(float(np.mean(errors_direct)), 2) if errors_direct else None,
             'mean_error_pipeline_pct': round(float(np.mean(errors_pipeline)), 2),
         }
@@ -2367,18 +2459,17 @@ def main():
 
     # calibrate
     calib = subparsers.add_parser('calibrate', help='Оптимизация калибровочных коэффициентов')
-    calib.add_argument('--detections', '-d', required=True,
-                       help='CSV с детекциями')
-    calib.add_argument('--known-size', action='append', required=True,
-                       help='track_id:size_mm (напр. 1:67.0). Можно указать несколько раз.')
-    calib.add_argument('--geometry', '-g',
-                       help='CSV с данными геометрии (наклон камеры)')
+    calib.add_argument('--test-dir', required=True,
+                       help='Родительская папка с тестовыми видео. Каждая подпапка должна содержать '
+                            'size-depth.txt и output/ball_detections.csv + output/ball_geometry.csv')
+    calib.add_argument('--detections-name', default='ball_detections.csv',
+                       help='Имя файла детекций в output/ (по умолчанию: ball_detections.csv)')
+    calib.add_argument('--geometry-name', default='ball_geometry.csv',
+                       help='Имя файла геометрии в output/ (по умолчанию: ball_geometry.csv)')
     calib.add_argument('--output', '-o', default='calibration_result.json',
                        help='JSON с результатами')
     calib.add_argument('--width', type=int, default=3840)
     calib.add_argument('--height', type=int, default=2160)
-    calib.add_argument('--known-depth', action='append', default=[],
-                       help='Глубина объекта track_id:depth_m (напр. 1:67.076). Можно указать несколько раз.')
     calib.add_argument('--apply-tilt-correction', action='store_true', default=True)
     calib.add_argument('--no-tilt-correction', dest='apply_tilt_correction', action='store_false')
 
@@ -2422,29 +2513,18 @@ def main():
         )
 
     elif args.command == 'calibrate':
-        # Парсим --known-size track_id:size_mm
-        known_sizes = {}
-        for spec in args.known_size:
-            try:
-                tid_str, size_str = spec.split(':')
-                known_sizes[int(tid_str)] = float(size_str)
-            except ValueError:
-                parser.error(f"Неверный формат --known-size: '{spec}'. Ожидается track_id:size_mm (напр. 1:67.0)")
-        # Парсим --known-depth track_id:depth_m
-        known_depths = {}
-        for spec in args.known_depth:
-            try:
-                tid_str, depth_str = spec.split(':')
-                known_depths[int(tid_str)] = float(depth_str)
-            except ValueError:
-                parser.error(f"Неверный формат --known-depth: '{spec}'. Ожидается track_id:depth_m (напр. 1:67.076)")
+        video_specs = _discover_test_dirs(
+            args.test_dir,
+            detections_name=args.detections_name,
+            geometry_name=args.geometry_name
+        )
+        if not video_specs:
+            parser.error(f"Не найдено подпапок с калибровочными данными в {args.test_dir}")
 
         calibrate_coefficients(
-            args.detections, known_sizes,
-            geometry_csv=args.geometry,
+            video_specs,
             output_json=args.output,
             frame_width=args.width, frame_height=args.height,
-            known_depths=known_depths if known_depths else None,
             apply_tilt_correction=args.apply_tilt_correction
         )
     
