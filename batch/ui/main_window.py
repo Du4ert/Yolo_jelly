@@ -18,6 +18,8 @@ from PyQt6.QtWidgets import (
     QToolBar,
     QMessageBox,
     QFileDialog,
+    QToolButton,
+    QLabel,
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QAction, QIcon, QKeySequence
@@ -145,13 +147,39 @@ class MainWindow(QMainWindow):
         toolbar.setIconSize(QSize(24, 24))
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
-        
+
         toolbar.addAction(self.action_add_dive)
         toolbar.addAction(self.action_add_model)
         toolbar.addSeparator()
         toolbar.addAction(self.action_start_queue)
         toolbar.addAction(self.action_pause_queue)
         toolbar.addAction(self.action_stop_queue)
+        toolbar.addSeparator()
+
+        # Кнопка выбора глобального файла калибровки
+        toolbar.addWidget(QLabel(" 📏 Калибровка: "))
+
+        self.btn_calibration = QToolButton()
+        self.btn_calibration.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.btn_calibration.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        self.btn_calibration.setToolTip(
+            "Глобальный файл калибровки камеры.\n"
+            "Используется при расчёте размеров во всех задачах."
+        )
+        self.btn_calibration.clicked.connect(self._on_calibration_browse)
+
+        calib_menu = QMenu(self)
+        self.action_calib_browse = QAction("Выбрать файл...", self)
+        self.action_calib_browse.triggered.connect(self._on_calibration_browse)
+        calib_menu.addAction(self.action_calib_browse)
+
+        self.action_calib_clear = QAction("Очистить (использовать дефолтные)", self)
+        self.action_calib_clear.triggered.connect(self._on_calibration_clear)
+        calib_menu.addAction(self.action_calib_clear)
+
+        self.btn_calibration.setMenu(calib_menu)
+        toolbar.addWidget(self.btn_calibration)
+        self._update_calibration_button()
 
     def _setup_statusbar(self):
         """Настройка статусной строки."""
@@ -200,6 +228,58 @@ class MainWindow(QMainWindow):
             pass
 
     # ========== Обработчики меню ==========
+
+    def _update_calibration_button(self):
+        """Обновляет текст кнопки калибровки по текущему конфигу."""
+        try:
+            config = get_config()
+            path = config.ui.calibration_json
+            if path and os.path.exists(path):
+                name = os.path.basename(path)
+                self.btn_calibration.setText(name)
+                self.btn_calibration.setStyleSheet("")
+            else:
+                self.btn_calibration.setText("не задана")
+                self.btn_calibration.setStyleSheet("color: gray;")
+        except Exception:
+            self.btn_calibration.setText("не задана")
+
+    def _on_calibration_browse(self):
+        """Открывает диалог выбора файла калибровки."""
+        try:
+            config = get_config()
+            start_dir = os.path.dirname(config.ui.calibration_json or "") or ""
+        except Exception:
+            start_dir = ""
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Выбрать файл калибровки",
+            start_dir,
+            "JSON файлы (*.json);;Все файлы (*)",
+        )
+        if path:
+            try:
+                config = get_config()
+                config.ui.calibration_json = path
+                save_config()
+            except Exception:
+                pass
+            self._update_calibration_button()
+            self.statusBar().showMessage(
+                f"Калибровка: {os.path.basename(path)}", 3000
+            )
+
+    def _on_calibration_clear(self):
+        """Сбрасывает выбранный файл калибровки."""
+        try:
+            config = get_config()
+            config.ui.calibration_json = None
+            save_config()
+        except Exception:
+            pass
+        self._update_calibration_button()
+        self.statusBar().showMessage("Калибровка сброшена — используются дефолтные коэффициенты", 3000)
 
     def _on_add_dive(self):
         self.dive_panel.add_dive()

@@ -37,6 +37,7 @@ class UISettings:
     last_browse_path: Optional[str] = None  # Последний путь в диалоге выбора
     last_model_id: Optional[int] = None     # Последняя выбранная модель
     splitter_sizes: Optional[list] = None   # Размеры сплиттеров
+    calibration_json: Optional[str] = None  # Глобальный файл калибровки камеры
 
 
 @dataclass
@@ -100,6 +101,7 @@ class Config:
                 last_browse_path=ui_data.get("last_browse_path"),
                 last_model_id=ui_data.get("last_model_id"),
                 splitter_sizes=ui_data.get("splitter_sizes"),
+                calibration_json=ui_data.get("calibration_json"),
             ),
         )
 

@@ -355,7 +355,9 @@ class Worker(QThread):
         # Проверяем параметр коррекции наклона
         use_geometry = params.get("use_geometry", True)
         apply_tilt_correction = use_geometry and geometry_csv and os.path.exists(geometry_csv)
-        
+
+        calibration_json = params.get("calibration_json")
+
         processor = SizeEstimationProcessor()
         result = processor.process(
             detections_csv=detections_csv,
@@ -365,6 +367,7 @@ class Worker(QThread):
             frame_width=video.width or 1920,
             frame_height=video.height or 1080,
             apply_tilt_correction=apply_tilt_correction,
+            calibration_json=calibration_json,
         )
         
         if not result.success:
@@ -707,6 +710,14 @@ class Worker(QThread):
         if do_size:
             size_params = common_params.copy()
             size_params["use_geometry"] = params.get("size_use_geometry", True)
+            # Читаем файл калибровки из глобального конфига
+            try:
+                from .config import get_config
+                calib_path = get_config().ui.calibration_json
+                if calib_path and os.path.exists(calib_path):
+                    size_params["calibration_json"] = calib_path
+            except Exception:
+                pass
             self.repo.create_subtask(
                 parent_task_id=task_id,
                 subtask_type=SubTaskType.SIZE,

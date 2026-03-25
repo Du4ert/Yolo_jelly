@@ -13,13 +13,14 @@
     "half": true
   },
   "ui": {
-    "window_geometry": "AdnQywADAAAAAAGaAAAAhwAABeUAAANhAAABmgAAAKYAAAXlAAADYQAAAAAAAAAAB4AAAAGaAAAApgAABeUAAANh",
+    "window_geometry": "AdnQywADAAAAAADPAAAA+QAABRoAAAPSAAAAzwAAARcAAAUaAAAD0gAAAAAAAAAACAAAAADPAAABFwAABRoAAAPS",
     "window_state": null,
-    "last_browse_path": "C:\\WORK\\Claude_allowed\\yolo_jellyfish\\test_video\\m_1280",
-    "last_model_id": 9,
+    "last_browse_path": "C:\\WORK\\Claude_allowed\\yolo_jellyfish\\test_video",
+    "last_model_id": 4,
     "splitter_sizes": [
       337,
       751
-    ]
+    ],
+    "calibration_json": "C:/WORK/Claude_allowed/yolo_jellyfish/calibration_result.json"
   }
 }

@@ -10,6 +10,7 @@
 """
 
 import json
+import os
 from typing import Optional
 
 from PyQt6.QtWidgets import (
@@ -31,7 +32,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 
 from ...database import Repository, Task, TaskStatus, SubTaskType, OutputType
-from ...core import TaskManager
+from ...core import TaskManager, get_config
 
 
 class PostProcessDialog(QDialog):
@@ -159,7 +160,22 @@ class PostProcessDialog(QDialog):
         indent_layout_size.addWidget(self.chk_size_use_geometry)
         indent_layout_size.addStretch()
         ops_layout.addWidget(indent_widget_size)
-        
+
+        # Информация о глобальной калибровке
+        indent_widget_calib = QWidget()
+        indent_layout_calib = QHBoxLayout(indent_widget_calib)
+        indent_layout_calib.setContentsMargins(20, 0, 0, 0)
+
+        self.label_calibration = QLabel()
+        self.label_calibration.setToolTip(
+            "Файл калибровки задаётся глобально для всего приложения\n"
+            "на панели инструментов главного окна (кнопка 📏 Калибровка)."
+        )
+        indent_layout_calib.addWidget(self.label_calibration)
+        indent_layout_calib.addStretch()
+        ops_layout.addWidget(indent_widget_calib)
+        self._update_calibration_label()
+
         # Видео с размерами
         self.chk_size_video = QCheckBox("🎬 Видео с размерами")
         self.chk_size_video.setToolTip(
@@ -275,10 +291,10 @@ class PostProcessDialog(QDialog):
         """Подключение сигналов для взаимозависимостей."""
         # Если выбрана геометрия - можно использовать её в других операциях
         self.chk_geometry.toggled.connect(self._update_geometry_dependencies)
-        
+
         # Если выбраны размеры - можно делать видео с размерами
         self.chk_size.toggled.connect(self._update_size_dependencies)
-        
+
         # Начальное состояние
         self._update_geometry_dependencies()
         self._update_size_dependencies()
@@ -313,6 +329,21 @@ class PostProcessDialog(QDialog):
         if self.chk_size_video.isChecked() and not size_available:
             self.chk_size.setChecked(True)
     
+    def _update_calibration_label(self):
+        """Обновляет информационную строку о глобальной калибровке."""
+        try:
+            path = get_config().ui.calibration_json
+        except Exception:
+            path = None
+
+        if path and os.path.exists(path):
+            name = os.path.basename(path)
+            self.label_calibration.setText(f"📏 Калибровка: {name}")
+            self.label_calibration.setStyleSheet("")
+        else:
+            self.label_calibration.setText("📏 Калибровка: дефолтные коэффициенты")
+            self.label_calibration.setStyleSheet("color: gray;")
+
     def _has_geometry_output(self) -> bool:
         """Проверяет, есть ли уже рассчитанная геометрия."""
         outputs = self.repo.get_task_outputs(self.task_id)
@@ -476,6 +507,12 @@ class PostProcessDialog(QDialog):
         if size:
             size_params = params.copy()
             size_params["use_geometry"] = size_use_geometry
+            try:
+                calib_path = get_config().ui.calibration_json
+                if calib_path and os.path.exists(calib_path):
+                    size_params["calibration_json"] = calib_path
+            except Exception:
+                pass
             st = self.repo.create_subtask(
                 parent_task_id=self.task_id,
                 subtask_type=SubTaskType.SIZE,
