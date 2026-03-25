@@ -8,6 +8,7 @@
 """
 
 import argparse
+import sys
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -74,7 +75,8 @@ def create_interactive_depth_plot(
         export_format: формат экспорта (html, svg, pdf, png)
     """
     if not PLOTLY_AVAILABLE:
-        print("Ошибка: plotly не установлен. Установите: pip install plotly kaleido")
+        print(f"Ошибка: plotly не установлен для {sys.executable}")
+        print(f"Установите: \"{sys.executable}\" -m pip install plotly kaleido")
         return
     
     # Загрузка данных треков
