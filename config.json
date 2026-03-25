@@ -24,14 +24,19 @@
     "calibration_json": "C:/WORK/Claude_allowed/yolo_jellyfish/calibration_result.json",
     "dive_panel_expanded": [
       [
-        1,
-        12
+        0,
+        1
       ],
       [
         0,
         2
       ]
     ],
-    "task_table_expanded": []
+    "task_table_expanded": [
+      9
+    ],
+    "task_table_expanded_groups": [
+      2
+    ]
   }
 }

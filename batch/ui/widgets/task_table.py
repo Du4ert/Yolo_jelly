@@ -21,8 +21,8 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QAbstractItemView,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QBrush, QFont
+from PyQt6.QtCore import Qt, QModelIndex, pyqtSignal
+from PyQt6.QtGui import QColor, QBrush, QFont, QKeySequence, QShortcut
 
 from ...database import Repository, Task, SubTask, SubTaskType, TaskStatus, VideoFile, Model
 from ...core import TaskManager, get_config, save_config
@@ -113,6 +113,10 @@ class TaskTable(QWidget):
         self.tree.setAnimated(True)
         self.tree.itemExpanded.connect(lambda _: self._save_expanded_to_config())
         self.tree.itemCollapsed.connect(lambda _: self._save_expanded_to_config())
+
+        delete_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Delete), self.tree)
+        delete_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        delete_shortcut.activated.connect(self._delete_selected)
         
         group_layout.addWidget(self.tree)
         
@@ -156,66 +160,126 @@ class TaskTable(QWidget):
 
     def refresh(self):
         """Обновляет дерево задач."""
-        # Сохраняем состояние раскрытия
         is_first_load = self.tree.topLevelItemCount() == 0
         if is_first_load:
-            expanded_tasks = self._load_expanded_from_config()
+            expanded_tasks, expanded_groups = self._load_expanded_from_config()
         else:
-            expanded_tasks = set()
-            for i in range(self.tree.topLevelItemCount()):
-                item = self.tree.topLevelItem(i)
-                if item and item.isExpanded():
-                    task_id = item.data(0, Qt.ItemDataRole.UserRole)
-                    if task_id:
-                        expanded_tasks.add(task_id)
+            expanded_tasks, expanded_groups = self._collect_expanded_state()
 
         self.tree.blockSignals(True)
         self.tree.clear()
 
         tasks = self.task_manager.get_all_tasks()
 
+        # Группируем задачи по каталогам
+        task_groups: dict = {}  # catalog_id (or None) -> [task, ...]
         for task in tasks:
-            item = self._create_task_item(task)
-            self.tree.addTopLevelItem(item)
+            catalog_id = self._get_task_catalog_id(task)
+            if catalog_id not in task_groups:
+                task_groups[catalog_id] = []
+            task_groups[catalog_id].append(task)
 
-            # Добавляем подзадачи
-            subtasks = self.repo.get_subtasks_for_task(task.id)
-            for subtask in subtasks:
-                sub_item = self._create_subtask_item(subtask)
-                item.addChild(sub_item)
+        # Упорядоченный список групп: сначала каталоги в порядке БД, потом «Без экспедиции»
+        catalogs = self.repo.get_all_catalogs()
+        ordered_groups = []
+        for cat in catalogs:
+            if cat.id in task_groups:
+                ordered_groups.append((cat.id, task_groups[cat.id]))
+        if None in task_groups:
+            ordered_groups.append((None, task_groups[None]))
 
-            # Восстанавливаем раскрытие
-            if task.id in expanded_tasks:
-                item.setExpanded(True)
+        for catalog_id, task_list in ordered_groups:
+            group_item = self._create_group_item(catalog_id, len(task_list))
+            self.tree.addTopLevelItem(group_item)
+            self.tree.setFirstColumnSpanned(
+                self.tree.topLevelItemCount() - 1, QModelIndex(), True
+            )
+            if catalog_id in expanded_groups:
+                group_item.setExpanded(True)
+
+            for task in task_list:
+                task_item = self._create_task_item(task)
+                group_item.addChild(task_item)
+
+                subtasks = self.repo.get_subtasks_for_task(task.id)
+                for subtask in subtasks:
+                    sub_item = self._create_subtask_item(subtask)
+                    task_item.addChild(sub_item)
+
+                if task.id in expanded_tasks:
+                    task_item.setExpanded(True)
 
         self.tree.blockSignals(False)
 
+    def _collect_expanded_state(self):
+        """Собирает текущее состояние развёрнутости из дерева."""
+        expanded_tasks = set()
+        expanded_groups = set()
+        for i in range(self.tree.topLevelItemCount()):
+            group_item = self.tree.topLevelItem(i)
+            if not group_item:
+                continue
+            if group_item.isExpanded():
+                expanded_groups.add(group_item.data(0, Qt.ItemDataRole.UserRole))
+            for j in range(group_item.childCount()):
+                task_item = group_item.child(j)
+                if task_item and task_item.isExpanded():
+                    task_id = task_item.data(0, Qt.ItemDataRole.UserRole)
+                    if task_id:
+                        expanded_tasks.add(task_id)
+        return expanded_tasks, expanded_groups
+
     def _save_expanded_to_config(self):
-        """Сохраняет состояние развёрнутости задач в конфиг."""
+        """Сохраняет состояние развёрнутости в конфиг."""
         try:
             config = get_config()
-            expanded = []
-            for i in range(self.tree.topLevelItemCount()):
-                item = self.tree.topLevelItem(i)
-                if item and item.isExpanded():
-                    task_id = item.data(0, Qt.ItemDataRole.UserRole)
-                    if task_id:
-                        expanded.append(task_id)
-            config.ui.task_table_expanded = expanded
+            expanded_tasks, expanded_groups = self._collect_expanded_state()
+            config.ui.task_table_expanded = list(expanded_tasks)
+            config.ui.task_table_expanded_groups = list(expanded_groups)
             save_config()
         except Exception:
             pass
 
-    def _load_expanded_from_config(self) -> set:
-        """Загружает состояние развёрнутости задач из конфига."""
+    def _load_expanded_from_config(self):
+        """Загружает состояние развёрнутости из конфига."""
         try:
             config = get_config()
-            data = config.ui.task_table_expanded
-            if data:
-                return set(data)
+            tasks_data = config.ui.task_table_expanded
+            groups_data = config.ui.task_table_expanded_groups
+            expanded_tasks = set(tasks_data) if tasks_data else set()
+            expanded_groups = set(groups_data) if groups_data else set()
+            return expanded_tasks, expanded_groups
         except Exception:
-            pass
-        return set()
+            return set(), set()
+
+    def _get_task_catalog_id(self, task: Task) -> Optional[int]:
+        """Возвращает catalog_id задачи (или None если без экспедиции)."""
+        video = self.repo.get_video_file(task.video_id)
+        if not video:
+            return None
+        dive = self.repo.get_dive(video.dive_id)
+        if not dive:
+            return None
+        return dive.catalog_id
+
+    def _create_group_item(self, catalog_id: Optional[int], task_count: int) -> QTreeWidgetItem:
+        """Создаёт элемент группы (экспедиции)."""
+        item = QTreeWidgetItem()
+        if catalog_id is None:
+            item.setText(0, f"📂 Без экспедиции  ({task_count} задач)")
+            item.setForeground(0, QBrush(QColor(128, 128, 128)))
+        else:
+            catalog = self.repo.get_catalog(catalog_id)
+            name = catalog.name if catalog else f"#{catalog_id}"
+            item.setText(0, f"🗂 {name}  ({task_count} задач)")
+            if catalog and catalog.color:
+                item.setForeground(0, QBrush(QColor(catalog.color)))
+        item.setData(0, Qt.ItemDataRole.UserRole, catalog_id)
+        item.setData(0, Qt.ItemDataRole.UserRole + 1, "group")
+        font = item.font(0)
+        font.setBold(True)
+        item.setFont(0, font)
+        return item
 
     def _create_task_item(self, task: Task) -> QTreeWidgetItem:
         """Создаёт элемент дерева для задачи."""
@@ -369,18 +433,10 @@ class TaskTable(QWidget):
 
     def _postprocess_selected(self):
         """Открывает постобработку для выбранной задачи."""
-        item = self.tree.currentItem()
-        if not item:
+        if not self.tree.currentItem():
             QMessageBox.information(self, "Не выбрано", "Выберите задачу")
             return
-        
-        # Если выбрана подзадача, берём родительскую задачу
-        item_type = item.data(0, Qt.ItemDataRole.UserRole + 1)
-        if item_type == "subtask":
-            task_id = item.data(0, Qt.ItemDataRole.UserRole + 2)
-        else:
-            task_id = item.data(0, Qt.ItemDataRole.UserRole)
-        
+        task_id = self._get_selected_task_id()
         if not task_id:
             return
         
@@ -399,8 +455,9 @@ class TaskTable(QWidget):
         item = self.tree.currentItem()
         if not item:
             return None
-        
         item_type = item.data(0, Qt.ItemDataRole.UserRole + 1)
+        if item_type == "group":
+            return None
         if item_type == "subtask":
             return item.data(0, Qt.ItemDataRole.UserRole + 2)
         return item.data(0, Qt.ItemDataRole.UserRole)
@@ -410,9 +467,9 @@ class TaskTable(QWidget):
         item = self.tree.itemAt(position)
         if not item:
             return
-        
         item_type = item.data(0, Qt.ItemDataRole.UserRole + 1)
-        
+        if item_type == "group":
+            return
         if item_type == "subtask":
             self._show_subtask_context_menu(item, position)
         else:
@@ -516,12 +573,28 @@ class TaskTable(QWidget):
         task_id = self._get_selected_task_id()
         if task_id:
             self.task_manager.move_task_up(task_id)
+            self._restore_selection(task_id)
 
     def _move_down(self):
         """Перемещает задачу вниз."""
         task_id = self._get_selected_task_id()
         if task_id:
             self.task_manager.move_task_down(task_id)
+            self._restore_selection(task_id)
+
+    def _restore_selection(self, task_id: int):
+        """Восстанавливает выделение задачи после перестройки дерева."""
+        for i in range(self.tree.topLevelItemCount()):
+            group_item = self.tree.topLevelItem(i)
+            if not group_item:
+                continue
+            for j in range(group_item.childCount()):
+                item = group_item.child(j)
+                if item and item.data(0, Qt.ItemDataRole.UserRole) == task_id:
+                    self.tree.setCurrentItem(item)
+                    self.tree.scrollToItem(item)
+                    self.tree.setFocus()
+                    return
 
     def _delete_selected(self):
         """Удаляет выбранную задачу."""
@@ -601,28 +674,35 @@ class TaskTable(QWidget):
         else:
             subprocess.run(["xdg-open", path])
 
-    def _on_task_progress(self, task_id: int, percent: float, current_frame: int, 
+    def _on_task_progress(self, task_id: int, percent: float, current_frame: int,
                           total_frames: int, detections: int, tracks: int):
         """Обновляет прогресс задачи в таблице."""
-        # Ищем элемент с этой задачей
         for i in range(self.tree.topLevelItemCount()):
-            item = self.tree.topLevelItem(i)
-            if item and item.data(0, Qt.ItemDataRole.UserRole) == task_id:
-                item.setText(3, f"{percent:.0f}%")
-                result_text = f"{detections} дет."
-                if tracks > 0:
-                    result_text += f" / {tracks} тр."
-                item.setText(4, result_text)
-                break
+            group_item = self.tree.topLevelItem(i)
+            if not group_item:
+                continue
+            for j in range(group_item.childCount()):
+                item = group_item.child(j)
+                if item and item.data(0, Qt.ItemDataRole.UserRole) == task_id:
+                    item.setText(3, f"{percent:.0f}%")
+                    result_text = f"{detections} дет."
+                    if tracks > 0:
+                        result_text += f" / {tracks} тр."
+                    item.setText(4, result_text)
+                    return
 
     def _on_subtask_progress(self, subtask_id: int, percent: float):
         """Обновляет прогресс подзадачи."""
-        # Ищем подзадачу в дереве
         for i in range(self.tree.topLevelItemCount()):
-            task_item = self.tree.topLevelItem(i)
-            if task_item:
-                for j in range(task_item.childCount()):
-                    sub_item = task_item.child(j)
+            group_item = self.tree.topLevelItem(i)
+            if not group_item:
+                continue
+            for j in range(group_item.childCount()):
+                task_item = group_item.child(j)
+                if not task_item:
+                    continue
+                for k in range(task_item.childCount()):
+                    sub_item = task_item.child(k)
                     if sub_item and sub_item.data(0, Qt.ItemDataRole.UserRole) == subtask_id:
                         sub_item.setText(3, f"{percent:.0f}%")
                         return

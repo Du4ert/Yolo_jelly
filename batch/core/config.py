@@ -40,6 +40,7 @@ class UISettings:
     calibration_json: Optional[str] = None  # Глобальный файл калибровки камеры
     dive_panel_expanded: Optional[list] = None  # [[item_type, item_id], ...] развёрнутых узлов
     task_table_expanded: Optional[list] = None  # [task_id, ...] развёрнутых задач
+    task_table_expanded_groups: Optional[list] = None  # [catalog_id_or_null, ...] развёрнутых групп
 
 
 @dataclass
@@ -106,6 +107,7 @@ class Config:
                 calibration_json=ui_data.get("calibration_json"),
                 dive_panel_expanded=ui_data.get("dive_panel_expanded"),
                 task_table_expanded=ui_data.get("task_table_expanded"),
+                task_table_expanded_groups=ui_data.get("task_table_expanded_groups"),
             ),
         )
 
