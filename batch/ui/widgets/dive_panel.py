@@ -25,7 +25,7 @@ from PyQt6.QtGui import QColor, QBrush, QDropEvent
 
 from ...database import Repository, Catalog, Dive, VideoFile, CTDFile
 from ...core import get_config, save_config
-from ..dialogs import AddDiveDialog, EditDiveDialog, CatalogDialog
+from ..dialogs import AddDiveDialog, select_multiple_directories, EditDiveDialog, CatalogDialog
 
 
 class _DiveTree(QTreeWidget):
@@ -102,7 +102,12 @@ class DivePanel(QWidget):
         self.btn_add_dive.setToolTip("Добавить папку с погружением")
         self.btn_add_dive.clicked.connect(self.add_dive)
         btn_layout.addWidget(self.btn_add_dive)
-        
+
+        self.btn_add_multiple_dives = QPushButton("+ Папки")
+        self.btn_add_multiple_dives.setToolTip("Добавить несколько папок с погружениями сразу")
+        self.btn_add_multiple_dives.clicked.connect(self.add_multiple_dives)
+        btn_layout.addWidget(self.btn_add_multiple_dives)
+
         self.btn_refresh = QPushButton("↻")
         self.btn_refresh.setFixedWidth(30)
         self.btn_refresh.setToolTip("Обновить")
@@ -350,9 +355,12 @@ class DivePanel(QWidget):
             # Клик на пустом месте
             action_add_cat = menu.addAction("🗂 Новая экспедиция...")
             action_add_cat.triggered.connect(self._add_catalog)
-            
+
             action_add_dive = menu.addAction("📁 Добавить папку...")
             action_add_dive.triggered.connect(self.add_dive)
+
+            action_add_multi = menu.addAction("📁 Добавить несколько папок...")
+            action_add_multi.triggered.connect(self.add_multiple_dives)
         else:
             item_type = self._get_item_type(item)
             item_id = self._get_item_id(item)
@@ -362,6 +370,9 @@ class DivePanel(QWidget):
             elif item_type == self.TYPE_UNCATEGORIZED:
                 action_add = menu.addAction("📁 Добавить папку сюда...")
                 action_add.triggered.connect(self.add_dive)
+
+                action_add_multi = menu.addAction("📁 Добавить несколько папок...")
+                action_add_multi.triggered.connect(self.add_multiple_dives)
             elif item_type == self.TYPE_DIVE:
                 self._build_dive_menu(menu, item, item_id)
             elif item_type == self.TYPE_VIDEO:
@@ -380,7 +391,10 @@ class DivePanel(QWidget):
         
         action_add = menu.addAction("📁 Добавить папку в экспедицию...")
         action_add.triggered.connect(lambda: self._add_dive_to_catalog(catalog_id))
-        
+
+        action_add_multi = menu.addAction("📁 Добавить несколько папок...")
+        action_add_multi.triggered.connect(lambda: self._add_multiple_dives_to_catalog(catalog_id))
+
         action_add_all = menu.addAction("📋 Добавить все видео в очередь")
         action_add_all.triggered.connect(lambda: self._add_all_catalog_videos(catalog_id))
         
@@ -517,6 +531,49 @@ class DivePanel(QWidget):
                 if dialog.should_scan():
                     self._scan_dive_folder(dive.id)
             self._load_data()
+
+    def add_multiple_dives(self):
+        """Добавляет несколько погружений сразу."""
+        self._add_multiple_dives_to_catalog(None)
+
+    def _add_multiple_dives_to_catalog(self, catalog_id):
+        """Открывает диалог множественного выбора папок и добавляет их."""
+        config = get_config()
+        start_path = config.ui.last_browse_path or ""
+
+        folders = select_multiple_directories(
+            parent=self,
+            title="Выберите папки погружений",
+            start_path=start_path,
+        )
+        if not folders:
+            return
+
+        config.ui.last_browse_path = str(Path(folders[0]).parent)
+        save_config()
+
+        added = 0
+        skipped = 0
+        for folder in folders:
+            existing = self.repo.get_dive_by_path(folder)
+            if existing:
+                skipped += 1
+                continue
+
+            name = Path(folder).name
+            dive = self.repo.create_dive(name=name, folder_path=folder)
+            if dive:
+                if catalog_id is not None:
+                    self.repo.move_dive_to_catalog(dive.id, catalog_id)
+                self._scan_dive_folder(dive.id)
+                added += 1
+
+        self._load_data()
+
+        msg = f"Добавлено погружений: {added}"
+        if skipped:
+            msg += f", пропущено (уже есть): {skipped}"
+        self._show_status(msg)
 
     def _edit_dive(self, dive_id: int):
         """Редактирует погружение."""
