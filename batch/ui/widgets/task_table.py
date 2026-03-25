@@ -411,6 +411,10 @@ class TaskTable(QWidget):
             if report_path:
                 action_report = menu.addAction("📄 Открыть отчёт")
                 action_report.triggered.connect(lambda: self._open_file(report_path))
+            plot_path = self._find_interactive_plot_path(task_id)
+            if plot_path:
+                action_plot = menu.addAction("📈 Открыть интерактивный график")
+                action_plot.triggered.connect(lambda: self._open_file(plot_path))
             menu.addSeparator()
         
         # Перемещение (только для pending)
@@ -505,6 +509,15 @@ class TaskTable(QWidget):
         task_id = self._get_selected_task_id()
         if task_id:
             self.task_manager.retry_task(task_id)
+
+    def _find_interactive_plot_path(self, task_id: int) -> Optional[str]:
+        """Возвращает путь к depth_interactive.html, если он существует."""
+        from ...database import OutputType
+        outputs = self.repo.get_task_outputs(task_id)
+        for out in outputs:
+            if out.output_type == OutputType.INTERACTIVE_PLOT and os.path.exists(out.filepath):
+                return out.filepath
+        return None
 
     def _find_report_path(self, task_id: int) -> Optional[str]:
         """Возвращает путь к report.txt задачи, если он существует."""
