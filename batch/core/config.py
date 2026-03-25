@@ -38,6 +38,8 @@ class UISettings:
     last_model_id: Optional[int] = None     # Последняя выбранная модель
     splitter_sizes: Optional[list] = None   # Размеры сплиттеров
     calibration_json: Optional[str] = None  # Глобальный файл калибровки камеры
+    dive_panel_expanded: Optional[list] = None  # [[item_type, item_id], ...] развёрнутых узлов
+    task_table_expanded: Optional[list] = None  # [task_id, ...] развёрнутых задач
 
 
 @dataclass
@@ -102,6 +104,8 @@ class Config:
                 last_model_id=ui_data.get("last_model_id"),
                 splitter_sizes=ui_data.get("splitter_sizes"),
                 calibration_json=ui_data.get("calibration_json"),
+                dive_panel_expanded=ui_data.get("dive_panel_expanded"),
+                task_table_expanded=ui_data.get("task_table_expanded"),
             ),
         )
 

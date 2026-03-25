@@ -25,7 +25,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QBrush, QFont
 
 from ...database import Repository, Task, SubTask, SubTaskType, TaskStatus, VideoFile, Model
-from ...core import TaskManager
+from ...core import TaskManager, get_config, save_config
 from ..dialogs import EditTaskDialog, PostProcessDialog
 
 
@@ -111,6 +111,8 @@ class TaskTable(QWidget):
         self.tree.itemDoubleClicked.connect(self._on_double_click)
         self.tree.setRootIsDecorated(True)
         self.tree.setAnimated(True)
+        self.tree.itemExpanded.connect(lambda _: self._save_expanded_to_config())
+        self.tree.itemCollapsed.connect(lambda _: self._save_expanded_to_config())
         
         group_layout.addWidget(self.tree)
         
@@ -155,31 +157,65 @@ class TaskTable(QWidget):
     def refresh(self):
         """Обновляет дерево задач."""
         # Сохраняем состояние раскрытия
-        expanded_tasks = set()
-        for i in range(self.tree.topLevelItemCount()):
-            item = self.tree.topLevelItem(i)
-            if item and item.isExpanded():
-                task_id = item.data(0, Qt.ItemDataRole.UserRole)
-                if task_id:
-                    expanded_tasks.add(task_id)
-        
+        is_first_load = self.tree.topLevelItemCount() == 0
+        if is_first_load:
+            expanded_tasks = self._load_expanded_from_config()
+        else:
+            expanded_tasks = set()
+            for i in range(self.tree.topLevelItemCount()):
+                item = self.tree.topLevelItem(i)
+                if item and item.isExpanded():
+                    task_id = item.data(0, Qt.ItemDataRole.UserRole)
+                    if task_id:
+                        expanded_tasks.add(task_id)
+
+        self.tree.blockSignals(True)
         self.tree.clear()
-        
+
         tasks = self.task_manager.get_all_tasks()
-        
+
         for task in tasks:
             item = self._create_task_item(task)
             self.tree.addTopLevelItem(item)
-            
+
             # Добавляем подзадачи
             subtasks = self.repo.get_subtasks_for_task(task.id)
             for subtask in subtasks:
                 sub_item = self._create_subtask_item(subtask)
                 item.addChild(sub_item)
-            
+
             # Восстанавливаем раскрытие
-            if task.id in expanded_tasks or len(subtasks) > 0:
+            if task.id in expanded_tasks:
                 item.setExpanded(True)
+
+        self.tree.blockSignals(False)
+
+    def _save_expanded_to_config(self):
+        """Сохраняет состояние развёрнутости задач в конфиг."""
+        try:
+            config = get_config()
+            expanded = []
+            for i in range(self.tree.topLevelItemCount()):
+                item = self.tree.topLevelItem(i)
+                if item and item.isExpanded():
+                    task_id = item.data(0, Qt.ItemDataRole.UserRole)
+                    if task_id:
+                        expanded.append(task_id)
+            config.ui.task_table_expanded = expanded
+            save_config()
+        except Exception:
+            pass
+
+    def _load_expanded_from_config(self) -> set:
+        """Загружает состояние развёрнутости задач из конфига."""
+        try:
+            config = get_config()
+            data = config.ui.task_table_expanded
+            if data:
+                return set(data)
+        except Exception:
+            pass
+        return set()
 
     def _create_task_item(self, task: Task) -> QTreeWidgetItem:
         """Создаёт элемент дерева для задачи."""

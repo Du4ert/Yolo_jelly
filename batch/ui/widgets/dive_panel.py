@@ -85,6 +85,8 @@ class DivePanel(QWidget):
         self.tree.customContextMenuRequested.connect(self._on_context_menu)
         self.tree.itemSelectionChanged.connect(self._on_selection_changed)
         self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
+        self.tree.itemExpanded.connect(lambda _: self._save_expanded_to_config())
+        self.tree.itemCollapsed.connect(lambda _: self._save_expanded_to_config())
         self.tree.setDragDropMode(QTreeWidget.DragDropMode.InternalMove)
         self.tree.setAcceptDrops(True)
         self.tree.item_moved.connect(self._on_item_moved)
@@ -142,6 +144,28 @@ class DivePanel(QWidget):
                 child = top.child(j)
                 child.setExpanded((self._get_item_type(child), self._get_item_id(child)) in expanded)
 
+    def _save_expanded_to_config(self):
+        """Сохраняет состояние развёрнутости в конфиг."""
+        try:
+            config = get_config()
+            expanded = self._save_expanded_state()
+            config.ui.dive_panel_expanded = [[t, i] for t, i in expanded]
+            save_config()
+        except Exception:
+            pass
+
+    def _restore_expanded_from_config(self):
+        """Восстанавливает состояние развёрнутости из конфига."""
+        try:
+            config = get_config()
+            data = config.ui.dive_panel_expanded
+            if not data:
+                return
+            expanded = {(row[0], row[1]) for row in data}
+            self._restore_expanded_state(expanded)
+        except Exception:
+            pass
+
     def _load_data(self):
         """Загружает данные из БД."""
         # Сохраняем состояние разворота перед перестройкой
@@ -149,6 +173,7 @@ class DivePanel(QWidget):
         if not first_load:
             saved_expanded = self._save_expanded_state()
 
+        self.tree.blockSignals(True)
         self.tree.clear()
 
         # Загружаем каталоги
@@ -164,9 +189,6 @@ class DivePanel(QWidget):
                 dive_item = self._create_dive_item(dive)
                 catalog_item.addChild(dive_item)
                 self._add_dive_children(dive_item, dive.id)
-
-            if first_load and dives:
-                catalog_item.setExpanded(True)
 
         # Погружения без каталога
         uncategorized_dives = self.repo.get_dives_by_catalog(None)
@@ -191,11 +213,12 @@ class DivePanel(QWidget):
                 uncat_item.addChild(dive_item)
                 self._add_dive_children(dive_item, dive.id)
 
-            if first_load:
-                uncat_item.setExpanded(True)
-
-        if not first_load:
+        if first_load:
+            self._restore_expanded_from_config()
+        else:
             self._restore_expanded_state(saved_expanded)
+
+        self.tree.blockSignals(False)
 
     def _create_catalog_item(self, catalog: Catalog) -> QTreeWidgetItem:
         """Создаёт элемент для каталога."""
@@ -281,8 +304,6 @@ class DivePanel(QWidget):
         for ctd in ctd_files:
             dive_item.addChild(self._create_ctd_item(ctd))
         
-        if videos or ctd_files:
-            dive_item.setExpanded(True)
 
     def _get_item_type(self, item: QTreeWidgetItem) -> int:
         return item.data(0, Qt.ItemDataRole.UserRole + 1)
