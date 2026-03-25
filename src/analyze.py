@@ -332,6 +332,11 @@ def generate_report(
             if 'estimated_size_mm' in sp_df.columns and sp_df['estimated_size_mm'].notna().any():
                 sizes = sp_df['estimated_size_mm'].dropna()
                 f.write(f"  Размеры: {sizes.min():.1f} - {sizes.max():.1f} мм (средний: {sizes.mean():.1f} мм)\n")
+
+            # Плотность из расчёта объёма
+            volume_density = (processing_info or {}).get('volume_density', {})
+            if species in volume_density:
+                f.write(f"  Плотность: {volume_density[species]:.4f} экз./м³\n")
         
         f.write("\n" + "="*70 + "\n")
         f.write("КОНЕЦ ОТЧЁТА\n")

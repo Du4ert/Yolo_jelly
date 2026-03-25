@@ -258,6 +258,7 @@ class Worker(QThread):
             geometry_csv = None
             size_csv = None
             
+            volume_csv = None
             for out in outputs:
                 if out.output_type == OutputType.CSV:
                     detections_csv = out.filepath
@@ -269,6 +270,8 @@ class Worker(QThread):
                     geometry_csv = out.filepath
                 elif out.output_type == OutputType.SIZE_CSV:
                     size_csv = out.filepath
+                elif out.output_type == OutputType.VOLUME_CSV:
+                    volume_csv = out.filepath
             
             if not detections_csv or not os.path.exists(detections_csv):
                 raise ValueError("Detections CSV not found")
@@ -295,7 +298,8 @@ class Worker(QThread):
                 )
             elif subtask.subtask_type == SubTaskType.ANALYSIS:
                 result_value, result_text = self._run_analysis(
-                    detections_csv, size_csv, track_sizes_csv, output_dir, base_name, params, parent_task.id
+                    detections_csv, size_csv, track_sizes_csv, output_dir, base_name, params, parent_task.id,
+                    volume_csv=volume_csv
                 )
             elif subtask.subtask_type == SubTaskType.SIZE_VIDEO_RENDER:
                 result_value, result_text = self._run_size_video_render(
@@ -444,7 +448,7 @@ class Worker(QThread):
         return result.total_volume_m3, f"{result.total_volume_m3:.2f} м³" if result.total_volume_m3 else None
 
     def _run_analysis(self, detections_csv: str, size_csv: Optional[str], track_sizes_csv: Optional[str],
-                      output_dir: Path, base_name: str, params: dict, task_id: int):
+                      output_dir: Path, base_name: str, params: dict, task_id: int, volume_csv: Optional[str] = None):
         """Выполняет подзадачу анализа."""
         analysis_dir = output_dir / "analysis"
         analysis_dir.mkdir(exist_ok=True)
@@ -454,6 +458,22 @@ class Worker(QThread):
 
         # Собираем информацию об обработке
         processing_info = self._collect_processing_info(task_id, params)
+
+        # Читаем плотность по видам из volume CSV
+        if volume_csv and os.path.exists(volume_csv):
+            try:
+                import pandas as pd
+                vol_df = pd.read_csv(volume_csv)
+                density = {}
+                for _, row in vol_df.iterrows():
+                    param = str(row['parameter'])
+                    if param.startswith('density_') and param.endswith('_per_m3'):
+                        species_key = param[len('density_'):-len('_per_m3')].replace('_', ' ')
+                        density[species_key] = float(row['value'])
+                if density:
+                    processing_info['volume_density'] = density
+            except Exception as e:
+                print(f"Не удалось прочитать данные объёма: {e}")
 
         # Путь к CTD-файлу из задачи
         ctd_path = None
