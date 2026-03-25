@@ -220,6 +220,7 @@ class SizeEstimationProcessor:
         min_r_squared: float = 0.5,
         min_size_change_ratio: float = 0.3,
         apply_tilt_correction: bool = True,
+        calibration_json: Optional[str] = None,
     ) -> SizeEstimationResult:
         """
         Запускает оценку размеров.
@@ -254,10 +255,15 @@ class SizeEstimationProcessor:
                 os.makedirs(os.path.dirname(os.path.abspath(tracks_csv)), exist_ok=True)
             
             # Калибровка
-            calibration = CameraCalibration()
-            calibration.frame_width = frame_width
-            calibration.frame_height = frame_height
-            
+            if calibration_json and os.path.exists(calibration_json):
+                calibration = CameraCalibration.from_json(calibration_json)
+                calibration.frame_width = frame_width
+                calibration.frame_height = frame_height
+            else:
+                calibration = CameraCalibration()
+                calibration.frame_width = frame_width
+                calibration.frame_height = frame_height
+
             # Обработка
             df, tracks_df = process_detections_with_size(
                 detections_csv=detections_csv,
