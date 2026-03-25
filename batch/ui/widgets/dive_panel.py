@@ -51,6 +51,7 @@ class DivePanel(QWidget):
     video_selected = pyqtSignal(int)
     add_to_queue_requested = pyqtSignal(int, object)
     quick_add_to_queue_requested = pyqtSignal(int, object)
+    batch_add_to_queue_requested = pyqtSignal(list)  # list of (video_id, ctd_id|None)
 
     # Типы элементов в дереве
     TYPE_CATALOG = 0
@@ -505,10 +506,15 @@ class DivePanel(QWidget):
             self._load_data()
 
     def _add_all_catalog_videos(self, catalog_id: int):
-        """Добавляет все видео каталога в очередь."""
-        dives = self.repo.get_dives_by_catalog(catalog_id)
-        for dive in dives:
-            self._add_all_videos_to_queue(dive.id)
+        """Добавляет все видео каталога в очередь (один диалог на всё)."""
+        pairs = []
+        for dive in self.repo.get_dives_by_catalog(catalog_id):
+            ctd_files = self.repo.get_ctd_by_dive(dive.id)
+            ctd_id = ctd_files[0].id if ctd_files else None
+            for video in self.repo.get_videos_by_dive(dive.id):
+                pairs.append((video.id, ctd_id))
+        if pairs:
+            self.batch_add_to_queue_requested.emit(pairs)
 
     def add_dive(self):
         """Добавляет погружение."""
@@ -683,13 +689,13 @@ class DivePanel(QWidget):
         self.quick_add_to_queue_requested.emit(video_id, ctd_id)
 
     def _add_all_videos_to_queue(self, dive_id: int):
-        """Добавляет все видео погружения."""
+        """Добавляет все видео погружения (один диалог на всё)."""
         videos = self.repo.get_videos_by_dive(dive_id)
         ctd_files = self.repo.get_ctd_by_dive(dive_id)
         ctd_id = ctd_files[0].id if ctd_files else None
-        
-        for video in videos:
-            self.add_to_queue_requested.emit(video.id, ctd_id)
+        pairs = [(video.id, ctd_id) for video in videos]
+        if pairs:
+            self.batch_add_to_queue_requested.emit(pairs)
 
     def _delete_video(self, video_id: int):
         """Удаляет видео."""

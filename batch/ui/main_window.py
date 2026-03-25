@@ -197,6 +197,7 @@ class MainWindow(QMainWindow):
         self.dive_panel.dive_selected.connect(self._on_dive_selected)
         self.dive_panel.add_to_queue_requested.connect(self._on_add_to_queue)
         self.dive_panel.quick_add_to_queue_requested.connect(self._on_quick_add_to_queue)
+        self.dive_panel.batch_add_to_queue_requested.connect(self._on_batch_add_to_queue)
         self.model_panel.model_selected.connect(self._on_model_selected)
 
     def _restore_state(self):
@@ -430,6 +431,54 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Задача #{task.id} добавлена в очередь", 3000)
         else:
             QMessageBox.warning(self, "Ошибка", "Не удалось создать задачу.")
+
+    def _on_batch_add_to_queue(self, video_ctd_pairs: list):
+        """Добавляет несколько видео в очередь с одним диалогом настроек."""
+        if not video_ctd_pairs:
+            return
+
+        model_id = self.model_panel.get_selected_model_id()
+        models = self.repo.get_all_models()
+        if not models:
+            QMessageBox.warning(
+                self, "Нет моделей",
+                "Сначала добавьте модель для детекции.\n\nМеню: Файл → Добавить модель..."
+            )
+            return
+
+        first_video_id, first_ctd_id = video_ctd_pairs[0]
+        dialog = NewTaskDialog(
+            repository=self.repo,
+            video_id=first_video_id,
+            ctd_id=first_ctd_id,
+            model_id=model_id,
+            parent=self,
+        )
+        if not dialog.exec():
+            return
+
+        selected_model_id = dialog.get_model_id()
+        params = dialog.get_task_params()
+
+        # Первое видео — CTD из диалога (пользователь мог изменить)
+        self.task_manager.add_task(
+            video_id=first_video_id,
+            model_id=selected_model_id,
+            ctd_id=dialog.get_ctd_id(),
+            **params,
+        )
+
+        # Остальные видео — те же параметры, CTD из своего погружения
+        for video_id, ctd_id in video_ctd_pairs[1:]:
+            self.task_manager.add_task(
+                video_id=video_id,
+                model_id=selected_model_id,
+                ctd_id=ctd_id,
+                **params,
+            )
+
+        n = len(video_ctd_pairs)
+        self.statusBar().showMessage(f"Добавлено задач: {n}", 3000)
 
     # ========== События окна ==========
 
