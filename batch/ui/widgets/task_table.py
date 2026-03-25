@@ -407,6 +407,10 @@ class TaskTable(QWidget):
         if task.status == TaskStatus.DONE:
             action_open = menu.addAction("📂 Открыть папку с результатами")
             action_open.triggered.connect(lambda: self._open_output_folder(task_id))
+            report_path = self._find_report_path(task_id)
+            if report_path:
+                action_report = menu.addAction("📄 Открыть отчёт")
+                action_report.triggered.connect(lambda: self._open_file(report_path))
             menu.addSeparator()
         
         # Перемещение (только для pending)
@@ -501,6 +505,24 @@ class TaskTable(QWidget):
         task_id = self._get_selected_task_id()
         if task_id:
             self.task_manager.retry_task(task_id)
+
+    def _find_report_path(self, task_id: int) -> Optional[str]:
+        """Возвращает путь к report.txt задачи, если он существует."""
+        from ...database import OutputType
+        outputs = self.repo.get_task_outputs(task_id)
+        for out in outputs:
+            if out.output_type == OutputType.ANALYSIS_REPORT and os.path.exists(out.filepath):
+                return out.filepath
+        return None
+
+    def _open_file(self, path: str):
+        """Открывает файл в системном приложении по умолчанию."""
+        if platform.system() == "Windows":
+            os.startfile(path)
+        elif platform.system() == "Darwin":
+            subprocess.run(["open", path])
+        else:
+            subprocess.run(["xdg-open", path])
 
     def _open_output_folder(self, task_id: int):
         """Открывает папку с результатами задачи."""
