@@ -7,6 +7,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 from ..database import Repository, Task, SubTask, TaskStatus
 from .worker import Worker
+from .config import get_config
 
 
 class TaskManager(QObject):
@@ -40,7 +41,8 @@ class TaskManager(QObject):
     def __init__(self, repository: Repository, parent=None):
         super().__init__(parent)
         self.repo = repository
-        self._worker: Optional[Worker] = None
+        self._workers: List[Worker] = []
+        self._workers_finished_count: int = 0
         self._is_running = False
         self._is_paused = False
 
@@ -67,10 +69,10 @@ class TaskManager(QObject):
 
         # Нельзя удалить задачу, которую воркер сейчас реально обрабатывает
         if task.status == TaskStatus.RUNNING:
-            if self._worker and self._worker.isRunning():
-                if self._worker.get_current_task_id() == task_id:
-                    return False
-            # Если воркер не запущен или обрабатывает другую задачу —
+            if any(w.isRunning() and w.get_current_task_id() == task_id
+                   for w in self._workers):
+                return False
+            # Если ни один воркер не обрабатывает эту задачу —
             # статус RUNNING устарел (зависание после краша), удаляем
 
         result = self.repo.delete_task(task_id)
@@ -155,49 +157,59 @@ class TaskManager(QObject):
         if self._is_running:
             return False
 
-        # Если предыдущий воркер ещё не завершил поток — не запускаем новый
-        if self._worker is not None and self._worker.isRunning():
+        # Если предыдущие воркеры ещё не завершили потоки — не запускаем новые
+        if any(w.isRunning() for w in self._workers):
             return False
 
         if not self.has_pending_work():
             return False
 
-        self._worker = Worker(self.repo)
-        self._worker.started_task.connect(self._on_task_started)
-        self._worker.progress.connect(self._on_task_progress)
-        self._worker.finished_task.connect(self._on_task_finished)
-        self._worker.started_subtask.connect(self._on_subtask_started)
-        self._worker.subtask_progress.connect(self._on_subtask_progress)
-        self._worker.finished_subtask.connect(self._on_subtask_finished)
-        self._worker.all_finished.connect(self._on_queue_finished)
+        n = get_config().max_parallel_workers
+        self._workers = []
+        self._workers_finished_count = 0
+
+        for _ in range(n):
+            worker = Worker(self.repo)
+            worker.started_task.connect(self._on_task_started)
+            worker.progress.connect(self._on_task_progress)
+            worker.finished_task.connect(self._on_task_finished)
+            worker.started_subtask.connect(self._on_subtask_started)
+            worker.subtask_progress.connect(self._on_subtask_progress)
+            worker.finished_subtask.connect(self._on_subtask_finished)
+            worker.all_finished.connect(self._on_worker_finished)
+            self._workers.append(worker)
 
         self._is_running = True
         self._is_paused = False
-        self._worker.start()
+        for w in self._workers:
+            w.start()
 
         self.queue_state_changed.emit(True, False)
         return True
 
     def stop_queue(self) -> None:
         """Останавливает выполнение очереди."""
-        if self._worker and self._is_running:
-            self._worker.stop()
-            # Немедленно сигналим UI об остановке, не дожидаясь завершения потока
+        if self._workers and self._is_running:
+            for w in self._workers:
+                w.stop()
+            # Немедленно сигналим UI об остановке, не дожидаясь завершения потоков
             self._is_running = False
             self._is_paused = False
             self.queue_state_changed.emit(False, False)
 
     def pause_queue(self) -> None:
         """Приостанавливает выполнение очереди."""
-        if self._worker and self._is_running and not self._is_paused:
-            self._worker.pause()
+        if self._workers and self._is_running and not self._is_paused:
+            for w in self._workers:
+                w.pause()
             self._is_paused = True
             self.queue_state_changed.emit(True, True)
 
     def resume_queue(self) -> None:
         """Возобновляет выполнение очереди."""
-        if self._worker and self._is_running and self._is_paused:
-            self._worker.resume()
+        if self._workers and self._is_running and self._is_paused:
+            for w in self._workers:
+                w.resume()
             self._is_paused = False
             self.queue_state_changed.emit(True, False)
 
@@ -240,9 +252,13 @@ class TaskManager(QObject):
         self.subtask_finished.emit(subtask_id, success, error_message)
         self.queue_changed.emit()
 
-    def _on_queue_finished(self) -> None:
-        """Обработчик завершения всех задач."""
-        # Сбрасываем зависшие RUNNING-задачи (если воркер вышел аварийно)
+    def _on_worker_finished(self) -> None:
+        """Обработчик завершения одного воркера."""
+        self._workers_finished_count += 1
+        if self._workers_finished_count < len(self._workers):
+            return  # Остальные воркеры ещё работают
+
+        # Все воркеры завершились — сбрасываем зависшие RUNNING-задачи
         try:
             running_tasks = self.repo.get_tasks_by_status(TaskStatus.RUNNING)
             for task in running_tasks:
@@ -252,6 +268,6 @@ class TaskManager(QObject):
 
         self._is_running = False
         self._is_paused = False
-        self._worker = None
+        self._workers = []
         self.queue_finished.emit()
         self.queue_state_changed.emit(False, False)

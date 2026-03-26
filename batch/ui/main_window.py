@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QToolButton,
     QLabel,
+    QSpinBox,
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QAction, QIcon, QKeySequence
@@ -154,6 +155,19 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.action_start_queue)
         toolbar.addAction(self.action_pause_queue)
         toolbar.addAction(self.action_stop_queue)
+        toolbar.addSeparator()
+
+        # Количество параллельных воркеров
+        toolbar.addWidget(QLabel(" Потоков: "))
+        self._workers_spinbox = QSpinBox()
+        self._workers_spinbox.setRange(1, 8)
+        self._workers_spinbox.setValue(get_config().max_parallel_workers)
+        self._workers_spinbox.setToolTip(
+            "Количество параллельных задач.\n"
+            "При device=cuda не ставьте больше, чем позволяет VRAM."
+        )
+        self._workers_spinbox.valueChanged.connect(self._on_workers_count_changed)
+        toolbar.addWidget(self._workers_spinbox)
         toolbar.addSeparator()
 
         # Кнопка выбора глобального файла калибровки
@@ -342,13 +356,19 @@ class MainWindow(QMainWindow):
         self.action_start_queue.setEnabled(not is_running or is_paused)
         self.action_pause_queue.setEnabled(is_running)
         self.action_stop_queue.setEnabled(is_running)
-        
+        self._workers_spinbox.setEnabled(not is_running)
+
         if is_paused:
             self.action_start_queue.setText("▶ Продолжить")
             self.action_pause_queue.setText("⏸ На паузе")
         else:
             self.action_start_queue.setText("▶ Запустить")
             self.action_pause_queue.setText("⏸ Пауза")
+
+    def _on_workers_count_changed(self, value: int) -> None:
+        """Сохраняет количество параллельных воркеров в конфиг."""
+        get_config().max_parallel_workers = value
+        save_config()
 
     def _on_task_started(self, task_id: int):
         self.status_widget.set_current_task(task_id)

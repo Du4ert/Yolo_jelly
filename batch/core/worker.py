@@ -53,6 +53,8 @@ class Worker(QThread):
     def run(self):
         """Основной цикл воркера."""
         self._stop_requested = False
+        IDLE_RETRIES = 10  # 10 × 500мс = 5 сек ожидания без работы
+        idle_count = 0
 
         try:
             while not self._stop_requested:
@@ -65,23 +67,32 @@ class Worker(QThread):
                 if self._stop_requested:
                     break
 
-                # Сначала ищем ожидающие подзадачи (у завершённых родителей)
-                pending_subtasks = self.repo.get_pending_subtasks()
-                if pending_subtasks:
-                    subtask = pending_subtasks[0]
-                    parent = self.repo.get_task(subtask.parent_task_id)
-                    if parent and parent.status == TaskStatus.DONE:
-                        self._execute_subtask(subtask)
-                        continue
+                # Сначала атомарно берём подзадачу завершённого родителя
+                subtask_id = self.repo.claim_pending_subtask()
+                if subtask_id is not None:
+                    idle_count = 0
+                    subtask = self.repo.get_subtask(subtask_id)
+                    self._execute_subtask(subtask)
+                    continue
 
-                # Если нет подзадач, ищем основные задачи
-                pending_tasks = self.repo.get_pending_tasks()
-                if not pending_tasks:
+                # Затем атомарно берём основную задачу
+                task_id = self.repo.claim_pending_task()
+                if task_id is not None:
+                    idle_count = 0
+                    task = self.repo.get_task(task_id)
+                    self._execute_task(task)
+                    continue
+
+                # Нет работы — ждём: другой воркер может создать подзадачи
+                idle_count += 1
+                if idle_count >= IDLE_RETRIES:
                     break
 
-                task = pending_tasks[0]
-                self._execute_task(task)
-        except Exception as e:
+                self._mutex.lock()
+                self._pause_condition.wait(self._mutex, 500)
+                self._mutex.unlock()
+
+        except Exception:
             import traceback
             traceback.print_exc()
         finally:
@@ -91,8 +102,8 @@ class Worker(QThread):
         """Выполняет основную задачу детекции."""
         task_id = task.id
         self._current_task_id = task_id
-        
-        self.repo.update_task_status(task_id, TaskStatus.RUNNING)
+
+        # Статус RUNNING уже выставлен атомарно в claim_pending_task()
         self.started_task.emit(task_id)
         
         try:
@@ -221,7 +232,7 @@ class Worker(QThread):
             self.finished_subtask.emit(subtask_id, False, "Отменено пользователем")
             return
 
-        self.repo.update_subtask_status(subtask_id, TaskStatus.RUNNING)
+        # Статус RUNNING уже выставлен атомарно в claim_pending_subtask()
         self.started_subtask.emit(subtask_id)
         self.subtask_progress.emit(subtask_id, 0.0)
 

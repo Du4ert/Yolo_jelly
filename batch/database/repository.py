@@ -41,11 +41,20 @@ class Repository:
             db_path: Путь к файлу SQLite базы данных.
         """
         self.db_path = db_path
-        self.engine = create_engine(f"sqlite:///{db_path}", echo=False)
+        self.engine = create_engine(
+            f"sqlite:///{db_path}",
+            echo=False,
+            connect_args={"check_same_thread": False, "timeout": 30},
+        )
         self.SessionLocal = sessionmaker(bind=self.engine)
-        
+
         # Создаём таблицы, если их нет
         Base.metadata.create_all(self.engine)
+
+        # WAL-режим для поддержки параллельных читателей
+        from sqlalchemy import text as _text
+        with self.engine.connect() as _conn:
+            _conn.execute(_text("PRAGMA journal_mode=WAL"))
 
         # Миграция: добавляем новые колонки к существующим таблицам
         self._migrate()
@@ -583,6 +592,39 @@ class Repository:
             )
             return list(session.scalars(stmt))
 
+    def claim_pending_task(self) -> Optional[int]:
+        """Атомарно захватывает первую PENDING-задачу, переводя её в RUNNING.
+
+        Использует условный UPDATE (WHERE status=PENDING) для защиты от race condition:
+        если другой воркер уже захватил эту задачу, rowcount=0 и мы пробуем следующую.
+
+        Returns:
+            task_id захваченной задачи, или None если нет доступных.
+        """
+        while True:
+            with self.get_session() as session:
+                task_id = session.scalar(
+                    select(Task.id)
+                    .where(Task.status == TaskStatus.PENDING)
+                    .order_by(Task.position)
+                    .limit(1)
+                )
+                if task_id is None:
+                    return None
+
+                # Захватываем только если ещё PENDING — защита от двойного захвата
+                result = session.execute(
+                    update(Task)
+                    .where(Task.id == task_id)
+                    .where(Task.status == TaskStatus.PENDING)
+                    .values(status=TaskStatus.RUNNING, started_at=datetime.now())
+                )
+                session.commit()
+
+                if result.rowcount == 1:
+                    return task_id
+                # Другой воркер успел захватить эту задачу — ищем следующую
+
     def get_tasks_by_status(self, status: TaskStatus) -> List[Task]:
         """Получает задачи по статусу."""
         with self.get_session() as session:
@@ -949,6 +991,49 @@ class Repository:
                 .order_by(SubTask.parent_task_id, SubTask.position)
             )
             return list(session.scalars(stmt))
+
+    def claim_pending_subtask(self) -> Optional[int]:
+        """Атомарно захватывает первую PENDING-подзадачу завершённого родителя.
+
+        Гарантирует последовательность: не берёт подзадачу, если у того же
+        родителя уже есть RUNNING-подзадача (GEOMETRY → SIZE → VOLUME → ANALYSIS).
+
+        Returns:
+            subtask_id захваченной подзадачи, или None если нет доступных.
+        """
+        from .models import SubTask
+
+        with self.get_session() as session:
+            candidates = session.scalars(
+                select(SubTask)
+                .join(Task, SubTask.parent_task_id == Task.id)
+                .where(SubTask.status == TaskStatus.PENDING)
+                .where(Task.status == TaskStatus.DONE)
+                .order_by(SubTask.position)
+            ).all()
+
+            for subtask in candidates:
+                running_sibling = session.scalar(
+                    select(SubTask)
+                    .where(SubTask.parent_task_id == subtask.parent_task_id)
+                    .where(SubTask.status == TaskStatus.RUNNING)
+                )
+                if running_sibling is not None:
+                    continue
+
+                # Захватываем только если ещё PENDING
+                result = session.execute(
+                    update(SubTask)
+                    .where(SubTask.id == subtask.id)
+                    .where(SubTask.status == TaskStatus.PENDING)
+                    .values(status=TaskStatus.RUNNING, started_at=datetime.now())
+                )
+                session.commit()
+
+                if result.rowcount == 1:
+                    return subtask.id
+                # Другой воркер успел — продолжаем поиск среди кандидатов
+        return None
 
     def update_subtask(
         self,

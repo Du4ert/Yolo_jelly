@@ -49,6 +49,7 @@ class Config:
     Основная конфигурация приложения.
     """
     database_path: str = "batch.db"
+    max_parallel_workers: int = 1
     default_detection_params: DetectionParams = field(default_factory=DetectionParams)
     ui: UISettings = field(default_factory=UISettings)
 
@@ -86,6 +87,7 @@ class Config:
         
         return cls(
             database_path=data.get("database_path", "batch.db"),
+            max_parallel_workers=data.get("max_parallel_workers", 1),
             default_detection_params=DetectionParams(
                 conf_threshold=detection_data.get("conf_threshold", 0.25),
                 enable_tracking=detection_data.get("enable_tracking", True),
@@ -120,6 +122,7 @@ class Config:
         """
         data = {
             "database_path": self.database_path,
+            "max_parallel_workers": self.max_parallel_workers,
             "default_detection_params": asdict(self.default_detection_params),
             "ui": asdict(self.ui),
         }
@@ -134,6 +137,7 @@ class Config:
         """Преобразует конфигурацию в словарь."""
         return {
             "database_path": self.database_path,
+            "max_parallel_workers": self.max_parallel_workers,
             "default_detection_params": asdict(self.default_detection_params),
             "ui": asdict(self.ui),
         }
