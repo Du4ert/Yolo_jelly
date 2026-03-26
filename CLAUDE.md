@@ -72,7 +72,7 @@ The largest and most complex module (~1700 lines). Three subcommands:
 - `size` — calculates real object sizes via k-method: k = (Δpixels/pixels₁) / Δdepth, with MAD outlier filtering, moving median smoothing, tilt correction
 - `volume` — computes surveyed water volume (frustum model) and organism density
 
-Key formulas: distance `d = 24.68 × |k|^(-0.644)`, pixel calibration `p = 2.432 × d^(-1.0334)`, size `size_real = (size_pixels × distance) / K`. Calibrated for GoPro 12 Wide 4K (K=2365 px/m at 1m).
+Key formulas: distance `d = 80.00 × |k|^(-0.9)`, pixel calibration `p = 4.35 × d^(-1.25)`, size `size_mm = pixels / p`. Calibrated for GoPro 12 Wide 4K (3840×2160, FOV 156°). Coefficients are defaults in `CameraCalibration` dataclass and can be overridden via calibration.json.
 
 ### Detection classes (5 species)
 
@@ -104,7 +104,7 @@ Class names are duplicated in `data.yaml`, `dataset/classes.txt`, `src/detect_vi
 ### Other issues
 - **DB thread safety**: Worker (QThread) and UI both access SQLite; sessions created per-operation but no thread isolation guarantee
 - **No transaction atomicity**: Task + SubTask creation not atomic; partial failure leaves inconsistent state
-- **Camera calibration hardcoded**: K=2365 for GoPro 12 Wide 4K in camera_geometry.py; different camera requires code change
+- **Camera calibration hardcoded**: A=80, B=-0.9, C=4.35, D=-1.25 for GoPro 12 Wide 4K in camera_geometry.py; different camera requires calibration.json override
 - **Path resolution inconsistent**: train.py uses PROJECT_ROOT (robust), detect_video.py assumes CWD (fragile), batch_app.py uses absolute paths (robust)
 - **No logging**: only traceback.print_exc(); no structured logging
 - **No input validation**: CSV files not checked for required columns; YAML/JSON configs not validated against schema
