@@ -81,23 +81,29 @@ class TaskManager(QObject):
         return result
 
     def move_task_up(self, task_id: int) -> bool:
-        """Перемещает задачу вверх в очереди."""
-        task = self.repo.get_task(task_id)
-        if not task or task.position <= 1:
-            return False
-        
-        result = self.repo.move_task(task_id, task.position - 1)
+        """Перемещает задачу вверх в рамках своей экспедиции."""
+        result = self.repo.move_task_within_expedition(task_id, direction=-1)
         if result:
             self.queue_changed.emit()
         return result
 
     def move_task_down(self, task_id: int) -> bool:
-        """Перемещает задачу вниз в очереди."""
-        task = self.repo.get_task(task_id)
-        if not task:
-            return False
-        
-        result = self.repo.move_task(task_id, task.position + 1)
+        """Перемещает задачу вниз в рамках своей экспедиции."""
+        result = self.repo.move_task_within_expedition(task_id, direction=1)
+        if result:
+            self.queue_changed.emit()
+        return result
+
+    def skip_task(self, task_id: int) -> bool:
+        """Помечает PENDING-задачу для пропуска воркерами."""
+        result = self.repo.set_task_skipped(task_id, True)
+        if result:
+            self.queue_changed.emit()
+        return result
+
+    def unskip_task(self, task_id: int) -> bool:
+        """Снимает флаг пропуска с задачи."""
+        result = self.repo.set_task_skipped(task_id, False)
         if result:
             self.queue_changed.emit()
         return result
@@ -111,6 +117,7 @@ class TaskManager(QObject):
         self.repo.update_task(
             task_id,
             status=TaskStatus.PENDING,
+            is_skipped=False,
             progress_percent=0.0,
             current_frame=0,
             error_message=None,

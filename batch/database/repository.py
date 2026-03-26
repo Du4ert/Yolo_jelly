@@ -71,6 +71,7 @@ class Repository:
                 ("device", "VARCHAR(20) DEFAULT 'auto'"),
                 ("imgsz", "INTEGER DEFAULT 1280"),
                 ("half", "BOOLEAN DEFAULT 1"),
+                ("is_skipped", "BOOLEAN DEFAULT 0"),
             ]
             with self.engine.begin() as conn:
                 for col_name, col_def in migrations:
@@ -583,11 +584,12 @@ class Repository:
             return list(session.scalars(stmt))
 
     def get_pending_tasks(self) -> List[Task]:
-        """Получает задачи в ожидании."""
+        """Получает задачи в ожидании (не пропущенные)."""
         with self.get_session() as session:
             stmt = (
                 select(Task)
                 .where(Task.status == TaskStatus.PENDING)
+                .where(Task.is_skipped == False)  # noqa: E712
                 .order_by(Task.position)
             )
             return list(session.scalars(stmt))
@@ -606,6 +608,7 @@ class Repository:
                 task_id = session.scalar(
                     select(Task.id)
                     .where(Task.status == TaskStatus.PENDING)
+                    .where(Task.is_skipped == False)  # noqa: E712
                     .order_by(Task.position)
                     .limit(1)
                 )
@@ -665,6 +668,20 @@ class Repository:
                 session.refresh(task)
             return task
 
+    def set_task_skipped(self, task_id: int, skipped: bool) -> bool:
+        """Устанавливает флаг пропуска для PENDING-задачи.
+
+        Returns:
+            True если флаг успешно изменён, False если задача не найдена или не PENDING.
+        """
+        with self.get_session() as session:
+            task = session.get(Task, task_id)
+            if task and task.status == TaskStatus.PENDING:
+                task.is_skipped = skipped
+                session.commit()
+                return True
+        return False
+
     def update_task_progress(
         self,
         task_id: int,
@@ -701,7 +718,7 @@ class Repository:
                 return False
 
             old_position = task.position
-            
+
             if new_position > old_position:
                 # Двигаем вниз
                 stmt = (
@@ -718,9 +735,59 @@ class Repository:
                     .where(Task.position < old_position)
                     .values(position=Task.position + 1)
                 )
-            
+
             session.execute(stmt)
             task.position = new_position
+            session.commit()
+            return True
+
+    def move_task_within_expedition(self, task_id: int, direction: int) -> bool:
+        """Перемещает задачу вверх (direction=-1) или вниз (+1) в рамках своей экспедиции.
+
+        Находит соседнюю задачу в том же каталоге и меняет с ней позиции местами.
+        Задачи других экспедиций не затрагиваются.
+        """
+        with self.get_session() as session:
+            task = session.get(Task, task_id)
+            if not task or task.status != TaskStatus.PENDING:
+                return False
+
+            # Определяем catalog_id через цепочку video → dive → catalog
+            video = task.video_file
+            catalog_id = video.dive.catalog_id if video and video.dive else None
+
+            # Получаем все задачи той же экспедиции, отсортированные по position
+            if catalog_id is None:
+                stmt = (
+                    select(Task)
+                    .join(Task.video_file)
+                    .join(VideoFile.dive)
+                    .where(Dive.catalog_id.is_(None))
+                    .order_by(Task.position)
+                )
+            else:
+                stmt = (
+                    select(Task)
+                    .join(Task.video_file)
+                    .join(VideoFile.dive)
+                    .where(Dive.catalog_id == catalog_id)
+                    .order_by(Task.position)
+                )
+            expedition_tasks = list(session.scalars(stmt))
+
+            # Находим индекс текущей задачи
+            idx = next((i for i, t in enumerate(expedition_tasks) if t.id == task_id), None)
+            if idx is None:
+                return False
+
+            swap_idx = idx + direction
+            if swap_idx < 0 or swap_idx >= len(expedition_tasks):
+                return False
+
+            neighbor = expedition_tasks[swap_idx]
+
+            # Меняем позиции местами
+            task.position, neighbor.position = neighbor.position, task.position
             session.commit()
             return True
 

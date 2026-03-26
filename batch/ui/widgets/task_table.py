@@ -307,9 +307,10 @@ class TaskTable(QWidget):
         
         # Статус
         status_icon = self.STATUS_ICONS.get(task.status, "?")
-        item.setText(2, f"{status_icon} {task.status.value}")
+        skip_prefix = "⏭ " if task.is_skipped else ""
+        item.setText(2, f"{skip_prefix}{status_icon} {task.status.value}")
         item.setTextAlignment(2, Qt.AlignmentFlag.AlignCenter)
-        
+
         color = self.STATUS_COLORS.get(task.status, QColor(255, 255, 255))
         item.setBackground(2, QBrush(color))
         
@@ -340,8 +341,16 @@ class TaskTable(QWidget):
         # Жирный шрифт для основных задач
         font = item.font(1)
         font.setBold(True)
+        if task.is_skipped:
+            font.setItalic(True)
         item.setFont(1, font)
-        
+
+        # Пропущенные задачи — приглушённый цвет
+        if task.is_skipped and task.status == TaskStatus.PENDING:
+            muted = QBrush(QColor(160, 160, 160))
+            for col in range(5):
+                item.setForeground(col, muted)
+
         return item
 
     def _create_subtask_item(self, subtask: SubTask) -> QTreeWidgetItem:
@@ -510,6 +519,16 @@ class TaskTable(QWidget):
                 action_plot.triggered.connect(lambda: self._open_file(plot_path))
             menu.addSeparator()
         
+        # Пропуск (только для pending)
+        if task.status == TaskStatus.PENDING:
+            if task.is_skipped:
+                action_unskip = menu.addAction("↩ Снять пропуск")
+                action_unskip.triggered.connect(lambda: self.task_manager.unskip_task(task_id))
+            else:
+                action_skip = menu.addAction("⏭ Пропустить")
+                action_skip.triggered.connect(lambda: self.task_manager.skip_task(task_id))
+            menu.addSeparator()
+
         # Перемещение (только для pending)
         if task.status == TaskStatus.PENDING:
             action_up = menu.addAction("▲ Переместить вверх")

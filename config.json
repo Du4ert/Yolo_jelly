@@ -1,5 +1,6 @@
 {
   "database_path": "batch.db",
+  "max_parallel_workers": 5,
   "default_detection_params": {
     "conf_threshold": 0.75,
     "enable_tracking": true,
@@ -15,7 +16,7 @@
   "ui": {
     "window_geometry": "AdnQywADAAAAAAAA////+QAAB/8AAARPAAAAzwAAARcAAAUaAAAD0gAAAAACAAAACAAAAAAAAAAAFwAAB/8AAARP",
     "window_state": null,
-    "last_browse_path": "C:\\WORK\\Claude_allowed\\yolo_jellyfish\\runs\\model_11s\\weights",
+    "last_browse_path": "D:\\Избранные_погружения",
     "last_model_id": 5,
     "splitter_sizes": [
       631,
@@ -25,18 +26,20 @@
     "dive_panel_expanded": [
       [
         0,
-        1
+        3
       ],
       [
-        0,
-        2
+        1,
+        70
       ]
     ],
     "task_table_expanded": [
-      9
+      73,
+      74,
+      71
     ],
     "task_table_expanded_groups": [
-      2
+      3
     ]
   }
 }
