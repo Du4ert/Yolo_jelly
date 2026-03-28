@@ -183,61 +183,126 @@ class TrackSizeEstimate:
 # FOE (Focus of Expansion) - оценка наклона камеры
 # =============================================================================
 
+def _foe_error_directed(points, vectors, foe):
+    """Ошибка FOE: 1 - cos(угол) между радиальным и реальным вектором.
+
+    Без abs() — вектора должны быть направлены ОТ FOE (расхождение при спуске).
+    """
+    fx, fy = foe
+    radial = points - np.array([fx, fy])
+    radial_norm = radial / (np.linalg.norm(radial, axis=1, keepdims=True) + 1e-6)
+    vec_norm = vectors / (np.linalg.norm(vectors, axis=1, keepdims=True) + 1e-6)
+    dot = np.sum(radial_norm * vec_norm, axis=1)
+    return dot
+
+
+def _fit_foe_on_subset(points, vectors, cx, cy):
+    """Оптимизация FOE на подмножестве точек (Nelder-Mead)."""
+    def error(foe):
+        dot = _foe_error_directed(points, vectors, foe)
+        return np.mean(1 - dot)
+
+    result = minimize(error, [cx, cy], method='Nelder-Mead',
+                      options={'maxiter': 300, 'xatol': 1.0, 'fatol': 1e-4})
+    return result.x, 1 - result.fun
+
+
 def estimate_foe(
     points: np.ndarray,
     vectors: np.ndarray,
     frame_size: Tuple[int, int] = (3840, 2160),
-    min_vector_length: float = 0.5,
-    max_tilt_deg: float = 60.0
+    min_vector_length: float = 1.0,
+    max_tilt_deg: float = 90.0,
+    calibration: 'CameraCalibration' = None,
+    n_ransac: int = 150,
+    ransac_sample_size: int = 30,
+    inlier_threshold: float = 0.7,
 ) -> FOEResult:
     """
-    Оценивает Focus of Expansion по точкам и векторам движения.
-    
-    При малом движении камеры FOE уходит в бесконечность, что даёт
-    нефизичные значения наклона. Фильтруем такие случаи.
+    Оценивает Focus of Expansion по точкам и векторам движения (RANSAC).
+
+    Вращение камеры (покачивание от течений) создаёт тангенциальный поток,
+    который не совпадает с радиальным паттерном FOE. RANSAC отсекает такие
+    точки как выбросы, оставляя только трансляционный компонент.
+
+    Args:
+        n_ransac: число итераций RANSAC
+        ransac_sample_size: размер случайной выборки для оптимизации
+        inlier_threshold: порог dot product для inlier (cos(45°) ≈ 0.7)
     """
     width, height = frame_size
     cx, cy = width / 2, height / 2
-    
+
+    if calibration is not None:
+        pixels_per_degree = calibration.pixels_per_degree
+    else:
+        pixels_per_degree = width / 156.0
+
     vec_lengths = np.linalg.norm(vectors, axis=1)
     mask = vec_lengths > min_vector_length
     points_filt = points[mask]
     vectors_filt = vectors[mask]
-    
-    if len(points_filt) < 10:
+
+    if len(points_filt) < 30:
         return FOEResult(cx, cy, 0, 0, 0, len(points_filt))
-    
-    def foe_error(foe):
-        fx, fy = foe
-        radial = points_filt - np.array([fx, fy])
-        radial_norm = radial / (np.linalg.norm(radial, axis=1, keepdims=True) + 1e-6)
-        vec_norm = vectors_filt / (np.linalg.norm(vectors_filt, axis=1, keepdims=True) + 1e-6)
-        dot = np.sum(radial_norm * vec_norm, axis=1)
-        return np.mean(1 - np.abs(dot))
-    
-    result = minimize(foe_error, [cx, cy], method='Nelder-Mead')
-    foe_x, foe_y = result.x
-    confidence = 1 - result.fun
-    
-    pixels_per_degree = width / 156.0
+
+    # --- RANSAC: найти FOE, устойчивый к вращательным выбросам ---
+    best_n_inliers = 0
+    best_foe = np.array([cx, cy])
+    best_inlier_mask = np.zeros(len(points_filt), dtype=bool)
+    rng = np.random.default_rng(42)
+
+    sample_size = min(ransac_sample_size, len(points_filt))
+
+    for _ in range(n_ransac):
+        idx = rng.choice(len(points_filt), size=sample_size, replace=False)
+        foe_candidate, _ = _fit_foe_on_subset(
+            points_filt[idx], vectors_filt[idx], cx, cy
+        )
+
+        # Подсчёт inliers: dot > threshold (вектор направлен от FOE)
+        dot = _foe_error_directed(points_filt, vectors_filt, foe_candidate)
+        inlier_mask = dot > inlier_threshold
+        n_inliers = np.sum(inlier_mask)
+
+        if n_inliers > best_n_inliers:
+            best_n_inliers = n_inliers
+            best_foe = foe_candidate
+            best_inlier_mask = inlier_mask
+
+    # Финальная оценка на всех inliers лучшей модели
+    if best_n_inliers >= 30:
+        foe_final, confidence = _fit_foe_on_subset(
+            points_filt[best_inlier_mask], vectors_filt[best_inlier_mask],
+            best_foe[0], best_foe[1]
+        )
+        foe_x, foe_y = foe_final
+    else:
+        # Мало inliers — используем лучший RANSAC-результат напрямую
+        foe_x, foe_y = best_foe
+        dot = _foe_error_directed(points_filt, vectors_filt, best_foe)
+        confidence = float(np.mean(np.clip(dot, 0, 1)))
+
     tilt_h = (foe_x - cx) / pixels_per_degree
     tilt_v = (foe_y - cy) / pixels_per_degree
-    
-    diagonal = np.sqrt(width**2 + height**2)
+
+    max_foe_distance = 1.5 * max(width, height)
     foe_distance = np.sqrt((foe_x - cx)**2 + (foe_y - cy)**2)
-    max_foe_distance = 3 * diagonal
-    
-    is_outlier = (
-        foe_distance > max_foe_distance or
-        abs(tilt_h) > max_tilt_deg or
-        abs(tilt_v) > max_tilt_deg or
-        not np.isfinite(foe_x) or
-        not np.isfinite(foe_y)
-    )
-    
-    if is_outlier:
+
+    # Ветка 1: NaN/бесконечность или FOE улетел за пределы кадра — невалидно
+    if not np.isfinite(foe_x) or not np.isfinite(foe_y) or foe_distance > max_foe_distance:
         return FOEResult(cx, cy, 0.0, 0.0, 0.0, len(points_filt))
-    
+
+    # Ветка 2: угол превышает физический предел — клэмп до ±max_tilt_deg,
+    # но confidence=0: строка видна в CSV, но исключена из сглаживания и size-коррекции
+    if abs(tilt_h) > max_tilt_deg or abs(tilt_v) > max_tilt_deg:
+        tilt_h = float(np.clip(tilt_h, -max_tilt_deg, max_tilt_deg))
+        tilt_v = float(np.clip(tilt_v, -max_tilt_deg, max_tilt_deg))
+        foe_x = cx + tilt_h * pixels_per_degree
+        foe_y = cy + tilt_v * pixels_per_degree
+        return FOEResult(foe_x, foe_y, tilt_h, tilt_v, 0.0, len(points_filt))
+
+    # Ветка 3: валидный результат
     return FOEResult(foe_x, foe_y, tilt_h, tilt_v, confidence, len(points_filt))
 
 
@@ -1412,7 +1477,8 @@ def process_video_geometry(
         if frame_idx % frame_interval == 0 and len(interval_points) > 50:
             points_arr = np.array(interval_points)
             vectors_arr = np.array(interval_vectors)
-            foe = estimate_foe(points_arr, vectors_arr, (width, height))
+            foe = estimate_foe(points_arr, vectors_arr, (width, height),
+                               calibration=calibration)
 
             results.append({
                 'frame_start': interval_start,
@@ -1433,30 +1499,42 @@ def process_video_geometry(
         prev_gray = gray
 
     cap.release()
-    
+
     df = pd.DataFrame(results)
-    
+
+    # Временное сглаживание: скользящая медиана по tilt (окно=3)
+    # Наклон камеры меняется плавно, резкие скачки = шум/вращение
+    if len(df) >= 3:
+        for col in ('tilt_horizontal_deg', 'tilt_vertical_deg'):
+            if col in df.columns:
+                valid_mask = df['confidence'] > 0
+                if valid_mask.sum() >= 3:
+                    smoothed = df.loc[valid_mask, col].rolling(
+                        window=3, min_periods=1, center=True
+                    ).median()
+                    df.loc[valid_mask, col] = smoothed.round(1)
+
     if output_csv and len(df) > 0:
         Path(output_csv).parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(output_csv, index=False)
         if verbose:
             print(f"Сохранено: {output_csv}")
-    
+
     if verbose and len(df) > 0:
         if 'confidence' in df.columns:
             valid_df = df[df['confidence'] >= 0.5]
         else:
             valid_df = df
-        
+
         if len(valid_df) > 0:
             total_tilt = np.sqrt(
-                valid_df['tilt_horizontal_deg'].mean()**2 + 
+                valid_df['tilt_horizontal_deg'].mean()**2 +
                 valid_df['tilt_vertical_deg'].mean()**2
             )
             n_outliers = len(df) - len(valid_df)
             outlier_info = f" (отфильтровано выбросов: {n_outliers})" if n_outliers > 0 else ""
             print(f"Средний наклон: {total_tilt:.1f}°{outlier_info}")
-    
+
     return df
 
 

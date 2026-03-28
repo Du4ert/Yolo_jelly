@@ -26,7 +26,7 @@
     "dive_panel_expanded": [
       [
         0,
-        3
+        1
       ],
       [
         1,
@@ -34,9 +34,17 @@
       ]
     ],
     "task_table_expanded": [
+      71,
+      136,
+      137,
+      138,
+      139,
       73,
+      141,
+      142,
+      143,
       74,
-      71
+      75
     ],
     "task_table_expanded_groups": [
       3
