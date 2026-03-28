@@ -959,6 +959,7 @@ class GeometryDialog(QDialog):
             self.result_text.append(f"Всего треков с размерами: {result.total_tracks}")
             self.result_text.append(f"  - k-метод: {result.tracks_with_k_method}")
             self.result_text.append(f"  - фиксированный: {result.tracks_with_fixed}")
+            self.result_text.append(f"  - параллакс: {result.tracks_with_parallax}")
             self.result_text.append(f"  - типичный: {result.tracks_with_typical}")
             if result.tilt_correction_applied:
                 self.result_text.append(f"  ✔ Применена коррекция наклона")

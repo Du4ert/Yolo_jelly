@@ -41,6 +41,7 @@ class SizeEstimationResult:
     tracks_csv_path: Optional[str] = None
     tracks_with_k_method: int = 0
     tracks_with_fixed: int = 0
+    tracks_with_parallax: int = 0
     tracks_with_typical: int = 0
     total_tracks: int = 0
     tilt_correction_applied: bool = False
@@ -284,6 +285,7 @@ class SizeEstimationProcessor:
             # Статистика по методам
             k_method = 0
             fixed = 0
+            parallax = 0
             typical = 0
             tilt_applied = False
             
@@ -292,6 +294,7 @@ class SizeEstimationProcessor:
                     method_counts = tracks_df['method'].value_counts()
                     k_method = method_counts.get('k_method', 0)
                     fixed = method_counts.get('fixed', 0)
+                    parallax = method_counts.get('parallax', 0)
                     typical = method_counts.get('typical', 0)
                 
                 # Проверяем, была ли применена коррекция наклона
@@ -306,6 +309,7 @@ class SizeEstimationProcessor:
                 tracks_csv_path=tracks_csv,
                 tracks_with_k_method=int(k_method),
                 tracks_with_fixed=int(fixed),
+                tracks_with_parallax=int(parallax),
                 tracks_with_typical=int(typical),
                 total_tracks=len(tracks_df) if tracks_df is not None else 0,
                 tilt_correction_applied=tilt_applied

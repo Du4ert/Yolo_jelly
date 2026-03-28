@@ -70,7 +70,7 @@ class CameraCalibration:
     pixel_calib_D: float = -1.25
     
     # Диапазон надёжных измерений (по SNR анализу)
-    min_reliable_distance: float = 0.3   # ближе - слишком крупно
+    min_reliable_distance: float = 0.1   # ближе - слишком крупно
     max_reliable_distance: float = 3.0   # дальше - шум > сигнал
 
     # Радиальная дисторсия (коррекция fisheye GoPro 156°)
@@ -81,6 +81,10 @@ class CameraCalibration:
     distortion_k2: float = 0.0
     optical_center_x: float = 0.5  # нормализован (0..1 от ширины)
     optical_center_y: float = 0.5  # нормализован (0..1 от высоты)
+
+    # Параллакс-метод: перцентиль скорости оптического потока для референса.
+    # Объекты на P95 скорости считаются на дистанции min_reliable_distance.
+    parallax_ref_percentile: float = 95.0
 
     @property
     def pixels_per_degree(self) -> float:
@@ -116,6 +120,7 @@ class CameraCalibration:
             optical_center_y=data.get('optical_center_y', 0.5),
             frame_width=data.get('frame_width', 3840),
             frame_height=data.get('frame_height', 2160),
+            parallax_ref_percentile=data.get('parallax_ref_percentile', 95.0),
         )
 
     def to_json(self, json_path: str):
@@ -130,6 +135,7 @@ class CameraCalibration:
             'distortion_k2': self.distortion_k2,
             'optical_center_x': self.optical_center_x,
             'optical_center_y': self.optical_center_y,
+            'parallax_ref_percentile': self.parallax_ref_percentile,
         }
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
@@ -304,6 +310,29 @@ def estimate_foe(
 
     # Ветка 3: валидный результат
     return FOEResult(foe_x, foe_y, tilt_h, tilt_v, confidence, len(points_filt))
+
+
+def _classify_flow_regime(
+    foe_confidence: float,
+    flow_direction_std_deg: float,
+    flow_median_speed: float,
+    min_parallel_speed: float = 2.0,
+    max_parallel_direction_std: float = 45.0,
+    min_radial_confidence: float = 0.5,
+) -> str:
+    """Классифицирует режим оптического потока.
+
+    Returns:
+        'radial'    — FOE надёжный, k-метод применим
+        'parallel'  — параллельный поток (снос/наклон), параллакс-метод применим
+        'ambiguous' — неопределённый (ни один метод не надёжен)
+    """
+    if foe_confidence >= min_radial_confidence:
+        return 'radial'
+    if (flow_direction_std_deg < max_parallel_direction_std
+            and flow_median_speed > min_parallel_speed):
+        return 'parallel'
+    return 'ambiguous'
 
 
 # =============================================================================
@@ -975,7 +1004,8 @@ def estimate_size_from_typical(
     else:
         distance = 1.5
     
-    distance = np.clip(distance, 0.2, 5.0)
+    distance = np.clip(distance, calibration.min_reliable_distance,
+                       calibration.max_reliable_distance + 2.0)
     
     if pd.notna(camera_depth_max):
         object_depth = camera_depth_max + distance  # камера смотрит вниз, объект глубже
@@ -999,6 +1029,136 @@ def estimate_size_from_typical(
         method="typical",
         n_points_used=len(valid_df),
         warnings=["estimated_from_typical_size"]
+    )
+
+
+def estimate_size_by_parallax(
+    track_df: pd.DataFrame,
+    calibration: CameraCalibration,
+    geometry_df: pd.DataFrame,
+    frame_width: int = 3840,
+    frame_height: int = 2160,
+    min_track_points: int = 3,
+) -> Optional[TrackSizeEstimate]:
+    """Оценивает размер объекта по параллаксу движения.
+
+    При боковом потоке (параллельном режиме) ближние объекты движутся быстрее.
+    Скорость ближнего снега (P95) на известной дистанции даёт масштаб:
+        d_obj = d_ref × (v_ref / v_obj)
+    """
+    track_id = track_df['track_id'].iloc[0]
+    class_name = track_df['class_name'].iloc[0]
+
+    if class_name in FIXED_SIZE_CLASSES:
+        return None
+
+    valid_df = track_df.sort_values('frame').reset_index(drop=True)
+    if len(valid_df) < min_track_points:
+        return None
+
+    # Найти параллельные интервалы, пересекающиеся с треком
+    track_start = int(valid_df['frame'].iloc[0])
+    track_end = int(valid_df['frame'].iloc[-1])
+
+    parallel_intervals = geometry_df[
+        (geometry_df['flow_regime'] == 'parallel')
+        & (geometry_df['frame_start'] < track_end)
+        & (geometry_df['frame_end'] > track_start)
+    ]
+
+    if len(parallel_intervals) == 0:
+        return None
+
+    # Средняя скорость фона (P95) по параллельным интервалам
+    v_ref = float(parallel_intervals['flow_p95_speed'].median())
+    if v_ref < 1.0:
+        return None
+
+    # Скорость объекта: медиана покадровых смещений центра bbox
+    x_px = valid_df['x_center'].values * frame_width
+    y_px = valid_df['y_center'].values * frame_height
+    frames = valid_df['frame'].values
+
+    dx = np.diff(x_px)
+    dy = np.diff(y_px)
+    d_frames = np.diff(frames).astype(float)
+    d_frames[d_frames == 0] = 1.0
+
+    speeds = np.sqrt(dx**2 + dy**2) / d_frames  # px/кадр
+    v_obj = float(np.median(speeds))
+
+    if v_obj < 0.5:
+        return None  # объект почти неподвижен — дистанция неопределима
+
+    # Дистанция по параллаксу
+    d_ref = calibration.min_reliable_distance
+    d_obj = d_ref * (v_ref / v_obj)
+    d_obj = float(np.clip(d_obj, calibration.min_reliable_distance,
+                          calibration.max_reliable_distance))
+
+    # Размер через стандартную калибровку
+    _, max_row, max_size_pix = _find_max_size_frame(
+        valid_df, frame_width, frame_height, calibration)
+    max_size_pix_ref = max_size_pix / calibration.resolution_scale
+    pixel_calib = _calculate_pixel_calibration(d_obj, calibration)
+    size_mm = _calculate_size_mm(max_size_pix_ref, pixel_calib)
+
+    camera_depth = max_row.get('depth_m', np.nan)
+    if pd.notna(camera_depth):
+        object_depth = camera_depth + d_obj
+    else:
+        object_depth = np.nan
+
+    max_frame = int(max_row['frame'])
+
+    # Confidence: базовый 0.5, штрафы
+    confidence = 0.5
+    warnings = []
+
+    # Плохая дискриминация: v_obj слишком близко к v_ref
+    velocity_ratio = v_obj / v_ref
+    if velocity_ratio > 0.7:
+        confidence *= 0.7
+        warnings.append("low_parallax_discrimination")
+
+    # Мало параллельных интервалов
+    if len(parallel_intervals) == 1:
+        confidence *= 0.9
+        warnings.append("single_parallel_interval")
+
+    # Дистанция на границе надёжного диапазона
+    if d_obj >= calibration.max_reliable_distance:
+        confidence *= 0.5
+        warnings.append("distance_above_reliable")
+    elif d_obj <= calibration.min_reliable_distance:
+        confidence *= 0.8
+        warnings.append("distance_too_close")
+
+    # Проверка по типичным размерам вида
+    if class_name in TYPICAL_SIZES_CM:
+        typical = TYPICAL_SIZES_CM[class_name]
+        size_cm = size_mm / 10.0
+        if size_cm < typical['min'] / 3 or size_cm > typical['max'] * 3:
+            confidence *= 0.5
+            warnings.append("size_outside_typical")
+
+    return TrackSizeEstimate(
+        track_id=track_id,
+        class_name=class_name,
+        real_size_mm=round(size_mm, 1),
+        real_size_cm=round(size_mm / 10.0, 2),
+        distance_m=round(d_obj, 3),
+        object_depth_m=round(object_depth, 2) if pd.notna(object_depth) else None,
+        first_frame=max_frame,
+        first_size_pixels=round(max_size_pix, 1),
+        camera_depth_first=round(camera_depth, 2) if pd.notna(camera_depth) else None,
+        k_mean=0.0,
+        k_std=0.0,
+        pixel_calibration=round(pixel_calib, 4),
+        confidence=round(confidence, 3),
+        method="parallax",
+        n_points_used=len(valid_df),
+        warnings=warnings,
     )
 
 
@@ -1252,8 +1412,9 @@ def process_detections_with_size(
     Обрабатывает детекции и добавляет оценки размеров.
     
     Стратегия:
-    1. Сначала пытаемся k-метод для треков с хорошими данными
-    2. Fallback — оценка по типичным размерам вида
+    1. k-метод для треков с хорошими данными (вертикальный спуск)
+    2. Параллакс-метод для треков в зонах бокового потока
+    3. Fallback — оценка по типичным размерам вида
     
     Args:
         detections_csv: CSV с детекциями
@@ -1295,7 +1456,7 @@ def process_detections_with_size(
 
     # Разделяем треки по типу обработки
     tracks_for_k_method = []
-    tracks_for_typical = []
+    tracks_after_k = []  # треки, для которых k-метод не сработал
 
     for track_id, track_df in df.groupby('track_id'):
         if pd.isna(track_id):
@@ -1338,11 +1499,35 @@ def process_detections_with_size(
             else:
                 tdf = futures[future]
                 track_id = tdf['track_id'].iloc[0]
-                tracks_for_typical.append((track_id, tdf))
+                tracks_after_k.append((track_id, tdf))
 
     if verbose:
         print(f"\nТреков с фиксированным размером: {len(fixed_estimates)}")
         print(f"Треков с k-методом: {len(k_method_estimates)}")
+
+    # Этап 1.5: параллакс-метод для треков с параллельным потоком
+    parallax_estimates = []
+    tracks_for_typical = []
+
+    has_parallax_data = (geometry_df is not None
+                         and 'flow_regime' in geometry_df.columns)
+
+    if has_parallax_data:
+        for track_id, track_df in tracks_after_k:
+            estimate = estimate_size_by_parallax(
+                track_df, calibration, geometry_df,
+                frame_width=frame_width, frame_height=frame_height,
+                min_track_points=min_track_points,
+            )
+            if estimate is not None:
+                parallax_estimates.append(estimate)
+            else:
+                tracks_for_typical.append((track_id, track_df))
+    else:
+        tracks_for_typical = tracks_after_k
+
+    if verbose:
+        print(f"Треков с параллаксом: {len(parallax_estimates)}")
         print(f"Треков для типичной оценки: {len(tracks_for_typical)}")
 
     # Этап 2: оценка по типичным размерам
@@ -1352,12 +1537,13 @@ def process_detections_with_size(
         estimate = estimate_size_from_typical(track_df, calibration)
         if estimate is not None:
             typical_estimates.append(estimate)
-    
+
     if verbose:
         print(f"Треков с типичной оценкой: {len(typical_estimates)}")
-    
+
     # Объединяем все оценки
-    all_estimates = fixed_estimates + k_method_estimates + typical_estimates
+    all_estimates = (fixed_estimates + k_method_estimates
+                     + parallax_estimates + typical_estimates)
     
     if verbose:
         print(f"\nВсего треков с оценкой: {len(all_estimates)}")
@@ -1480,6 +1666,28 @@ def process_video_geometry(
             foe = estimate_foe(points_arr, vectors_arr, (width, height),
                                calibration=calibration)
 
+            # Статистика оптического потока для параллакс-метода
+            vec_magnitudes = np.linalg.norm(vectors_arr, axis=1)
+            valid_flow = vec_magnitudes > 1.0
+            if valid_flow.sum() > 10:
+                valid_mags = vec_magnitudes[valid_flow]
+                valid_vecs = vectors_arr[valid_flow]
+                flow_median_speed = float(np.median(valid_mags))
+                flow_p95_speed = float(np.percentile(
+                    valid_mags, calibration.parallax_ref_percentile))
+                # Круговое стд направлений: R = |mean(exp(iθ))|, σ = √(-2·ln(R))
+                angles = np.arctan2(valid_vecs[:, 1], valid_vecs[:, 0])
+                R = float(np.abs(np.mean(np.exp(1j * angles))))
+                flow_direction_std_deg = float(np.degrees(
+                    np.sqrt(-2.0 * np.log(max(R, 1e-6)))))
+            else:
+                flow_median_speed = 0.0
+                flow_p95_speed = 0.0
+                flow_direction_std_deg = 180.0
+
+            flow_regime = _classify_flow_regime(
+                foe.confidence, flow_direction_std_deg, flow_median_speed)
+
             results.append({
                 'frame_start': interval_start,
                 'frame_end': frame_idx,
@@ -1489,7 +1697,11 @@ def process_video_geometry(
                 'tilt_horizontal_deg': round(foe.tilt_horizontal, 1),
                 'tilt_vertical_deg': round(foe.tilt_vertical, 1),
                 'confidence': round(foe.confidence, 3),
-                'n_vectors': foe.n_vectors
+                'n_vectors': foe.n_vectors,
+                'flow_median_speed': round(flow_median_speed, 2),
+                'flow_p95_speed': round(flow_p95_speed, 2),
+                'flow_direction_std_deg': round(flow_direction_std_deg, 1),
+                'flow_regime': flow_regime,
             })
 
             interval_points = []

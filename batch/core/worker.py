@@ -397,6 +397,8 @@ class Worker(QThread):
             parts.append(f"{result.tracks_with_k_method} k-метод")
         if result.tracks_with_fixed > 0:
             parts.append(f"{result.tracks_with_fixed} фикс.")
+        if result.tracks_with_parallax > 0:
+            parts.append(f"{result.tracks_with_parallax} параллакс")
         if result.tracks_with_typical > 0:
             parts.append(f"{result.tracks_with_typical} тип.")
         
