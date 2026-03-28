@@ -222,6 +222,7 @@ class SizeEstimationProcessor:
         min_size_change_ratio: float = 0.3,
         apply_tilt_correction: bool = True,
         calibration_json: Optional[str] = None,
+        min_reliable_distance: Optional[float] = None,
     ) -> SizeEstimationResult:
         """
         Запускает оценку размеров.
@@ -264,6 +265,9 @@ class SizeEstimationProcessor:
                 calibration = CameraCalibration()
                 calibration.frame_width = frame_width
                 calibration.frame_height = frame_height
+
+            if min_reliable_distance is not None:
+                calibration.min_reliable_distance = min_reliable_distance
 
             # Обработка
             df, tracks_df = process_detections_with_size(

@@ -372,6 +372,7 @@ class Worker(QThread):
         apply_tilt_correction = use_geometry and geometry_csv and os.path.exists(geometry_csv)
 
         calibration_json = params.get("calibration_json")
+        min_reliable_distance = params.get("min_reliable_distance")
 
         processor = SizeEstimationProcessor()
         result = processor.process(
@@ -383,6 +384,7 @@ class Worker(QThread):
             frame_height=video.height or 1080,
             apply_tilt_correction=apply_tilt_correction,
             calibration_json=calibration_json,
+            min_reliable_distance=min_reliable_distance,
         )
         
         if not result.success:
@@ -447,7 +449,7 @@ class Worker(QThread):
             tracks_csv=track_sizes_csv,  # Передаём статистику размеров, а не треки детекции
             ctd_csv=ctd_csv,
             fov=params.get("fov", 156.0),
-            near_distance=params.get("near_distance", 0.3),
+            near_distance=params.get("min_reliable_distance", 0.1),
             fps=video.fps or 60.0,
             frame_width=video.width or 1920,
             frame_height=video.height or 1080,
@@ -573,7 +575,7 @@ class Worker(QThread):
             # Параметры постобработки
             postprocess_params = {
                 'fov': current_params.get('fov', 156.0),
-                'near_distance': current_params.get('near_distance', 0.3),
+                'near_distance': current_params.get('min_reliable_distance', 0.1),
                 'depth_bin': current_params.get('depth_bin', 2.0),
             }
             processing_info['postprocess_params'] = postprocess_params
@@ -707,7 +709,7 @@ class Worker(QThread):
                 "volume": True,
                 "analysis": True,
                 "fov": 156.0,
-                "near_distance": 0.3,
+                "min_reliable_distance": 0.1,
                 "depth_bin": 2.0,
             }
         
@@ -721,7 +723,7 @@ class Worker(QThread):
         # Общие параметры для всех подзадач
         common_params = {
             "fov": params.get("fov", 156.0),
-            "near_distance": params.get("near_distance", 0.3),
+            "min_reliable_distance": params.get("min_reliable_distance", 0.1),
             "depth_bin": params.get("depth_bin", 2.0),
         }
         

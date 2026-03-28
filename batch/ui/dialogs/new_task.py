@@ -355,7 +355,7 @@ class NewTaskDialog(QDialog):
                 "analysis": self.pp_chk_analysis.isChecked(),
                 # Параметры
                 "fov": self.pp_spin_fov.value(),
-                "near_distance": self.pp_spin_near.value(),
+                "min_reliable_distance": self.pp_spin_min_reliable.value(),
                 "depth_bin": self.pp_spin_depth_bin.value(),
                 "ctd_columns": self.pp_edit_ctd_columns.text().strip() or "6",
                 "frame_step": self.pp_spin_frame_step.value(),
@@ -512,14 +512,14 @@ class NewTaskDialog(QDialog):
         self.pp_spin_fov.setToolTip("Горизонтальный угол обзора камеры (GoPro 12 Wide 4K ~156°)")
         params_form.addRow("FOV камеры:", self.pp_spin_fov)
         
-        self.pp_spin_near = QDoubleSpinBox()
-        self.pp_spin_near.setRange(0.1, 2.0)
-        self.pp_spin_near.setValue(0.3)
-        self.pp_spin_near.setSingleStep(0.1)
-        self.pp_spin_near.setSuffix(" м")
-        self.pp_spin_near.setToolTip("Ближняя граница обнаружения (мёртвая зона)")
-        params_form.addRow("Ближняя дистанция:", self.pp_spin_near)
-        
+        self.pp_spin_min_reliable = QDoubleSpinBox()
+        self.pp_spin_min_reliable.setRange(0.05, 2.0)
+        self.pp_spin_min_reliable.setValue(0.1)
+        self.pp_spin_min_reliable.setSingleStep(0.05)
+        self.pp_spin_min_reliable.setSuffix(" м")
+        self.pp_spin_min_reliable.setToolTip("Ближняя дистанция: граница обнаружения для объёма и минимум для оценки размеров")
+        params_form.addRow("Ближняя дистанция:", self.pp_spin_min_reliable)
+
         self.pp_spin_depth_bin = QDoubleSpinBox()
         self.pp_spin_depth_bin.setRange(0.5, 10.0)
         self.pp_spin_depth_bin.setValue(2.0)

@@ -254,14 +254,14 @@ class PostProcessDialog(QDialog):
         self.spin_fov.setToolTip("Горизонтальный угол обзора камеры (GoPro 12 Wide 4K ~156°)")
         params_layout.addRow("FOV камеры:", self.spin_fov)
         
-        self.spin_near = QDoubleSpinBox()
-        self.spin_near.setRange(0.1, 2.0)
-        self.spin_near.setValue(0.3)
-        self.spin_near.setSingleStep(0.1)
-        self.spin_near.setSuffix(" м")
-        self.spin_near.setToolTip("Ближняя граница обнаружения (мёртвая зона)")
-        params_layout.addRow("Ближняя дистанция:", self.spin_near)
-        
+        self.spin_min_reliable = QDoubleSpinBox()
+        self.spin_min_reliable.setRange(0.05, 2.0)
+        self.spin_min_reliable.setValue(0.1)
+        self.spin_min_reliable.setSingleStep(0.05)
+        self.spin_min_reliable.setSuffix(" м")
+        self.spin_min_reliable.setToolTip("Ближняя дистанция: граница обнаружения для объёма и минимум для оценки размеров")
+        params_layout.addRow("Ближняя дистанция:", self.spin_min_reliable)
+
         self.spin_depth_bin = QDoubleSpinBox()
         self.spin_depth_bin.setRange(0.5, 10.0)
         self.spin_depth_bin.setValue(2.0)
@@ -480,7 +480,7 @@ class PostProcessDialog(QDialog):
         # Собираем параметры в JSON
         params = {
             "fov": self.spin_fov.value(),
-            "near_distance": self.spin_near.value(),
+            "min_reliable_distance": self.spin_min_reliable.value(),
             "depth_bin": self.spin_depth_bin.value(),
             "ctd_columns": self.edit_ctd_columns.text().strip() or "6",
         }

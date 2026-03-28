@@ -266,7 +266,7 @@ def generate_report(
             if post_params:
                 f.write("\nПараметры постобработки:\n")
                 f.write(f"  FOV камеры: {post_params.get('fov', 'N/A')}°\n")
-                f.write(f"  Ближняя дистанция: {post_params.get('near_distance', 'N/A')} м\n")
+                f.write(f"  Ближняя дистанция: {post_params.get('near_distance', post_params.get('min_reliable_distance', 'N/A'))} м\n")
                 f.write(f"  Бин глубины: {post_params.get('depth_bin', 'N/A')} м\n")
             
             # Информация о подзадачах

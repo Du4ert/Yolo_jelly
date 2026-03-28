@@ -2770,7 +2770,7 @@ def main():
     vol.add_argument('--ctd', '-c')
     vol.add_argument('--output', '-o')
     vol.add_argument('--fov', type=float, default=156.0)
-    vol.add_argument('--near-distance', type=float, default=0.3)
+    vol.add_argument('--near-distance', type=float, default=0.1)
     vol.add_argument('--detection-distance', type=float)
     vol.add_argument('--depth-min', type=float)
     vol.add_argument('--depth-max', type=float)
