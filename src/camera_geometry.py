@@ -501,8 +501,29 @@ def _find_size_pairs(
             i = found_j
             continue
 
-        delta_pixels = pixels2 - pixels1
-        k_raw = (delta_pixels / pixels1) / delta_depth
+        # k из сырых пикселей (без дисторсии) — для восстановления delta_depth при калибровке
+        k_raw_uncorrected = ((pixels2 - pixels1) / pixels1) / delta_depth
+
+        # Коррекция дисторсии обоих пикселей ПЕРЕД вычислением k
+        pixels1_for_k = pixels1
+        pixels2_for_k = pixels2
+        if has_distortion:
+            cx1 = xcenter_arr[i] * frame_width
+            cy1 = ycenter_arr[i] * frame_height
+            r1 = np.sqrt((cx1 - ocx)**2 + (cy1 - ocy)**2) / diag_half
+            df1 = 1.0 + k1 * r1**2 + k2 * r1**4
+            if df1 > 0:
+                pixels1_for_k = pixels1 * df1
+
+            cx2 = xcenter_arr[found_j] * frame_width
+            cy2 = ycenter_arr[found_j] * frame_height
+            r2 = np.sqrt((cx2 - ocx)**2 + (cy2 - ocy)**2) / diag_half
+            df2 = 1.0 + k1 * r2**2 + k2 * r2**4
+            if df2 > 0:
+                pixels2_for_k = pixels2 * df2
+
+        delta_pixels = pixels2_for_k - pixels1_for_k
+        k_raw = (delta_pixels / pixels1_for_k) / delta_depth
         k = k_raw
 
         cos_tilt = 1.0
@@ -522,20 +543,9 @@ def _find_size_pairs(
             distance = _calculate_distance_from_k(k_percent, calibration)
             pixel_calib = _calculate_pixel_calibration(distance, calibration)
 
-            # Коррекция дисторсии: применяем к пикселям конечного кадра
-            # перед вычислением size_mm (как в _compute_sizes_from_pairs)
-            corrected_pixels2 = pixels2
-            if has_distortion:
-                cx = xcenter_arr[found_j] * frame_width
-                cy = ycenter_arr[found_j] * frame_height
-                r = np.sqrt((cx - ocx)**2 + (cy - ocy)**2) / diag_half
-                distortion_factor = 1.0 + k1 * r**2 + k2 * r**4
-                if distortion_factor > 0:
-                    corrected_pixels2 = pixels2 * distortion_factor
-
-            # Нормализуем пиксели к референсному разрешению (3840px),
-            # т.к. pixel_calib откалиброван для REFERENCE_FRAME_WIDTH
-            pixels2_ref = corrected_pixels2 / calibration.resolution_scale
+            # Используем скорректированные пиксели конечного кадра (уже посчитаны выше)
+            # Нормализуем к референсному разрешению (3840px)
+            pixels2_ref = pixels2_for_k / calibration.resolution_scale
             size_mm = _calculate_size_mm(pixels2_ref, pixel_calib)
             camera_depth_end = depth2
             object_depth = camera_depth_end + distance
@@ -546,13 +556,14 @@ def _find_size_pairs(
                 'frame_mid': (frame1 + frame2) / 2,
                 'k': k,
                 'k_percent': k_percent,
-                'k_raw_percent': k_raw * 100,
+                'k_raw_percent': k_raw_uncorrected * 100,
                 'cos_tilt': cos_tilt,
                 'tilt_deg': tilt_deg_pair,
                 'distance': distance,
                 'pixel_calib': pixel_calib,
                 'size_mm': size_mm,
                 'size_pixels': pixels2,
+                'size_pixels_start': pixels1,
                 'depth_camera': camera_depth_end,
                 'object_depth': object_depth,
                 'size_change_pct': (pixels2 / pixels1 - 1) * 100
@@ -2059,28 +2070,82 @@ def process_volume_estimation(
 # Калибровка коэффициентов
 # =============================================================================
 
+def _corrected_k_percent(p: dict, k1: float, k2: float) -> float:
+    """
+    Пересчитывает k_percent с учётом коррекции дисторсии обоих концов пары.
+
+    Barrel distortion увеличивает видимый размер объектов на краях кадра.
+    Без коррекции k завышается для объектов, движущихся от центра к краю,
+    что приводит к занижению расстояния и искажению размеров.
+    """
+    pixels_start = p.get('size_pixels_start')
+    if pixels_start is None or pixels_start <= 0:
+        return max(p['k_percent'], 1.0)
+
+    pixels_end = p['size_pixels']
+
+    # Коррекция дисторсии обоих концов
+    r_end = p.get('r_norm', 0.0)
+    df_end = 1.0 + k1 * r_end**2 + k2 * r_end**4
+    if df_end <= 0:
+        df_end = 1.0
+
+    r_start = p.get('r_norm_start', 0.0)
+    df_start = 1.0 + k1 * r_start**2 + k2 * r_start**4
+    if df_start <= 0:
+        df_start = 1.0
+
+    corrected_end = pixels_end * df_end
+    corrected_start = pixels_start * df_start
+
+    # Восстанавливаем delta_depth из оригинального k_raw
+    k_raw_orig = p.get('k_raw_percent', p['k_percent']) / 100.0
+    if abs(k_raw_orig) < 1e-9 or corrected_start <= 0:
+        return max(p['k_percent'], 1.0)
+
+    delta_pix_orig = pixels_end - pixels_start
+    delta_depth = (delta_pix_orig / pixels_start) / k_raw_orig
+
+    if abs(delta_depth) < 1e-6:
+        return max(p['k_percent'], 1.0)
+
+    delta_pix_corr = corrected_end - corrected_start
+    k_raw_new = (delta_pix_corr / corrected_start) / delta_depth
+    cos_tilt = p.get('cos_tilt', 1.0)
+    k_new = k_raw_new / cos_tilt
+
+    return max(k_new * 100, 1.0)
+
+
 def _compute_sizes_from_pairs(
     pairs: List[dict],
     A: float, B: float, C: float, D: float,
     k1: float, k2: float,
-    resolution_scale: float
+    resolution_scale: float,
 ) -> np.ndarray:
     """
     Быстрое вычисление размеров по предвычисленным парам для заданных коэффициентов.
     Используется в цикле оптимизации — не перечитывает CSV.
+
+    Коррекция дисторсии применяется к ОБОИМ пикселям пары (start и end) ПЕРЕД
+    пересчётом k, чтобы barrel distortion на краях кадра не искажала k-значение.
     """
     sizes = np.empty(len(pairs))
     for i, p in enumerate(pairs):
-        k_abs = max(p['k_percent'], 1.0)
-        distance = A * (k_abs ** B)
+        # Пересчитываем k с учётом дисторсии обоих концов пары
+        k_percent = _corrected_k_percent(p, k1, k2)
+
+        distance = A * (k_percent ** B)
         pixel_calib = C * (max(distance, 0.1) ** D)
 
-        # Коррекция дисторсии
-        r = p.get('r_norm', 0.0)
-        distortion_factor = 1.0 + k1 * r**2 + k2 * r**4
-        corrected_pixels = p['size_pixels'] * distortion_factor if distortion_factor > 0 else p['size_pixels']
+        # Коррекция дисторсии конечного кадра для размера
+        r_end = p.get('r_norm', 0.0)
+        df_end = 1.0 + k1 * r_end**2 + k2 * r_end**4
+        if df_end <= 0:
+            df_end = 1.0
+        corrected_end = p['size_pixels'] * df_end
 
-        pixels_ref = corrected_pixels / resolution_scale
+        pixels_ref = corrected_end / resolution_scale
         sizes[i] = pixels_ref / pixel_calib if pixel_calib > 0 else 0.0
     return sizes
 
@@ -2136,16 +2201,17 @@ def _extract_calibration_pairs(
 
         pair_data_filtered = _filter_pairs_by_mad(pair_data)
 
-        # Добавляем r_norm и координаты конечного кадра
+        # Добавляем r_norm и координаты начального и конечного кадров
+        ocx = frame_width / 2
+        ocy = frame_height / 2
         for p in pair_data_filtered:
+            # Конечный кадр
             frame_end = int(p['frame_end'])
             end_rows = valid_df[valid_df['frame'] == frame_end]
             if len(end_rows) > 0:
                 end_row = end_rows.iloc[0]
                 cx = end_row['x_center'] * frame_width
                 cy = end_row['y_center'] * frame_height
-                ocx = frame_width / 2
-                ocy = frame_height / 2
                 p['r_norm'] = np.sqrt((cx - ocx)**2 + (cy - ocy)**2) / diag_half
                 p['x_center'] = end_row['x_center']
                 p['y_center'] = end_row['y_center']
@@ -2153,6 +2219,17 @@ def _extract_calibration_pairs(
                 p['r_norm'] = 0.0
                 p['x_center'] = 0.5
                 p['y_center'] = 0.5
+
+            # Начальный кадр
+            frame_start = int(p['frame_start'])
+            start_rows = valid_df[valid_df['frame'] == frame_start]
+            if len(start_rows) > 0:
+                start_row = start_rows.iloc[0]
+                cx_s = start_row['x_center'] * frame_width
+                cy_s = start_row['y_center'] * frame_height
+                p['r_norm_start'] = np.sqrt((cx_s - ocx)**2 + (cy_s - ocy)**2) / diag_half
+            else:
+                p['r_norm_start'] = 0.0
 
         result[int(track_id)] = pair_data_filtered
 
@@ -2197,11 +2274,12 @@ def _calibration_loss(
         size_loss += np.mean(huber)
 
         # Distance loss: привязка к известной глубине объекта
+        # Используем скорректированный k (с учётом дисторсии)
         if known_depths and track_id in known_depths:
             track_depth = known_depths[track_id]
             for p in pairs:
-                k_abs = max(p['k_percent'], 1.0)
-                computed_dist = A * (k_abs ** B)
+                k_percent_corr = _corrected_k_percent(p, k1, k2)
+                computed_dist = A * (k_percent_corr ** B)
                 camera_depth = p['depth_camera']
                 true_dist = track_depth - camera_depth
                 if true_dist > 0.05:
@@ -2486,12 +2564,12 @@ def calibrate_coefficients(
         # Шаг 4: Pipeline-оптимизация через эффективные параметры
         # В pipeline: size = pixels * distortion / (C * (A*k^B)^D)
         #                   = pixels * distortion / (E * k^F)
-        # где E = C * A^D, F = B*D — всего 2 параметра для размера + 2 дисторсии.
+        # где E = C * A^D, F = B*D — всего 2 параметра для размера + 3 дисторсии.
         # Итеративно: фитим E, F через OLS, потом k1, k2 из остатков.
         if verbose:
             print(f"\n  Pipeline-оптимизация (эффективные параметры E, F)...")
 
-        # Собираем данные всех пар
+        # Собираем данные всех пар (включая данные для коррекции k)
         all_pairs_k = []
         all_pairs_pixels_ref = []
         all_pairs_r = []
@@ -2507,8 +2585,11 @@ def calibrate_coefficients(
         all_pairs_pixels_ref = np.array(all_pairs_pixels_ref)
         all_pairs_r = np.array(all_pairs_r)
         all_pairs_known = np.array(all_pairs_known)
+        r2_arr = all_pairs_r**2
+        r4_arr = all_pairs_r**4
 
         # Итеративный фит: E, F -> k1, k2 -> повторить
+        # Используем raw k для стабильности OLS
         distortion_f = np.ones(len(all_pairs_k))
         for iteration in range(5):
             # OLS в log-пространстве: log(corrected_pixels / known_size) = log(E) + F*log(k)
@@ -2521,13 +2602,8 @@ def calibrate_coefficients(
 
             # Фит дисторсии из остатков
             size_est_no_dist = all_pairs_pixels_ref / (E * all_pairs_k**F)
-            target_factor = all_pairs_known / size_est_no_dist  # want: distortion * size_est = known
-            # distortion = 1 / target_factor? No: size = pixels * dist / (E*k^F)
-            # target_factor = known / (pixels / (E*k^F)) = known * E * k^F / pixels
-            # We need: pixels * dist / (E*k^F) = known → dist = known * E * k^F / pixels = target_factor
+            target_factor = all_pairs_known / size_est_no_dist
             residuals = target_factor - 1.0
-            r2_arr = all_pairs_r**2
-            r4_arr = all_pairs_r**4
             X_dist = np.column_stack([r2_arr, r4_arr])
             dist_coefs = np.linalg.lstsq(X_dist, residuals, rcond=None)[0]
             k1, k2 = dist_coefs
@@ -2562,6 +2638,7 @@ def calibrate_coefficients(
         C = E / (A**D) if A > 0 else E
         if verbose:
             print(f"  Декомпозиция: A={A:.4f}, B={B:.4f}, C={C:.4f}, D={D:.4f}")
+
 
     else:
         # === Совместная оптимизация без known_depths ===
@@ -2675,7 +2752,7 @@ def calibrate_coefficients(
             estimated = _compute_sizes_from_pairs(pairs, A, B, C, D, k1, k2, resolution_scale)
             median_est = np.median(estimated)
             rel_err = (median_est - known) / known * 100
-            distances = [A * (max(p['k_percent'], 1.0) ** B) for p in pairs]
+            distances = [A * (_corrected_k_percent(p, k1, k2) ** B) for p in pairs]
             r_norms = [p.get('r_norm', 0) for p in pairs]
             print(f"{label:<18}  {known:>8.1f}мм  {median_est:>8.1f}мм  {rel_err:>+8.1f}%  {np.median(distances):>8.2f}  {np.median(r_norms):>7.3f}")
         print("-" * 85)

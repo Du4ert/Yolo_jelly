@@ -1,0 +1,25 @@
+{
+  "distance_coef_A": 25.1384,
+  "distance_coef_B": -0.7476,
+  "pixel_calib_C": 2.6938,
+  "pixel_calib_D": -0.8669,
+  "distortion_k1": -0.756975,
+  "distortion_k2": 0.505858,
+  "optical_center_x": 0.5,
+  "optical_center_y": 0.5,
+  "n_pairs_used": 276,
+  "n_tracks_used": 21,
+  "n_videos_used": 8,
+  "videos": [
+    "1down1",
+    "1down3",
+    "2down",
+    "3down1",
+    "3down2",
+    "3down3",
+    "3down4",
+    "bottom"
+  ],
+  "mean_error_direct_pct": 18.81,
+  "mean_error_pipeline_pct": 11.03
+}
