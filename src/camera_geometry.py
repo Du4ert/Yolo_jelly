@@ -2255,6 +2255,7 @@ def _calibration_loss(
     A, B, C, D, k1, k2 = params
     huber_delta = 0.3
     size_loss = 0.0
+    bias_sum = 0.0
     dist_loss = 0.0
     n_tracks = 0
 
@@ -2272,6 +2273,7 @@ def _calibration_loss(
             huber_delta * abs_err - 0.5 * huber_delta**2
         )
         size_loss += np.mean(huber)
+        bias_sum += np.mean(rel_errors)
 
         # Distance loss: привязка к известной глубине объекта
         # Используем скорректированный k (с учётом дисторсии)
@@ -2294,11 +2296,12 @@ def _calibration_loss(
 
     size_loss /= n_tracks
     dist_loss /= max(n_tracks, 1)
+    mean_bias = bias_sum / n_tracks
 
     # Регуляризация дисторсии (мягкая — не мешает оптимизатору)
     reg_distortion = 0.001 * (k1**2 + k2**2)
 
-    return size_loss + dist_loss + reg_distortion
+    return size_loss + 0.5 * mean_bias**2 + dist_loss + reg_distortion
 
 
 def _fit_power_law(x: np.ndarray, y: np.ndarray) -> Tuple[float, float]:
@@ -2574,17 +2577,22 @@ def calibrate_coefficients(
         all_pairs_pixels_ref = []
         all_pairs_r = []
         all_pairs_known = []
-        for tid in available_tracks:
+        all_pairs_track_idx = []  # индекс трека для per-track усреднения
+        sorted_tracks = sorted(available_tracks)
+        for track_i, tid in enumerate(sorted_tracks):
             known = known_sizes[tid]
             for p in all_track_pairs[tid]:
                 all_pairs_k.append(max(p['k_percent'], 1.0))
                 all_pairs_pixels_ref.append(p['size_pixels'] / resolution_scale)
                 all_pairs_r.append(p.get('r_norm', 0.0))
                 all_pairs_known.append(known)
+                all_pairs_track_idx.append(track_i)
         all_pairs_k = np.array(all_pairs_k)
         all_pairs_pixels_ref = np.array(all_pairs_pixels_ref)
         all_pairs_r = np.array(all_pairs_r)
         all_pairs_known = np.array(all_pairs_known)
+        all_pairs_track_idx = np.array(all_pairs_track_idx)
+        n_tracks_total = len(sorted_tracks)
         r2_arr = all_pairs_r**2
         r4_arr = all_pairs_r**4
 
@@ -2610,6 +2618,7 @@ def calibrate_coefficients(
             distortion_f = 1.0 + k1 * r2_arr + k2 * r4_arr
 
         # Финальная доводка через Nelder-Mead
+        # Per-track усреднение + штраф за систематический bias
         def _eff_loss(params):
             E_, F_, k1_, k2_ = params
             dist_f_ = 1.0 + k1_ * r2_arr + k2_ * r4_arr
@@ -2618,7 +2627,18 @@ def calibrate_coefficients(
             delta = 0.15
             abs_err = np.abs(rel_err)
             huber = np.where(abs_err <= delta, 0.5 * rel_err**2, delta * (abs_err - 0.5 * delta))
-            return np.mean(huber) + 0.0005 * (k1_**2 + k2_**2)
+            # Per-track усреднение (каждый трек весит одинаково)
+            track_losses = np.zeros(n_tracks_total)
+            track_biases = np.zeros(n_tracks_total)
+            for ti in range(n_tracks_total):
+                mask = all_pairs_track_idx == ti
+                if np.any(mask):
+                    track_losses[ti] = np.mean(huber[mask])
+                    track_biases[ti] = np.mean(rel_err[mask])
+            mean_loss = np.mean(track_losses)
+            # Штраф за систематический bias (среднее знаковой ошибки по трекам)
+            mean_bias = np.mean(track_biases)
+            return mean_loss + 0.5 * mean_bias**2 + 0.0005 * (k1_**2 + k2_**2)
 
         nm_result = minimize(
             _eff_loss, [E, F, k1, k2],
@@ -2638,6 +2658,26 @@ def calibrate_coefficients(
         C = E / (A**D) if A > 0 else E
         if verbose:
             print(f"  Декомпозиция: A={A:.4f}, B={B:.4f}, C={C:.4f}, D={D:.4f}")
+
+        # Пост-коррекция bias: вычисляем размеры через валидационный путь
+        # (corrected k) и корректируем C, чтобы убрать систематический сдвиг
+        bias_ratios = []
+        for tid in available_tracks:
+            pairs = all_track_pairs[tid]
+            known = known_sizes[tid]
+            estimated = _compute_sizes_from_pairs(pairs, A, B, C, D, k1, k2, resolution_scale)
+            if len(estimated) > 0:
+                bias_ratios.append(np.median(estimated) / known)
+        if bias_ratios:
+            median_bias_ratio = np.median(bias_ratios)
+            if abs(median_bias_ratio - 1.0) > 0.01:
+                C_old = C
+                C = C * median_bias_ratio
+                # Пересчитываем E для согласованности
+                E = C * (A ** D)
+                if verbose:
+                    print(f"\n  Пост-коррекция bias: медиана отношения оценка/истина = {median_bias_ratio:.4f}")
+                    print(f"  C: {C_old:.4f} -> {C:.4f} (*{median_bias_ratio:.4f})")
 
 
     else:
@@ -2691,6 +2731,7 @@ def calibrate_coefficients(
     # Валидация
     errors_direct = []
     errors_pipeline = []
+    signed_errors_pipeline = []
     direct_rows = []  # Собираем строки прямой валидации
 
     for tid in sorted(available_tracks):
@@ -2727,6 +2768,7 @@ def calibrate_coefficients(
         median_est = np.median(estimated)
         rel_err = (median_est - known) / known * 100
         errors_pipeline.append(abs(rel_err))
+        signed_errors_pipeline.append(rel_err)
 
     if verbose:
         # Прямая валидация (только если есть данные)
@@ -2757,6 +2799,8 @@ def calibrate_coefficients(
             print(f"{label:<18}  {known:>8.1f}мм  {median_est:>8.1f}мм  {rel_err:>+8.1f}%  {np.median(distances):>8.2f}  {np.median(r_norms):>7.3f}")
         print("-" * 85)
         print(f"Средняя ошибка (pipeline): {np.mean(errors_pipeline):.1f}%")
+        mean_bias = np.mean(signed_errors_pipeline)
+        print(f"Средний bias (pipeline):  {mean_bias:+.1f}% ({'завышение' if mean_bias > 0 else 'занижение'})")
 
         print(f"\nКоэффициенты:")
         print(f"  distance: d = {A:.4f} * k^({B:.4f})")
@@ -2781,6 +2825,7 @@ def calibrate_coefficients(
             'videos': [s['name'] for s in video_specs],
             'mean_error_direct_pct': round(float(np.mean(errors_direct)), 2) if errors_direct else None,
             'mean_error_pipeline_pct': round(float(np.mean(errors_pipeline)), 2),
+            'mean_bias_pipeline_pct': round(float(np.mean(signed_errors_pipeline)), 2),
         }
         Path(output_json).parent.mkdir(parents=True, exist_ok=True)
         with open(output_json, 'w', encoding='utf-8') as f:
