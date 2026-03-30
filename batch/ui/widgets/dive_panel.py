@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QGroupBox,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QBrush, QDropEvent
+from PyQt6.QtGui import QColor, QBrush, QDropEvent, QKeyEvent
 
 
 from ...database import Repository, Catalog, Dive, VideoFile, CTDFile
@@ -32,6 +32,7 @@ class _DiveTree(QTreeWidget):
     """QTreeWidget с перехватом drag-drop для сохранения перемещений в БД."""
 
     item_moved = pyqtSignal(object, object, object)  # item, old_parent, new_parent
+    delete_pressed = pyqtSignal()
 
     def dropEvent(self, event: QDropEvent):
         item = self.currentItem()
@@ -40,6 +41,12 @@ class _DiveTree(QTreeWidget):
         new_parent = item.parent() if item else None
         if item is not None and old_parent is not new_parent:
             self.item_moved.emit(item, old_parent, new_parent)
+
+    def keyPressEvent(self, event: QKeyEvent):
+        if event.key() == Qt.Key.Key_Delete:
+            self.delete_pressed.emit()
+        else:
+            super().keyPressEvent(event)
 
 
 class DivePanel(QWidget):
@@ -90,6 +97,7 @@ class DivePanel(QWidget):
         self.tree.setDragDropMode(QTreeWidget.DragDropMode.InternalMove)
         self.tree.setAcceptDrops(True)
         self.tree.item_moved.connect(self._on_item_moved)
+        self.tree.delete_pressed.connect(self._on_delete_key)
         group_layout.addWidget(self.tree)
         
         # Кнопки
@@ -367,6 +375,21 @@ class DivePanel(QWidget):
 
         self.repo.move_dive_to_catalog(dive_id, catalog_id)
         self._load_data()
+
+    def _on_delete_key(self):
+        """Обработка нажатия Delete — удаляет выбранный элемент."""
+        items = self.tree.selectedItems()
+        if not items:
+            return
+        item = items[0]
+        item_type = self._get_item_type(item)
+        item_id = self._get_item_id(item)
+        if not item_id:
+            return
+        if item_type == self.TYPE_CATALOG:
+            self._delete_catalog(item_id)
+        elif item_type == self.TYPE_DIVE:
+            self._delete_dive(item_id)
 
     def _on_context_menu(self, position):
         """Контекстное меню."""
