@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \":*)",
+      "Bash(grep -En \"\\(\\\\*\\\\*2|\\\\*\\\\*4\\).{0,20}\\(if|for|return|while|def|class\\)\" \"c:/WORK/Claude_allowed/yolo_jellyfish/src/camera_geometry.py\")"
+    ]
+  }
+}

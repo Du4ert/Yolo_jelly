@@ -16,7 +16,7 @@
   "ui": {
     "window_geometry": "AdnQywADAAAAAAAA////+QAAB/8AAARPAAAAzwAAARcAAAUaAAAD0gAAAAACAAAACAAAAAAAAAAAFwAAB/8AAARP",
     "window_state": null,
-    "last_browse_path": "D:\\Избранные_погружения",
+    "last_browse_path": "C:\\WORK\\Claude_allowed\\yolo_jellyfish\\test_video",
     "last_model_id": 5,
     "splitter_sizes": [
       631,
@@ -27,6 +27,18 @@
       [
         0,
         1
+      ],
+      [
+        1,
+        73
+      ],
+      [
+        1,
+        5
+      ],
+      [
+        1,
+        74
       ],
       [
         1,
@@ -41,13 +53,13 @@
       139,
       73,
       141,
-      142,
-      143,
       74,
-      75
+      75,
+      144,
+      145,
+      146
     ],
     "task_table_expanded_groups": [
-      1,
       3
     ]
   }
