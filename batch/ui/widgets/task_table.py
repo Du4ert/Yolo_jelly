@@ -21,6 +21,8 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QAbstractItemView,
 )
+import json
+
 from PyQt6.QtCore import Qt, QModelIndex, pyqtSignal
 from PyQt6.QtGui import QColor, QBrush, QFont, QKeySequence, QShortcut
 
@@ -321,13 +323,27 @@ class TaskTable(QWidget):
         # Результат
         result_text = ""
         if task.status == TaskStatus.DONE:
-            result_text = f"{task.detections_count or 0} дет."
-            if task.tracks_count:
-                result_text += f" / {task.tracks_count} тр."
+            result_text = f"{task.detections_count or 0} дет. / {task.tracks_count or 0} тр."
+            if task.class_stats_json:
+                try:
+                    class_stats = json.loads(task.class_stats_json)
+                    # Краткий формат: "Au 3д/1т, Be 2д/1т"
+                    parts = []
+                    tooltip_parts = []
+                    for cls_name, counts in sorted(class_stats.items()):
+                        dets = counts.get("detections", 0)
+                        trks = counts.get("tracks", 0)
+                        abbr = cls_name.split()[0][:5]  # первые 5 букв рода
+                        parts.append(f"{abbr} {dets}д/{trks}т")
+                        tooltip_parts.append(f"{cls_name}: {dets} дет. / {trks} тр.")
+                    result_text = ",  ".join(parts)
+                    item.setToolTip(4, "\n".join(tooltip_parts))
+                except (json.JSONDecodeError, AttributeError):
+                    pass
         elif task.status == TaskStatus.ERROR:
             result_text = task.error_message[:30] + "..." if task.error_message and len(task.error_message) > 30 else (task.error_message or "Ошибка")
             item.setToolTip(4, task.error_message or "")
-        
+
         item.setText(4, result_text)
         
         # Стиль текста

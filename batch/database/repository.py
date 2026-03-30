@@ -72,6 +72,7 @@ class Repository:
                 ("imgsz", "INTEGER DEFAULT 1280"),
                 ("half", "BOOLEAN DEFAULT 1"),
                 ("is_skipped", "BOOLEAN DEFAULT 0"),
+                ("class_stats_json", "TEXT"),
             ]
             with self.engine.begin() as conn:
                 for col_name, col_def in migrations:

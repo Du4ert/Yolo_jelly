@@ -39,6 +39,8 @@ class ProcessingResult:
     output_tracks_path: Optional[str] = None
     error_message: Optional[str] = None
     cancelled: bool = False
+    # JSON: {"Aurelia aurita": {"detections": 5, "tracks": 2}, ...}
+    class_stats_json: Optional[str] = None
 
 
 # Соответствие классов (копируем из detect_video.py)
@@ -456,7 +458,20 @@ class Processor:
                 tracks_path = output_paths["tracks"]
             
             processing_time = time.time() - start_time
-            
+
+            # Статистика по классам
+            import json as _json
+            class_stats: dict = {}
+            if 'class_name' in df.columns:
+                for cls_name, grp in df.groupby('class_name'):
+                    class_stats[cls_name] = {"detections": len(grp), "tracks": 0}
+            if track_info:
+                for info in track_info.values():
+                    cls = info.get('class_name', '')
+                    if cls not in class_stats:
+                        class_stats[cls] = {"detections": 0, "tracks": 0}
+                    class_stats[cls]["tracks"] += 1
+
             return ProcessingResult(
                 success=True,
                 detections_count=len(df),
@@ -465,6 +480,7 @@ class Processor:
                 output_video_path=output_paths["video"] if self.save_video else None,
                 output_csv_path=output_paths["csv"],
                 output_tracks_path=tracks_path,
+                class_stats_json=_json.dumps(class_stats, ensure_ascii=False) if class_stats else None,
             )
             
         except Exception as e:

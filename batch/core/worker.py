@@ -192,6 +192,7 @@ class Worker(QThread):
                     tracks_count=result.tracks_count,
                     processing_time_s=result.processing_time_s,
                     progress_percent=100.0,
+                    class_stats_json=result.class_stats_json,
                 )
                 self.repo.update_task_status(task_id, TaskStatus.DONE)
                 

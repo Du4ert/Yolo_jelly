@@ -217,6 +217,8 @@ class Task(Base):
     detections_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     tracks_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     processing_time_s: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # JSON: {"Aurelia aurita": {"detections": 5, "tracks": 2}, ...}
+    class_stats_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     
     # Пропустить задачу в очереди (не брать воркером)
     is_skipped: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
