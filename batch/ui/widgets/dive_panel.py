@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
     QGroupBox,
+    QAbstractItemView,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QBrush, QDropEvent, QKeyEvent
@@ -89,6 +90,7 @@ class DivePanel(QWidget):
         self.tree.setHeaderLabels(["Название", "Инфо"])
         self.tree.setColumnWidth(0, 220)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tree.customContextMenuRequested.connect(self._on_context_menu)
         self.tree.itemSelectionChanged.connect(self._on_selection_changed)
         self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
@@ -376,26 +378,72 @@ class DivePanel(QWidget):
         self.repo.move_dive_to_catalog(dive_id, catalog_id)
         self._load_data()
 
+    def _get_selected_items_by_type(self):
+        """Возвращает (catalog_ids, dive_ids) всех выбранных каталогов и погружений."""
+        catalog_ids, dive_ids = [], []
+        for item in self.tree.selectedItems():
+            t = self._get_item_type(item)
+            iid = self._get_item_id(item)
+            if iid is None:
+                continue
+            if t == self.TYPE_CATALOG:
+                catalog_ids.append(iid)
+            elif t == self.TYPE_DIVE:
+                dive_ids.append(iid)
+        return catalog_ids, dive_ids
+
+    def _delete_selected_multiple(self, catalog_ids: list, dive_ids: list):
+        """Удаляет несколько каталогов и/или погружений с одним диалогом подтверждения."""
+        if not catalog_ids and not dive_ids:
+            return
+        parts = []
+        if catalog_ids:
+            parts.append(f"{len(catalog_ids)} экспедиций")
+        if dive_ids:
+            parts.append(f"{len(dive_ids)} погружений")
+        total = len(catalog_ids) + len(dive_ids)
+        msg = f"Удалить {' и '.join(parts)}?"
+        if catalog_ids:
+            msg += "\n\nПогружения из удалённых экспедиций будут перемещены в «Без экспедиции»."
+        if dive_ids:
+            msg += "\n(Файлы на диске не будут удалены)"
+        reply = QMessageBox.question(
+            self, f"Удалить {total} объектов?", msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            for cid in catalog_ids:
+                self.repo.delete_catalog(cid)
+            for did in dive_ids:
+                self.repo.delete_dive(did)
+            self._load_data()
+
+    def _move_selected_dives_to_catalog(self, dive_ids: list, catalog_id):
+        """Перемещает несколько погружений в каталог."""
+        for did in dive_ids:
+            self.repo.move_dive_to_catalog(did, catalog_id)
+        self._load_data()
+
     def _on_delete_key(self):
-        """Обработка нажатия Delete — удаляет выбранный элемент."""
-        items = self.tree.selectedItems()
-        if not items:
+        """Обработка нажатия Delete — удаляет выбранные элементы."""
+        catalog_ids, dive_ids = self._get_selected_items_by_type()
+        if not catalog_ids and not dive_ids:
             return
-        item = items[0]
-        item_type = self._get_item_type(item)
-        item_id = self._get_item_id(item)
-        if not item_id:
-            return
-        if item_type == self.TYPE_CATALOG:
-            self._delete_catalog(item_id)
-        elif item_type == self.TYPE_DIVE:
-            self._delete_dive(item_id)
+        if len(catalog_ids) + len(dive_ids) == 1:
+            # Одиночное удаление — оригинальная логика с оригинальными диалогами
+            if catalog_ids:
+                self._delete_catalog(catalog_ids[0])
+            else:
+                self._delete_dive(dive_ids[0])
+        else:
+            self._delete_selected_multiple(catalog_ids, dive_ids)
 
     def _on_context_menu(self, position):
         """Контекстное меню."""
         item = self.tree.itemAt(position)
         menu = QMenu(self)
-        
+
         if not item:
             # Клик на пустом месте
             action_add_cat = menu.addAction("🗂 Новая экспедиция...")
@@ -406,10 +454,15 @@ class DivePanel(QWidget):
 
             action_add_multi = menu.addAction("📁 Добавить несколько папок...")
             action_add_multi.triggered.connect(self.add_multiple_dives)
+        elif len(self.tree.selectedItems()) > 1:
+            # Несколько элементов выбрано
+            catalog_ids, dive_ids = self._get_selected_items_by_type()
+            if catalog_ids or dive_ids:
+                self._build_multi_context_menu(menu, catalog_ids, dive_ids)
         else:
             item_type = self._get_item_type(item)
             item_id = self._get_item_id(item)
-            
+
             if item_type == self.TYPE_CATALOG:
                 self._build_catalog_menu(menu, item_id)
             elif item_type == self.TYPE_UNCATEGORIZED:
@@ -424,8 +477,33 @@ class DivePanel(QWidget):
                 self._build_video_menu(menu, item, item_id)
             elif item_type == self.TYPE_CTD:
                 self._build_ctd_menu(menu, item_id)
-        
+
         menu.exec(self.tree.viewport().mapToGlobal(position))
+
+    def _build_multi_context_menu(self, menu: QMenu, catalog_ids: list, dive_ids: list):
+        """Контекстное меню для группового выделения."""
+        total = len(catalog_ids) + len(dive_ids)
+
+        if dive_ids:
+            move_menu = menu.addMenu(f"📦 Переместить {len(dive_ids)} погружений в...")
+            catalogs = self.repo.get_all_catalogs()
+            for cat in catalogs:
+                action = move_menu.addAction(f"🗂 {cat.name}")
+                action.triggered.connect(
+                    lambda checked, cid=cat.id: self._move_selected_dives_to_catalog(dive_ids, cid)
+                )
+            if dive_ids:
+                move_menu.addSeparator()
+                action_uncat = move_menu.addAction("📂 Без экспедиции")
+                action_uncat.triggered.connect(
+                    lambda: self._move_selected_dives_to_catalog(dive_ids, None)
+                )
+            menu.addSeparator()
+
+        action_delete = menu.addAction(f"🗑 Удалить выбранные ({total})")
+        action_delete.triggered.connect(
+            lambda: self._delete_selected_multiple(catalog_ids, dive_ids)
+        )
 
     def _build_catalog_menu(self, menu: QMenu, catalog_id: int):
         """Меню для каталога."""

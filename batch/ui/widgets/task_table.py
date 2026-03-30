@@ -105,7 +105,7 @@ class TaskTable(QWidget):
         
         # Настройка поведения
         self.tree.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._on_context_menu)
         self.tree.itemDoubleClicked.connect(self._on_double_click)
@@ -459,6 +459,14 @@ class TaskTable(QWidget):
         
         self._postprocess_task(task_id)
 
+    def _get_selected_task_ids(self) -> list:
+        """Возвращает список ID всех выбранных задач (группы и подзадачи игнорируются)."""
+        result = []
+        for item in self.tree.selectedItems():
+            if item.data(0, Qt.ItemDataRole.UserRole + 1) == "task":
+                result.append(item.data(0, Qt.ItemDataRole.UserRole))
+        return result
+
     def _get_selected_task_id(self) -> Optional[int]:
         """Возвращает ID выбранной задачи."""
         item = self.tree.currentItem()
@@ -479,6 +487,13 @@ class TaskTable(QWidget):
         item_type = item.data(0, Qt.ItemDataRole.UserRole + 1)
         if item_type == "group":
             return
+
+        # Множественный выбор задач
+        selected_task_ids = self._get_selected_task_ids()
+        if len(selected_task_ids) > 1:
+            self._show_multi_task_context_menu(selected_task_ids, position)
+            return
+
         if item_type == "subtask":
             self._show_subtask_context_menu(item, position)
         else:
@@ -616,27 +631,104 @@ class TaskTable(QWidget):
                     return
 
     def _delete_selected(self):
-        """Удаляет выбранную задачу."""
-        task_id = self._get_selected_task_id()
-        if not task_id:
+        """Удаляет выбранные задачи."""
+        task_ids = self._get_selected_task_ids()
+        if not task_ids:
             return
-        
-        task = self.task_manager.get_task(task_id)
-        if task and task.status == TaskStatus.RUNNING:
+
+        running_ids = [
+            tid for tid in task_ids
+            if (t := self.task_manager.get_task(tid)) and t.status == TaskStatus.RUNNING
+        ]
+        deletable_ids = [tid for tid in task_ids if tid not in running_ids]
+
+        if running_ids and not deletable_ids:
             QMessageBox.warning(
                 self,
                 "Невозможно удалить",
                 "Нельзя удалить выполняющуюся задачу.\nСначала остановите очередь."
             )
             return
-        
-        self.task_manager.remove_task(task_id)
+
+        if running_ids:
+            QMessageBox.warning(
+                self,
+                "Часть задач пропущена",
+                f"{len(running_ids)} выполняющихся задач не будут удалены."
+            )
+
+        if len(deletable_ids) > 1:
+            reply = QMessageBox.question(
+                self, f"Удалить {len(deletable_ids)} задач?",
+                f"Удалить {len(deletable_ids)} задач из очереди?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        for tid in deletable_ids:
+            self.task_manager.remove_task(tid)
 
     def _retry_selected(self):
         """Повторяет выбранную задачу."""
         task_id = self._get_selected_task_id()
         if task_id:
             self.task_manager.retry_task(task_id)
+
+    def _show_multi_task_context_menu(self, task_ids: list, position):
+        """Контекстное меню для группового выделения задач."""
+        tasks = [t for tid in task_ids if (t := self.task_manager.get_task(tid))]
+
+        pending_tasks = [t for t in tasks if t.status == TaskStatus.PENDING]
+        unskippable = [t.id for t in pending_tasks if not t.is_skipped]
+        skipped_ids = [t.id for t in pending_tasks if t.is_skipped]
+        error_cancelled = [t.id for t in tasks if t.status in (TaskStatus.ERROR, TaskStatus.CANCELLED)]
+        deletable_ids = [t.id for t in tasks if t.status != TaskStatus.RUNNING]
+
+        menu = QMenu(self)
+        has_items = False
+
+        if unskippable:
+            action = menu.addAction(f"⏭ Пропустить {len(unskippable)} задач")
+            action.triggered.connect(lambda: self._skip_tasks(unskippable))
+            has_items = True
+
+        if skipped_ids:
+            action = menu.addAction(f"↩ Снять пропуск у {len(skipped_ids)} задач")
+            action.triggered.connect(lambda: self._unskip_tasks(skipped_ids))
+            has_items = True
+
+        if error_cancelled:
+            if has_items:
+                menu.addSeparator()
+            action = menu.addAction(f"↻ Повторить {len(error_cancelled)} задач")
+            action.triggered.connect(lambda: self._retry_tasks(error_cancelled))
+            has_items = True
+
+        if deletable_ids:
+            if has_items:
+                menu.addSeparator()
+            action = menu.addAction(f"🗑 Удалить {len(deletable_ids)} задач")
+            action.triggered.connect(self._delete_selected)
+
+        if has_items or deletable_ids:
+            menu.exec(self.tree.viewport().mapToGlobal(position))
+
+    def _skip_tasks(self, task_ids: list):
+        """Пропускает несколько задач."""
+        for tid in task_ids:
+            self.task_manager.skip_task(tid)
+
+    def _unskip_tasks(self, task_ids: list):
+        """Снимает пропуск у нескольких задач."""
+        for tid in task_ids:
+            self.task_manager.unskip_task(tid)
+
+    def _retry_tasks(self, task_ids: list):
+        """Повторяет несколько задач."""
+        for tid in task_ids:
+            self.task_manager.retry_task(tid)
 
     def _find_interactive_plot_path(self, task_id: int) -> Optional[str]:
         """Возвращает путь к depth_interactive.html, если он существует."""
