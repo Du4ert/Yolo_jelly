@@ -213,6 +213,27 @@ class NewTaskDialog(QDialog):
         self.ls_interval_widget.setVisible(False)
         output_layout.addWidget(self.ls_interval_widget)
 
+        # Выбор классов для экспорта Label Studio
+        self.ls_classes_widget = QWidget()
+        ls_classes_layout = QVBoxLayout(self.ls_classes_widget)
+        ls_classes_layout.setContentsMargins(20, 0, 0, 0)
+        ls_classes_layout.setSpacing(2)
+        ls_classes_label = QLabel("Классы для экспорта:")
+        ls_classes_layout.addWidget(ls_classes_label)
+        self.ls_class_checks = {}
+        # Классы в порядке убывания приоритета
+        ls_classes_ordered = [
+            'Rhizostoma pulmo', 'Beroe ovata', 'Mnemiopsis leidyi',
+            'Pleurobrachia pileus', 'Aurelia aurita',
+        ]
+        for class_name in ls_classes_ordered:
+            chk = QCheckBox(class_name)
+            chk.setChecked(True)
+            self.ls_class_checks[class_name] = chk
+            ls_classes_layout.addWidget(chk)
+        self.ls_classes_widget.setVisible(False)
+        output_layout.addWidget(self.ls_classes_widget)
+
         self.check_auto_postprocess = QCheckBox("Автоматическая постобработка после детекции")
         self.check_auto_postprocess.setToolTip(
             "После завершения детекции автоматически запустить выбранные операции постобработки"
@@ -341,8 +362,17 @@ class NewTaskDialog(QDialog):
             self.spin_depth_rate.setValue(0)
 
     def _on_export_ls_toggled(self, enabled: bool):
-        """Показывает/скрывает настройки интервала Label Studio."""
+        """Показывает/скрывает настройки Label Studio."""
         self.ls_interval_widget.setVisible(enabled)
+        self.ls_classes_widget.setVisible(enabled)
+
+    def _get_ls_classes_json(self) -> str:
+        """Возвращает JSON со списком выбранных классов для LS-экспорта. Пустая строка = все."""
+        import json
+        selected = [name for name, chk in self.ls_class_checks.items() if chk.isChecked()]
+        if len(selected) == len(self.ls_class_checks):
+            return ""  # все выбраны — null в БД
+        return json.dumps(selected, ensure_ascii=False)
 
     def _on_tracking_toggled(self, enabled: bool):
         """Обработка переключения трекинга."""
@@ -365,6 +395,7 @@ class NewTaskDialog(QDialog):
             "save_video": self.check_save_video.isChecked(),
             "export_label_studio": self.check_export_label_studio.isChecked(),
             "export_ls_interval": self.spin_ls_interval.value(),
+            "export_ls_classes": self._get_ls_classes_json() or None,
             "auto_postprocess": self.check_auto_postprocess.isChecked(),
             # GPU / Ускорение
             "device": self.combo_device.currentData(),

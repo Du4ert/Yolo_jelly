@@ -144,6 +144,7 @@ class Worker(QThread):
                     "save_video": task_data.save_video,
                     "export_label_studio": task_data.export_label_studio,
                     "export_ls_interval": task_data.export_ls_interval,
+                    "export_ls_classes": task_data.export_ls_classes,
                     # GPU-ускорение (из задачи, fallback — дефолты)
                     "device": task_data.device or "auto",
                     "imgsz": task_data.imgsz or 1280,

@@ -130,6 +130,7 @@ def detect_on_video(
     half: bool = True,
     export_ls_dir: Optional[str] = None,
     export_ls_interval: int = 15,
+    export_ls_classes: Optional[set] = None,
 ) -> pd.DataFrame:
     """
     Запускает детекцию на видео и экспортирует результаты.
@@ -231,6 +232,7 @@ def detect_on_video(
             output_dir=export_ls_dir,
             video_name=Path(video_path).stem,
             frame_interval=export_ls_interval,
+            export_classes=export_ls_classes,
         )
 
     # Список детекций
@@ -729,6 +731,13 @@ def main():
         default=15,
         help="Интервал кадров для экспорта Label Studio (по умолчанию: 15)"
     )
+    parser.add_argument(
+        "--export-ls-classes",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Классы для экспорта Label Studio (по умолчанию: все). Пример: 'Aurelia aurita' 'Beroe ovata'"
+    )
 
     parser.add_argument(
         "--export-engine",
@@ -775,6 +784,7 @@ def main():
             half=not args.no_half,
             export_ls_dir=args.export_ls,
             export_ls_interval=args.export_ls_interval,
+            export_ls_classes=set(args.export_ls_classes) if args.export_ls_classes else None,
         )
         return 0
     except Exception as e:

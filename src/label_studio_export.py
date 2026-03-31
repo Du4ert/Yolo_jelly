@@ -9,7 +9,7 @@ import json
 import uuid
 from datetime import date
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Set
 
 import cv2
 import numpy as np
@@ -43,17 +43,20 @@ class LabelStudioExporter:
         model_version: str = "yolo_v8",
         image_quality: int = 95,
         frame_interval: int = 1,
+        export_classes: Optional[Set[str]] = None,
     ):
         self.output_dir = Path(output_dir)
         self.video_name = video_name
         self.model_version = model_version
         self.image_quality = image_quality
         self.frame_interval = max(1, frame_interval)
+        self.export_classes = export_classes  # None = все классы
         self.date_str = date.today().isoformat()  # 2026-03-31
 
-        # Создаём папки для каждого класса
+        # Создаём папки для экспортируемых классов
         for class_name in CLASS_NAMES.values():
-            (self.output_dir / _class_folder_name(class_name)).mkdir(parents=True, exist_ok=True)
+            if self.export_classes is None or class_name in self.export_classes:
+                (self.output_dir / _class_folder_name(class_name)).mkdir(parents=True, exist_ok=True)
 
         # Накопитель для JSON
         self._annotations: list[dict] = []
@@ -77,6 +80,12 @@ class LabelStudioExporter:
         """
         if not detections:
             return
+
+        # Фильтрация по выбранным классам
+        if self.export_classes is not None:
+            detections = [d for d in detections if d['class_name'] in self.export_classes]
+            if not detections:
+                return
 
         # Прореживание по интервалу кадров
         if self.frame_interval > 1 and frame_number % self.frame_interval != 0:

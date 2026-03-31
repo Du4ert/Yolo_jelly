@@ -75,6 +75,7 @@ class Repository:
                 ("class_stats_json", "TEXT"),
                 ("export_label_studio", "BOOLEAN DEFAULT 0"),
                 ("export_ls_interval", "INTEGER DEFAULT 15"),
+                ("export_ls_classes", "TEXT"),
             ]
             with self.engine.begin() as conn:
                 for col_name, col_def in migrations:

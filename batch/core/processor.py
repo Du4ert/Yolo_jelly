@@ -7,6 +7,7 @@ Processor - обёртка над detect_video.py для интеграции с
 - Паузу
 """
 
+import json
 import os
 import sys
 import time
@@ -129,6 +130,7 @@ class Processor:
         save_video: bool = True,
         export_ls_dir: Optional[str] = None,
         export_ls_interval: int = 15,
+        export_ls_classes: Optional[set] = None,
         device: str = "auto",
         imgsz: int = 1280,
         half: bool = True,
@@ -147,6 +149,7 @@ class Processor:
         self.save_video = save_video
         self.export_ls_dir = export_ls_dir
         self.export_ls_interval = export_ls_interval
+        self.export_ls_classes = export_ls_classes
         self.imgsz = imgsz
         self.half = half
 
@@ -240,6 +243,7 @@ class Processor:
                     output_dir=self.export_ls_dir,
                     video_name=Path(self.video_path).stem,
                     frame_interval=self.export_ls_interval,
+                    export_classes=self.export_ls_classes,
                 )
 
             # Данные
@@ -552,6 +556,11 @@ class ProcessorFactory:
                 else None
             ),
             export_ls_interval=task_params.get("export_ls_interval", 15),
+            export_ls_classes=(
+                set(json.loads(task_params["export_ls_classes"]))
+                if task_params.get("export_ls_classes")
+                else None
+            ),
             device=task_params.get("device", "auto"),
             imgsz=task_params.get("imgsz", 1280),
             half=task_params.get("half", True),

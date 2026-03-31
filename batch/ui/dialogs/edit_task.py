@@ -243,6 +243,27 @@ class EditTaskDialog(QDialog):
         self.ls_interval_widget.setVisible(False)
         output_layout.addWidget(self.ls_interval_widget)
 
+        # Выбор классов для экспорта Label Studio
+        self.ls_classes_widget = QWidget()
+        ls_classes_layout = QVBoxLayout(self.ls_classes_widget)
+        ls_classes_layout.setContentsMargins(20, 0, 0, 0)
+        ls_classes_layout.setSpacing(2)
+        ls_classes_label = QLabel("Классы для экспорта:")
+        ls_classes_layout.addWidget(ls_classes_label)
+        self.ls_class_checks = {}
+        ls_classes_ordered = [
+            'Rhizostoma pulmo', 'Beroe ovata', 'Mnemiopsis leidyi',
+            'Pleurobrachia pileus', 'Aurelia aurita',
+        ]
+        for class_name in ls_classes_ordered:
+            chk = QCheckBox(class_name)
+            chk.setChecked(True)
+            chk.setEnabled(self._is_editable)
+            self.ls_class_checks[class_name] = chk
+            ls_classes_layout.addWidget(chk)
+        self.ls_classes_widget.setVisible(False)
+        output_layout.addWidget(self.ls_classes_widget)
+
         params_layout.addWidget(output_group)
         params_layout.addStretch()
         
@@ -344,6 +365,12 @@ class EditTaskDialog(QDialog):
         self.check_save_video.setChecked(task.save_video)
         self.check_export_label_studio.setChecked(task.export_label_studio)
         self.spin_ls_interval.setValue(task.export_ls_interval if task.export_ls_interval else 15)
+        # Восстанавливаем выбор классов
+        if task.export_ls_classes:
+            import json
+            selected = set(json.loads(task.export_ls_classes))
+            for name, chk in self.ls_class_checks.items():
+                chk.setChecked(name in selected)
         self._on_export_ls_toggled(task.export_label_studio)
 
         # GPU / Ускорение
@@ -367,8 +394,17 @@ class EditTaskDialog(QDialog):
             self.outputs_text.setText("Нет выходных файлов")
 
     def _on_export_ls_toggled(self, enabled: bool):
-        """Показывает/скрывает настройки интервала Label Studio."""
+        """Показывает/скрывает настройки Label Studio."""
         self.ls_interval_widget.setVisible(enabled)
+        self.ls_classes_widget.setVisible(enabled)
+
+    def _get_ls_classes_json(self) -> str:
+        """Возвращает JSON со списком выбранных классов для LS-экспорта. Пустая строка = все."""
+        import json
+        selected = [name for name, chk in self.ls_class_checks.items() if chk.isChecked()]
+        if len(selected) == len(self.ls_class_checks):
+            return ""
+        return json.dumps(selected, ensure_ascii=False)
 
     def _save_and_accept(self):
         """Сохраняет изменения."""
@@ -383,6 +419,7 @@ class EditTaskDialog(QDialog):
             "save_video": self.check_save_video.isChecked(),
             "export_label_studio": self.check_export_label_studio.isChecked(),
             "export_ls_interval": self.spin_ls_interval.value(),
+            "export_ls_classes": self._get_ls_classes_json() or None,
             # GPU / Ускорение
             "device": self.combo_device.currentData(),
             "imgsz": self.spin_imgsz.value(),

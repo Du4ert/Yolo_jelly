@@ -204,6 +204,7 @@ class Task(Base):
     save_video: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     export_label_studio: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     export_ls_interval: Mapped[int] = mapped_column(Integer, default=15, nullable=False)
+    export_ls_classes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON список классов, null = все
 
     # Параметры GPU-ускорения
     device: Mapped[Optional[str]] = mapped_column(String(20), default="auto", nullable=True)
