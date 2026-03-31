@@ -32,6 +32,15 @@ CLASS_COLORS_BGR = {
     'Rhizostoma pulmo':     (0, 0, 255),     # Красный
 }
 
+# Приоритеты классов для сортировки кадров по папкам (label_studio_export.py)
+CLASS_PRIORITY = {
+    'Aurelia aurita':       1,
+    'Pleurobrachia pileus': 2,
+    'Mnemiopsis leidyi':    3,
+    'Beroe ovata':          4,
+    'Rhizostoma pulmo':     5,
+}
+
 # Русские названия видов для легенды (interactive_plot.py)
 SPECIES_NAMES_RU = {
     'Aurelia aurita':       'Аурелия',

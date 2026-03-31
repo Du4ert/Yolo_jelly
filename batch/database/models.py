@@ -202,6 +202,8 @@ class Task(Base):
     min_track_length: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
     depth_rate: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     save_video: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    export_label_studio: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    export_ls_interval: Mapped[int] = mapped_column(Integer, default=15, nullable=False)
 
     # Параметры GPU-ускорения
     device: Mapped[Optional[str]] = mapped_column(String(20), default="auto", nullable=True)

@@ -185,7 +185,34 @@ class NewTaskDialog(QDialog):
         
         self.check_save_video = QCheckBox("Сохранять видео с разметкой")
         output_layout.addWidget(self.check_save_video)
-        
+
+        self.check_export_label_studio = QCheckBox("Экспортировать кадры и разметку для Label Studio")
+        self.check_export_label_studio.setToolTip(
+            "Сохранить кадры с детекциями в папки по классам и JSON-файл предразметки для импорта в Label Studio"
+        )
+        self.check_export_label_studio.toggled.connect(self._on_export_ls_toggled)
+        output_layout.addWidget(self.check_export_label_studio)
+
+        # Интервал кадров для Label Studio
+        self.ls_interval_widget = QWidget()
+        ls_interval_layout = QHBoxLayout(self.ls_interval_widget)
+        ls_interval_layout.setContentsMargins(20, 0, 0, 0)
+        ls_interval_label = QLabel("Интервал кадров:")
+        ls_interval_layout.addWidget(ls_interval_label)
+        self.spin_ls_interval = QSpinBox()
+        self.spin_ls_interval.setRange(1, 300)
+        self.spin_ls_interval.setValue(15)
+        self.spin_ls_interval.setMaximumWidth(80)
+        self.spin_ls_interval.setToolTip(
+            "Сохранять каждый N-й кадр с детекциями.\n"
+            "1 = каждый кадр, 15 = каждый 15-й.\n"
+            "Уменьшает количество похожих кадров."
+        )
+        ls_interval_layout.addWidget(self.spin_ls_interval)
+        ls_interval_layout.addStretch()
+        self.ls_interval_widget.setVisible(False)
+        output_layout.addWidget(self.ls_interval_widget)
+
         self.check_auto_postprocess = QCheckBox("Автоматическая постобработка после детекции")
         self.check_auto_postprocess.setToolTip(
             "После завершения детекции автоматически запустить выбранные операции постобработки"
@@ -299,6 +326,7 @@ class NewTaskDialog(QDialog):
         
         self._on_tracking_toggled(params.enable_tracking)
         self._update_depth_rate_state()
+        self._on_export_ls_toggled(False)
         self._on_auto_postprocess_toggled(False)
 
     def _on_ctd_changed(self, index: int):
@@ -311,6 +339,10 @@ class NewTaskDialog(QDialog):
         self.spin_depth_rate.setEnabled(not has_ctd)
         if has_ctd:
             self.spin_depth_rate.setValue(0)
+
+    def _on_export_ls_toggled(self, enabled: bool):
+        """Показывает/скрывает настройки интервала Label Studio."""
+        self.ls_interval_widget.setVisible(enabled)
 
     def _on_tracking_toggled(self, enabled: bool):
         """Обработка переключения трекинга."""
@@ -331,6 +363,8 @@ class NewTaskDialog(QDialog):
             "trail_length": self.spin_trail_length.value(),
             "min_track_length": self.spin_min_track.value(),
             "save_video": self.check_save_video.isChecked(),
+            "export_label_studio": self.check_export_label_studio.isChecked(),
+            "export_ls_interval": self.spin_ls_interval.value(),
             "auto_postprocess": self.check_auto_postprocess.isChecked(),
             # GPU / Ускорение
             "device": self.combo_device.currentData(),

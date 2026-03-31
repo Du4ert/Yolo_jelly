@@ -37,6 +37,7 @@ class ProcessingResult:
     output_video_path: Optional[str] = None
     output_csv_path: Optional[str] = None
     output_tracks_path: Optional[str] = None
+    output_ls_path: Optional[str] = None
     error_message: Optional[str] = None
     cancelled: bool = False
     # JSON: {"Aurelia aurita": {"detections": 5, "tracks": 2}, ...}
@@ -126,6 +127,8 @@ class Processor:
         min_track_length: int = 3,
         depth_rate: Optional[float] = None,
         save_video: bool = True,
+        export_ls_dir: Optional[str] = None,
+        export_ls_interval: int = 15,
         device: str = "auto",
         imgsz: int = 1280,
         half: bool = True,
@@ -142,6 +145,8 @@ class Processor:
         self.min_track_length = min_track_length
         self.depth_rate = depth_rate
         self.save_video = save_video
+        self.export_ls_dir = export_ls_dir
+        self.export_ls_interval = export_ls_interval
         self.imgsz = imgsz
         self.half = half
 
@@ -227,6 +232,16 @@ class Processor:
             if self.save_video:
                 out = NvencVideoWriter(output_paths["video"], fps, width, height)
             
+            # Экспортёр Label Studio
+            ls_exporter = None
+            if self.export_ls_dir:
+                from label_studio_export import LabelStudioExporter
+                ls_exporter = LabelStudioExporter(
+                    output_dir=self.export_ls_dir,
+                    video_name=Path(self.video_path).stem,
+                    frame_interval=self.export_ls_interval,
+                )
+
             # Данные
             detections = []
             track_history = defaultdict(list)
@@ -296,31 +311,32 @@ class Processor:
                     )[0]
                 
                 # Обработка результатов
+                frame_detections = []
                 boxes = results.boxes
                 if boxes is not None and len(boxes) > 0:
                     for box in boxes:
                         class_id = int(box.cls)
                         confidence = float(box.conf)
-                        
+
                         xywhn = box.xywhn[0]
                         x_center = float(xywhn[0])
                         y_center = float(xywhn[1])
                         bbox_width = float(xywhn[2])
                         bbox_height = float(xywhn[3])
-                        
+
                         track_id = None
                         if self.enable_tracking and box.id is not None:
                             track_id = int(box.id)
-                            
+
                             center_x = int(x_center * width)
                             center_y = int(y_center * height)
                             track_history[track_id].append((center_x, center_y))
-                            
+
                             if len(track_history[track_id]) > self.trail_length:
                                 track_history[track_id] = track_history[track_id][-self.trail_length:]
-                            
+
                             track_class_votes[track_id].append(class_id)
-                            
+
                             if track_id not in track_info:
                                 track_info[track_id] = {
                                     'class_id': class_id,
@@ -336,7 +352,7 @@ class Processor:
                                 track_info[track_id]['last_frame'] = frame_count
                                 track_info[track_id]['last_timestamp'] = timestamp
                                 track_info[track_id]['last_depth'] = depth
-                        
+
                         det = {
                             'frame': frame_count,
                             'timestamp_s': round(timestamp, 3),
@@ -353,8 +369,13 @@ class Processor:
                             'height': round(bbox_height, 4),
                             'bbox_area_norm': round(bbox_width * bbox_height, 6)
                         }
-                        detections.append(det)
-                
+                        frame_detections.append(det)
+                    detections.extend(frame_detections)
+
+                # Экспорт кадра в Label Studio
+                if ls_exporter and frame_detections:
+                    ls_exporter.process_frame(frame, frame_count, timestamp, frame_detections)
+
                 # Отрисовка
                 if out is not None:
                     annotated_frame = results.plot(line_width=2, font_size=0.6, labels=True, conf=True)
@@ -384,7 +405,12 @@ class Processor:
             cap.release()
             if out:
                 out.release()
-            
+
+            # Финализация экспорта Label Studio
+            ls_export_path = None
+            if ls_exporter:
+                ls_export_path = ls_exporter.finalize()
+
             # Постобработка треков
             df = pd.DataFrame(detections)
             
@@ -480,6 +506,7 @@ class Processor:
                 output_video_path=output_paths["video"] if self.save_video else None,
                 output_csv_path=output_paths["csv"],
                 output_tracks_path=tracks_path,
+                output_ls_path=ls_export_path,
                 class_stats_json=_json.dumps(class_stats, ensure_ascii=False) if class_stats else None,
             )
             
@@ -519,6 +546,12 @@ class ProcessorFactory:
             min_track_length=task_params.get("min_track_length", 3),
             depth_rate=task_params.get("depth_rate"),
             save_video=task_params.get("save_video", True),
+            export_ls_dir=(
+                os.path.join(dive_folder, "label_studio_export")
+                if task_params.get("export_label_studio")
+                else None
+            ),
+            export_ls_interval=task_params.get("export_ls_interval", 15),
             device=task_params.get("device", "auto"),
             imgsz=task_params.get("imgsz", 1280),
             half=task_params.get("half", True),

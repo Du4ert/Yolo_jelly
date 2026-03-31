@@ -128,6 +128,8 @@ def detect_on_video(
     device: str = "auto",
     imgsz: int = 1280,
     half: bool = True,
+    export_ls_dir: Optional[str] = None,
+    export_ls_interval: int = 15,
 ) -> pd.DataFrame:
     """
     Запускает детекцию на видео и экспортирует результаты.
@@ -221,6 +223,16 @@ def detect_on_video(
         output_path.parent.mkdir(parents=True, exist_ok=True)
         out = NvencVideoWriter(str(output_path), fps, width, height)
     
+    # Экспортёр Label Studio
+    ls_exporter = None
+    if export_ls_dir:
+        from label_studio_export import LabelStudioExporter
+        ls_exporter = LabelStudioExporter(
+            output_dir=export_ls_dir,
+            video_name=Path(video_path).stem,
+            frame_interval=export_ls_interval,
+        )
+
     # Список детекций
     detections = []
     
@@ -274,37 +286,38 @@ def detect_on_video(
             )[0]
         
         # Обработка результатов
+        frame_detections = []
         boxes = results.boxes
         if boxes is not None and len(boxes) > 0:
             for box in boxes:
                 class_id = int(box.cls)
                 confidence = float(box.conf)
-                
+
                 # Нормализованные координаты
                 xywhn = box.xywhn[0]
                 x_center = float(xywhn[0])
                 y_center = float(xywhn[1])
                 bbox_width = float(xywhn[2])
                 bbox_height = float(xywhn[3])
-                
+
                 # ID трека (если трекинг включен)
                 track_id = None
                 if enable_tracking and box.id is not None:
                     track_id = int(box.id)
-                    
+
                     # Обновляем историю трека (для визуализации траектории)
                     # Используем абсолютные координаты для рисования
                     center_x = int(x_center * width)
                     center_y = int(y_center * height)
                     track_history[track_id].append((center_x, center_y))
-                    
+
                     # Ограничиваем длину истории
                     if len(track_history[track_id]) > trail_length:
                         track_history[track_id] = track_history[track_id][-trail_length:]
-                    
+
                     # Сохраняем информацию о треке
                     track_class_votes[track_id].append(class_id)  # Для голосования за класс
-                    
+
                     if track_id not in track_info:
                         track_info[track_id] = {
                             'class_id': class_id,
@@ -320,7 +333,7 @@ def detect_on_video(
                         track_info[track_id]['last_frame'] = frame_count
                         track_info[track_id]['last_timestamp'] = timestamp
                         track_info[track_id]['last_depth'] = depth
-                
+
                 det = {
                     'frame': frame_count,
                     'timestamp_s': round(timestamp, 3),
@@ -337,8 +350,13 @@ def detect_on_video(
                     'height': round(bbox_height, 4),
                     'bbox_area_norm': round(bbox_width * bbox_height, 6)
                 }
-                detections.append(det)
-        
+                frame_detections.append(det)
+            detections.extend(frame_detections)
+
+        # Экспорт кадра в Label Studio
+        if ls_exporter and frame_detections:
+            ls_exporter.process_frame(frame, frame_count, timestamp, frame_detections)
+
         # Отрисовка на кадре
         if out is not None:
             annotated_frame = results.plot(
@@ -444,7 +462,12 @@ def detect_on_video(
     cap.release()
     if out is not None:
         out.release()
-    
+
+    # Финализация экспорта Label Studio
+    if ls_exporter:
+        ls_path = ls_exporter.finalize()
+        print(f"  Label Studio экспорт: {ls_path}")
+
     # Создание DataFrame
     df = pd.DataFrame(detections)
     
@@ -695,6 +718,19 @@ def main():
     )
 
     parser.add_argument(
+        "--export-ls",
+        type=str,
+        default=None,
+        help="Экспортировать кадры и предразметку в формате Label Studio в указанную папку"
+    )
+    parser.add_argument(
+        "--export-ls-interval",
+        type=int,
+        default=15,
+        help="Интервал кадров для экспорта Label Studio (по умолчанию: 15)"
+    )
+
+    parser.add_argument(
         "--export-engine",
         action="store_true",
         help="Экспортировать модель в TensorRT (.engine) и выйти. Требует TensorRT."
@@ -737,6 +773,8 @@ def main():
             device=args.device,
             imgsz=args.imgsz,
             half=not args.no_half,
+            export_ls_dir=args.export_ls,
+            export_ls_interval=args.export_ls_interval,
         )
         return 0
     except Exception as e:

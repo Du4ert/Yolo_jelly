@@ -142,6 +142,8 @@ class Worker(QThread):
                     "min_track_length": task_data.min_track_length,
                     "depth_rate": task_data.depth_rate,
                     "save_video": task_data.save_video,
+                    "export_label_studio": task_data.export_label_studio,
+                    "export_ls_interval": task_data.export_ls_interval,
                     # GPU-ускорение (из задачи, fallback — дефолты)
                     "device": task_data.device or "auto",
                     "imgsz": task_data.imgsz or 1280,

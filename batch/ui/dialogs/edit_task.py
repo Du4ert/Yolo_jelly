@@ -217,6 +217,32 @@ class EditTaskDialog(QDialog):
         self.check_save_video.setEnabled(self._is_editable)
         output_layout.addWidget(self.check_save_video)
 
+        self.check_export_label_studio = QCheckBox("Экспортировать кадры и разметку для Label Studio")
+        self.check_export_label_studio.setEnabled(self._is_editable)
+        self.check_export_label_studio.toggled.connect(self._on_export_ls_toggled)
+        output_layout.addWidget(self.check_export_label_studio)
+
+        # Интервал кадров для Label Studio
+        self.ls_interval_widget = QWidget()
+        ls_interval_layout = QHBoxLayout(self.ls_interval_widget)
+        ls_interval_layout.setContentsMargins(20, 0, 0, 0)
+        ls_interval_label = QLabel("Интервал кадров:")
+        ls_interval_layout.addWidget(ls_interval_label)
+        self.spin_ls_interval = QSpinBox()
+        self.spin_ls_interval.setRange(1, 300)
+        self.spin_ls_interval.setValue(15)
+        self.spin_ls_interval.setMaximumWidth(80)
+        self.spin_ls_interval.setEnabled(self._is_editable)
+        self.spin_ls_interval.setToolTip(
+            "Сохранять каждый N-й кадр с детекциями.\n"
+            "1 = каждый кадр, 15 = каждый 15-й.\n"
+            "Уменьшает количество похожих кадров."
+        )
+        ls_interval_layout.addWidget(self.spin_ls_interval)
+        ls_interval_layout.addStretch()
+        self.ls_interval_widget.setVisible(False)
+        output_layout.addWidget(self.ls_interval_widget)
+
         params_layout.addWidget(output_group)
         params_layout.addStretch()
         
@@ -316,6 +342,9 @@ class EditTaskDialog(QDialog):
         self.spin_trail_length.setValue(task.trail_length)
         self.spin_min_track.setValue(task.min_track_length)
         self.check_save_video.setChecked(task.save_video)
+        self.check_export_label_studio.setChecked(task.export_label_studio)
+        self.spin_ls_interval.setValue(task.export_ls_interval if task.export_ls_interval else 15)
+        self._on_export_ls_toggled(task.export_label_studio)
 
         # GPU / Ускорение
         device_val = task.device or "auto"
@@ -337,6 +366,10 @@ class EditTaskDialog(QDialog):
         else:
             self.outputs_text.setText("Нет выходных файлов")
 
+    def _on_export_ls_toggled(self, enabled: bool):
+        """Показывает/скрывает настройки интервала Label Studio."""
+        self.ls_interval_widget.setVisible(enabled)
+
     def _save_and_accept(self):
         """Сохраняет изменения."""
         params = {
@@ -348,6 +381,8 @@ class EditTaskDialog(QDialog):
             "trail_length": self.spin_trail_length.value(),
             "min_track_length": self.spin_min_track.value(),
             "save_video": self.check_save_video.isChecked(),
+            "export_label_studio": self.check_export_label_studio.isChecked(),
+            "export_ls_interval": self.spin_ls_interval.value(),
             # GPU / Ускорение
             "device": self.combo_device.currentData(),
             "imgsz": self.spin_imgsz.value(),

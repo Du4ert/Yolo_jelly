@@ -73,6 +73,8 @@ class Repository:
                 ("half", "BOOLEAN DEFAULT 1"),
                 ("is_skipped", "BOOLEAN DEFAULT 0"),
                 ("class_stats_json", "TEXT"),
+                ("export_label_studio", "BOOLEAN DEFAULT 0"),
+                ("export_ls_interval", "INTEGER DEFAULT 15"),
             ]
             with self.engine.begin() as conn:
                 for col_name, col_def in migrations:
