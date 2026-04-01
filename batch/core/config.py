@@ -41,6 +41,7 @@ class UISettings:
     dive_panel_expanded: Optional[list] = None  # [[item_type, item_id], ...] развёрнутых узлов
     task_table_expanded: Optional[list] = None  # [task_id, ...] развёрнутых задач
     task_table_expanded_groups: Optional[list] = None  # [catalog_id_or_null, ...] развёрнутых групп
+    label_studio_dir: Optional[str] = None  # Общая папка экспорта для Label Studio
 
 
 @dataclass
@@ -110,6 +111,7 @@ class Config:
                 dive_panel_expanded=ui_data.get("dive_panel_expanded"),
                 task_table_expanded=ui_data.get("task_table_expanded"),
                 task_table_expanded_groups=ui_data.get("task_table_expanded_groups"),
+                label_studio_dir=ui_data.get("label_studio_dir"),
             ),
         )
 

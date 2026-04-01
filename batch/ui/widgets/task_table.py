@@ -456,6 +456,15 @@ class TaskTable(QWidget):
         except ValueError as e:
             QMessageBox.warning(self, "Ошибка", str(e))
 
+    def _export_label_studio(self, task_id: int):
+        """Открывает диалог экспорта в Label Studio."""
+        try:
+            from ..dialogs.export_ls_dialog import ExportLabelStudioDialog
+            dialog = ExportLabelStudioDialog(self.repo, task_id, parent=self)
+            dialog.exec()
+        except ValueError as e:
+            QMessageBox.warning(self, "Ошибка", str(e))
+
     def _postprocess_selected(self):
         """Открывает постобработку для выбранной задачи."""
         if not self.tree.currentItem():
@@ -524,10 +533,12 @@ class TaskTable(QWidget):
         
         menu = QMenu(self)
         
-        # Постобработка (для завершённых)
+        # Постобработка и экспорт (для завершённых)
         if task.status == TaskStatus.DONE:
             action_postprocess = menu.addAction("📊 Добавить постобработку...")
             action_postprocess.triggered.connect(lambda: self._postprocess_task(task_id))
+            action_export_ls = menu.addAction("🏷 Экспорт в Label Studio...")
+            action_export_ls.triggered.connect(lambda: self._export_label_studio(task_id))
             menu.addSeparator()
         
         # Редактирование

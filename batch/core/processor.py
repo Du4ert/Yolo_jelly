@@ -551,7 +551,8 @@ class ProcessorFactory:
             depth_rate=task_params.get("depth_rate"),
             save_video=task_params.get("save_video", True),
             export_ls_dir=(
-                os.path.join(dive_folder, "label_studio_export")
+                task_params.get("export_ls_dir")
+                or os.path.join(dive_folder, "label_studio_export")
                 if task_params.get("export_label_studio")
                 else None
             ),

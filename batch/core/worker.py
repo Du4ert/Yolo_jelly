@@ -9,6 +9,7 @@ from typing import Optional
 from PyQt6.QtCore import QThread, pyqtSignal, QMutex, QWaitCondition
 
 from ..database import Repository, Task, SubTask, SubTaskType, TaskStatus, OutputType
+from .config import get_config
 from .processor import Processor, ProcessorFactory, ProcessingResult
 from .geometry_processor import GeometryProcessor, SizeEstimationProcessor, VolumeEstimationProcessor
 from .analyze_processor import AnalyzeProcessor
@@ -145,6 +146,7 @@ class Worker(QThread):
                     "export_label_studio": task_data.export_label_studio,
                     "export_ls_interval": task_data.export_ls_interval,
                     "export_ls_classes": task_data.export_ls_classes,
+                    "export_ls_dir": get_config().ui.label_studio_dir,
                     # GPU-ускорение (из задачи, fallback — дефолты)
                     "device": task_data.device or "auto",
                     "imgsz": task_data.imgsz or 1280,

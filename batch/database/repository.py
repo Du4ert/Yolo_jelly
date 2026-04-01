@@ -564,12 +564,15 @@ class Repository:
             stmt = select(func.max(Task.position))
             max_position = session.scalar(stmt) or 0
 
+            # Убираем параметры, не являющиеся полями модели Task
+            task_params = {k: v for k, v in params.items()
+                          if hasattr(Task, k)}
             task = Task(
                 video_id=video_id,
                 model_id=model_id,
                 ctd_id=ctd_id,
                 position=max_position + 1,
-                **params,
+                **task_params,
             )
             session.add(task)
             session.commit()

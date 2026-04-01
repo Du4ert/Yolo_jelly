@@ -10,6 +10,7 @@ from .edit_task import EditTaskDialog
 from .edit_dive import EditDiveDialog
 from .catalog_dialog import CatalogDialog
 from .postprocess_dialog import PostProcessDialog
+from .export_ls_dialog import ExportLabelStudioDialog
 
 __all__ = [
     "NewTaskDialog",
@@ -20,4 +21,5 @@ __all__ = [
     "EditDiveDialog",
     "CatalogDialog",
     "PostProcessDialog",
+    "ExportLabelStudioDialog",
 ]

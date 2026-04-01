@@ -128,7 +128,7 @@ class LabelStudioExporter:
             })
 
         self._annotations.append({
-            'data': {'image': rel_path},
+            'data': {'image': f"/data/local-files/?d={rel_path}"},
             'predictions': [{
                 'model_version': self.model_version,
                 'result': results,
@@ -136,8 +136,13 @@ class LabelStudioExporter:
         })
 
     def finalize(self) -> str:
-        """Записывает preannotations.json и возвращает путь к нему."""
+        """Дописывает аннотации в preannotations.json и возвращает путь к нему."""
         json_path = self.output_dir / 'preannotations.json'
+        existing = []
+        if json_path.exists():
+            with open(json_path, 'r', encoding='utf-8') as f:
+                existing = json.load(f)
+        existing.extend(self._annotations)
         with open(json_path, 'w', encoding='utf-8') as f:
-            json.dump(self._annotations, f, ensure_ascii=False, indent=2)
+            json.dump(existing, f, ensure_ascii=False, indent=2)
         return str(json_path)

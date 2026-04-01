@@ -21,11 +21,12 @@ from PyQt6.QtWidgets import (
     QFrame,
     QWidget,
     QScrollArea,
+    QFileDialog,
 )
 from PyQt6.QtCore import Qt
 
 from ...database import Repository, VideoFile, CTDFile, Model
-from ...core import get_config
+from ...core import get_config, save_config
 
 
 class NewTaskDialog(QDialog):
@@ -234,6 +235,27 @@ class NewTaskDialog(QDialog):
         self.ls_classes_widget.setVisible(False)
         output_layout.addWidget(self.ls_classes_widget)
 
+        # Папка экспорта Label Studio
+        self.ls_dir_widget = QWidget()
+        ls_dir_layout = QHBoxLayout(self.ls_dir_widget)
+        ls_dir_layout.setContentsMargins(20, 0, 0, 0)
+        ls_dir_layout.addWidget(QLabel("Папка экспорта:"))
+        self.edit_ls_dir = QLineEdit()
+        self.edit_ls_dir.setPlaceholderText("По умолчанию — папка погружения")
+        self.edit_ls_dir.setText(get_config().ui.label_studio_dir or "")
+        self.edit_ls_dir.setToolTip(
+            "Общая папка для экспорта кадров и предразметки.\n"
+            "Если пусто — экспорт в папку погружения."
+        )
+        self.edit_ls_dir.textChanged.connect(self._on_ls_dir_changed)
+        ls_dir_layout.addWidget(self.edit_ls_dir)
+        btn_ls_browse = QPushButton("Обзор...")
+        btn_ls_browse.setMaximumWidth(80)
+        btn_ls_browse.clicked.connect(self._browse_ls_dir)
+        ls_dir_layout.addWidget(btn_ls_browse)
+        self.ls_dir_widget.setVisible(False)
+        output_layout.addWidget(self.ls_dir_widget)
+
         self.check_auto_postprocess = QCheckBox("Автоматическая постобработка после детекции")
         self.check_auto_postprocess.setToolTip(
             "После завершения детекции автоматически запустить выбранные операции постобработки"
@@ -365,6 +387,20 @@ class NewTaskDialog(QDialog):
         """Показывает/скрывает настройки Label Studio."""
         self.ls_interval_widget.setVisible(enabled)
         self.ls_classes_widget.setVisible(enabled)
+        self.ls_dir_widget.setVisible(enabled)
+
+    def _browse_ls_dir(self):
+        """Диалог выбора папки для экспорта Label Studio."""
+        current = self.edit_ls_dir.text() or ""
+        path = QFileDialog.getExistingDirectory(self, "Папка экспорта Label Studio", current)
+        if path:
+            self.edit_ls_dir.setText(path)
+
+    def _on_ls_dir_changed(self, text: str):
+        """Сохраняет выбранную папку LS в глобальный конфиг."""
+        config = get_config()
+        config.ui.label_studio_dir = text or None
+        save_config()
 
     def _get_ls_classes_json(self) -> str:
         """Возвращает JSON со списком выбранных классов для LS-экспорта. Пустая строка = все."""
@@ -396,6 +432,7 @@ class NewTaskDialog(QDialog):
             "export_label_studio": self.check_export_label_studio.isChecked(),
             "export_ls_interval": self.spin_ls_interval.value(),
             "export_ls_classes": self._get_ls_classes_json() or None,
+            "export_ls_dir": self.edit_ls_dir.text() or None,
             "auto_postprocess": self.check_auto_postprocess.isChecked(),
             # GPU / Ускорение
             "device": self.combo_device.currentData(),
