@@ -333,7 +333,7 @@ class TaskTable(QWidget):
                     for cls_name, counts in sorted(class_stats.items()):
                         dets = counts.get("detections", 0)
                         trks = counts.get("tracks", 0)
-                        abbr = cls_name.split()[0][:5]  # первые 5 букв рода
+                        abbr = cls_name[0]  # первая буква рода
                         parts.append(f"{abbr} {dets}д/{trks}т")
                         tooltip_parts.append(f"{cls_name}: {dets} дет. / {trks} тр.")
                     result_text = ",  ".join(parts)
