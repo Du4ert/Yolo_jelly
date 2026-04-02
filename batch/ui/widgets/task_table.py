@@ -327,16 +327,23 @@ class TaskTable(QWidget):
             if task.class_stats_json:
                 try:
                     class_stats = json.loads(task.class_stats_json)
-                    # Краткий формат: "Au 3д/1т, Be 2д/1т"
+                    # Все 5 классов в фиксированном порядке, нули для отсутствующих
+                    ALL_CLASSES = [
+                        ("Aurelia aurita", "A. aurita"),
+                        ("Beroe ovata", "B. ovata"),
+                        ("Mnemiopsis leidyi", "M. leidyi"),
+                        ("Pleurobrachia pileus", "P. pileus"),
+                        ("Rhizostoma pulmo", "R. pulmo"),
+                    ]
                     parts = []
                     tooltip_parts = []
-                    for cls_name, counts in sorted(class_stats.items()):
-                        dets = counts.get("detections", 0)
+                    for full_name, short_name in ALL_CLASSES:
+                        counts = class_stats.get(full_name, {"detections": 0, "tracks": 0})
                         trks = counts.get("tracks", 0)
-                        abbr = cls_name[0]  # первая буква рода
-                        parts.append(f"{abbr} {dets}д/{trks}т")
-                        tooltip_parts.append(f"{cls_name}: {dets} дет. / {trks} тр.")
-                    result_text = ",  ".join(parts)
+                        dets = counts.get("detections", 0)
+                        parts.append(f"{short_name} {trks:03d}")
+                        tooltip_parts.append(f"{full_name}: {dets} дет. / {trks} тр.")
+                    result_text = " | ".join(parts)
                     item.setToolTip(4, "\n".join(tooltip_parts))
                 except (json.JSONDecodeError, AttributeError):
                     pass
