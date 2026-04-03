@@ -55,8 +55,7 @@ class LabelStudioExporter:
 
         # Создаём папки для экспортируемых классов
         for class_name in CLASS_NAMES.values():
-            if self.export_classes is None or class_name in self.export_classes:
-                (self.output_dir / _class_folder_name(class_name)).mkdir(parents=True, exist_ok=True)
+            (self.output_dir / _class_folder_name(class_name)).mkdir(parents=True, exist_ok=True)
 
         # Накопитель для JSON
         self._annotations: list[dict] = []
@@ -81,10 +80,10 @@ class LabelStudioExporter:
         if not detections:
             return
 
-        # Фильтрация по выбранным классам
+        # Пропускаем кадр, если на нём нет ни одного выбранного класса;
+        # но аннотируем все детекции (включая невыбранные классы)
         if self.export_classes is not None:
-            detections = [d for d in detections if d['class_name'] in self.export_classes]
-            if not detections:
+            if not any(d['class_name'] in self.export_classes for d in detections):
                 return
 
         # Прореживание по интервалу кадров
