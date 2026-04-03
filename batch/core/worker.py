@@ -324,6 +324,11 @@ class Worker(QThread):
                     output_dir, base_name, params, parent_task.id,
                     progress_callback=on_subtask_progress
                 )
+            elif subtask.subtask_type == SubTaskType.LABEL_STUDIO_EXPORT:
+                result_value, result_text = self._run_label_studio_export(
+                    video, detections_csv, output_dir, base_name, params, parent_task.id,
+                    progress_callback=on_subtask_progress
+                )
             else:
                 raise ValueError(f"Unknown subtask type: {subtask.subtask_type}")
 
@@ -692,6 +697,124 @@ class Worker(QThread):
         
         suffix = " (с геом.)" if effective_geometry_csv else ""
         return None, f"Готово{suffix}"
+
+    def _run_label_studio_export(
+        self,
+        video,
+        detections_csv: str,
+        output_dir: Path,
+        base_name: str,
+        params: dict,
+        task_id: int,
+        progress_callback=None,
+    ):
+        """
+        Выполняет подзадачу экспорта кадров и предразметки для Label Studio.
+
+        Args:
+            video: Объект VideoFile
+            detections_csv: CSV с детекциями
+            output_dir: Папка output задачи (fallback)
+            base_name: Базовое имя файла
+            params: Параметры из params_json (interval, classes, output_dir)
+            task_id: ID задачи
+            progress_callback: (current, total) → None
+        """
+        import sys
+        import cv2
+        import pandas as pd
+
+        src_dir = str(Path(__file__).parent.parent.parent / "src")
+        if src_dir not in sys.path:
+            sys.path.insert(0, src_dir)
+        from label_studio_export import LabelStudioExporter
+
+        frame_interval = params.get("frame_interval", 15)
+        export_classes_list = params.get("export_classes")  # list | None
+        export_classes = set(export_classes_list) if export_classes_list else None
+        image_quality = params.get("image_quality", 95)
+
+        # Папка экспорта: из параметров или fallback
+        ls_output_dir = params.get("output_dir")
+        if not ls_output_dir:
+            dive = self.repo.get_dive(video.dive_id) if video else None
+            if dive and dive.folder_path:
+                ls_output_dir = str(Path(dive.folder_path) / "label_studio_export")
+            else:
+                ls_output_dir = str(output_dir / "label_studio_export")
+
+        df = pd.read_csv(detections_csv)
+        if df.empty:
+            raise ValueError("CSV детекций пуст")
+
+        video_name = Path(video.filepath).stem
+        exporter = LabelStudioExporter(
+            output_dir=ls_output_dir,
+            video_name=video_name,
+            frame_interval=frame_interval,
+            export_classes=export_classes,
+            image_quality=image_quality,
+        )
+
+        cap = cv2.VideoCapture(video.filepath)
+        if not cap.isOpened():
+            raise ValueError(f"Не удалось открыть видео: {video.filepath}")
+
+        try:
+            grouped = df.groupby("frame")
+            total = len(grouped)
+            prev_frame_num = -1
+
+            for i, (frame_num, group) in enumerate(grouped):
+                if self._stop_requested:
+                    raise Exception("Отменено пользователем")
+
+                self._mutex.lock()
+                while self._pause_requested and not self._stop_requested:
+                    self._pause_condition.wait(self._mutex)
+                self._mutex.unlock()
+
+                frame_num = int(frame_num)
+                if frame_num != prev_frame_num + 1:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+                ret, frame = cap.read()
+                if not ret:
+                    prev_frame_num = frame_num
+                    continue
+                prev_frame_num = frame_num
+
+                timestamp = float(group.iloc[0].get("timestamp_s", 0))
+
+                detections = []
+                for _, row in group.iterrows():
+                    det = {
+                        "class_name": row["class_name"],
+                        "confidence": float(row["confidence"]),
+                        "x_center": float(row["x_center"]),
+                        "y_center": float(row["y_center"]),
+                        "width": float(row["width"]),
+                        "height": float(row["height"]),
+                        "track_id": (
+                            int(row["track_id"])
+                            if pd.notna(row.get("track_id"))
+                            else None
+                        ),
+                    }
+                    detections.append(det)
+
+                exporter.process_frame(frame, frame_num, timestamp, detections)
+
+                if progress_callback:
+                    progress_callback(i + 1, total)
+
+            json_path = exporter.finalize()
+        finally:
+            cap.release()
+
+        self.repo.add_task_output(task_id, OutputType.LABEL_STUDIO_JSON, json_path)
+
+        frames_exported = len(exporter._annotations)
+        return frames_exported, f"{frames_exported} кадров"
 
     def _create_auto_postprocess_subtasks(self, task_id: int, params_json: Optional[str]) -> None:
         """

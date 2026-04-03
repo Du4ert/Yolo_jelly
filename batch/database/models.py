@@ -49,6 +49,7 @@ class SubTaskType(enum.Enum):
     VOLUME = "volume"
     ANALYSIS = "analysis"
     SIZE_VIDEO_RENDER = "size_video_render"
+    LABEL_STUDIO_EXPORT = "label_studio_export"
 
 
 class OutputType(enum.Enum):
@@ -64,6 +65,7 @@ class OutputType(enum.Enum):
     ANALYSIS_PLOT = "analysis_plot"
     ANALYSIS_REPORT = "analysis_report"
     INTERACTIVE_PLOT = "interactive_plot"
+    LABEL_STUDIO_JSON = "label_studio_json"
 
 
 class Catalog(Base):
@@ -350,6 +352,7 @@ class SubTask(Base):
             SubTaskType.VOLUME: "Объём",
             SubTaskType.ANALYSIS: "Анализ",
             SubTaskType.SIZE_VIDEO_RENDER: "Видео с размерами",
+            SubTaskType.LABEL_STUDIO_EXPORT: "Label Studio",
         }
         return names.get(self.subtask_type, "???")
     
@@ -362,6 +365,7 @@ class SubTask(Base):
             SubTaskType.VOLUME: "📦",
             SubTaskType.ANALYSIS: "📊",
             SubTaskType.SIZE_VIDEO_RENDER: "🎬",
+            SubTaskType.LABEL_STUDIO_EXPORT: "🏷",
         }
         return icons.get(self.subtask_type, "?")
 

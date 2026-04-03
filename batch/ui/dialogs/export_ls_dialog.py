@@ -1,15 +1,12 @@
 """
-Диалог экспорта кадров и предразметки в Label Studio из завершённой задачи.
+Диалог экспорта кадров и предразметки в Label Studio.
 
-Читает CSV с детекциями + оригинальное видео, извлекает кадры
-и формирует preannotations.json через LabelStudioExporter.
+Поддерживает выбор нескольких завершённых задач.
+Создаёт подзадачи LABEL_STUDIO_EXPORT, которые выполняются в общей очереди.
 """
 
-import sys
-from pathlib import Path
+import json
 
-import cv2
-import pandas as pd
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -21,144 +18,50 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QSpinBox,
     QPushButton,
-    QDialogButtonBox,
-    QProgressBar,
     QFileDialog,
     QMessageBox,
     QWidget,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt
 
-from ...database import Repository, TaskStatus
-from ...core import get_config, save_config
-
-# Путь к src для импорта label_studio_export и constants
-ROOT_DIR = Path(__file__).parent.parent.parent.parent
-sys.path.insert(0, str(ROOT_DIR / "src"))
-
-
-class _ExportWorker(QThread):
-    """Фоновый поток экспорта кадров из видео по CSV детекций."""
-
-    progress = pyqtSignal(int)       # процент 0-100
-    finished = pyqtSignal(str)       # путь к JSON
-    error = pyqtSignal(str)          # сообщение об ошибке
-
-    def __init__(
-        self,
-        video_path: str,
-        csv_path: str,
-        output_dir: str,
-        video_name: str,
-        frame_interval: int,
-        export_classes: set | None,
-        image_quality: int = 95,
-    ):
-        super().__init__()
-        self.video_path = video_path
-        self.csv_path = csv_path
-        self.output_dir = output_dir
-        self.video_name = video_name
-        self.frame_interval = frame_interval
-        self.export_classes = export_classes
-        self.image_quality = image_quality
-        self._cancelled = False
-
-    def cancel(self):
-        self._cancelled = True
-
-    def run(self):
-        try:
-            from label_studio_export import LabelStudioExporter
-
-            df = pd.read_csv(self.csv_path)
-            if df.empty:
-                self.error.emit("CSV детекций пуст")
-                return
-
-            exporter = LabelStudioExporter(
-                output_dir=self.output_dir,
-                video_name=self.video_name,
-                frame_interval=self.frame_interval,
-                export_classes=self.export_classes,
-                image_quality=self.image_quality,
-            )
-
-            cap = cv2.VideoCapture(self.video_path)
-            if not cap.isOpened():
-                self.error.emit(f"Не удалось открыть видео: {self.video_path}")
-                return
-
-            grouped = df.groupby("frame")
-            total = len(grouped)
-            prev_frame_num = -1
-
-            for i, (frame_num, group) in enumerate(grouped):
-                if self._cancelled:
-                    cap.release()
-                    return
-
-                # Перемотка к нужному кадру
-                frame_num = int(frame_num)
-                if frame_num != prev_frame_num + 1:
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
-                ret, frame = cap.read()
-                if not ret:
-                    prev_frame_num = frame_num
-                    continue
-                prev_frame_num = frame_num
-
-                timestamp = float(group.iloc[0].get("timestamp_s", 0))
-
-                detections = []
-                for _, row in group.iterrows():
-                    det = {
-                        "class_name": row["class_name"],
-                        "confidence": float(row["confidence"]),
-                        "x_center": float(row["x_center"]),
-                        "y_center": float(row["y_center"]),
-                        "width": float(row["width"]),
-                        "height": float(row["height"]),
-                        "track_id": (
-                            int(row["track_id"])
-                            if pd.notna(row.get("track_id"))
-                            else None
-                        ),
-                    }
-                    detections.append(det)
-
-                exporter.process_frame(frame, frame_num, timestamp, detections)
-
-                self.progress.emit(int((i + 1) / total * 100))
-
-            cap.release()
-            json_path = exporter.finalize()
-            self.finished.emit(json_path)
-
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            self.error.emit(str(e))
+from ...database import Repository, TaskStatus, SubTaskType
+from ...core import TaskManager, get_config, save_config
 
 
 class ExportLabelStudioDialog(QDialog):
-    """Диалог экспорта кадров и предразметки в Label Studio из завершённой задачи."""
+    """
+    Диалог экспорта в Label Studio для одной или нескольких завершённых задач.
 
-    def __init__(self, repo: Repository, task_id: int, parent=None):
+    Создаёт подзадачи LABEL_STUDIO_EXPORT, которые будут выполнены в общей очереди.
+    """
+
+    def __init__(
+        self,
+        repo: Repository,
+        task_manager: TaskManager,
+        task_ids: list[int],
+        parent=None,
+    ):
         super().__init__(parent)
         self.repo = repo
-        self.task_id = task_id
-        self.task = repo.get_task_with_outputs(task_id)
-        self._worker = None
+        self.task_manager = task_manager
 
-        if not self.task:
-            raise ValueError(f"Задача {task_id} не найдена")
-        if self.task.status != TaskStatus.DONE:
-            raise ValueError("Экспорт доступен только для завершённых задач")
-        if not self.task.detections_csv_path:
-            raise ValueError("CSV с детекциями не найден")
+        # Фильтруем: только завершённые задачи с CSV детекций
+        self.tasks = []
+        for tid in task_ids:
+            task = repo.get_task_with_outputs(tid)
+            if task and task.status == TaskStatus.DONE and task.detections_csv_path:
+                self.tasks.append(task)
 
-        self.setWindowTitle(f"Экспорт в Label Studio — задача #{task_id}")
+        if not self.tasks:
+            raise ValueError("Нет подходящих завершённых задач с детекциями")
+
+        count = len(self.tasks)
+        if count == 1:
+            title = f"Экспорт в Label Studio — задача #{self.tasks[0].id}"
+        else:
+            title = f"Экспорт в Label Studio — {count} задач"
+        self.setWindowTitle(title)
         self.setMinimumWidth(500)
         self._setup_ui()
 
@@ -166,17 +69,27 @@ class ExportLabelStudioDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
 
-        # === Информация о задаче ===
-        info_group = QGroupBox("Задача")
-        info_layout = QFormLayout(info_group)
+        # === Информация о задачах ===
+        info_group = QGroupBox("Задачи")
+        info_layout = QVBoxLayout(info_group)
 
-        video = self.repo.get_video_file(self.task.video_id)
-        info_layout.addRow("Видео:", QLabel(video.filename if video else "???"))
+        if len(self.tasks) == 1:
+            task = self.tasks[0]
+            form = QFormLayout()
+            video = self.repo.get_video_file(task.video_id)
+            form.addRow("Видео:", QLabel(video.filename if video else "???"))
+            det_text = f"{task.detections_count or 0} детекций"
+            if task.tracks_count:
+                det_text += f", {task.tracks_count} треков"
+            form.addRow("Результат:", QLabel(det_text))
+            info_layout.addLayout(form)
+        else:
+            total_det = sum(t.detections_count or 0 for t in self.tasks)
+            info_layout.addWidget(QLabel(
+                f"Выбрано задач: {len(self.tasks)}, "
+                f"всего детекций: {total_det}"
+            ))
 
-        det_text = f"{self.task.detections_count or 0} детекций"
-        if self.task.tracks_count:
-            det_text += f", {self.task.tracks_count} треков"
-        info_layout.addRow("Результат:", QLabel(det_text))
         layout.addWidget(info_group)
 
         # === Параметры экспорта ===
@@ -230,24 +143,15 @@ class ExportLabelStudioDialog(QDialog):
         dir_layout.addWidget(btn_browse)
         layout.addWidget(dir_group)
 
-        # === Прогресс ===
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setVisible(False)
-        layout.addWidget(self.progress_bar)
-
-        self.label_status = QLabel()
-        self.label_status.setVisible(False)
-        layout.addWidget(self.label_status)
-
         # === Кнопки ===
-        self.btn_export = QPushButton("Экспортировать")
-        self.btn_export.clicked.connect(self._start_export)
+        self.btn_add = QPushButton("Добавить в очередь")
+        self.btn_add.clicked.connect(self._on_add)
         btn_close = QPushButton("Закрыть")
         btn_close.clicked.connect(self.close)
 
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
-        btn_layout.addWidget(self.btn_export)
+        btn_layout.addWidget(self.btn_add)
         btn_layout.addWidget(btn_close)
         layout.addLayout(btn_layout)
 
@@ -262,71 +166,52 @@ class ExportLabelStudioDialog(QDialog):
         config.ui.label_studio_dir = text or None
         save_config()
 
-    def _get_export_classes(self) -> set | None:
-        selected = {name for name, chk in self.class_checks.items() if chk.isChecked()}
+    def _get_export_classes(self) -> list | None:
+        """Возвращает список выбранных классов или None если все выбраны."""
+        selected = [name for name, chk in self.class_checks.items() if chk.isChecked()]
         if len(selected) == len(self.class_checks):
             return None  # все выбраны
         return selected
 
-    def _get_output_dir(self) -> str:
-        custom = self.edit_dir.text().strip()
-        if custom:
-            return custom
-        # Fallback — папка погружения
-        video = self.repo.get_video_file(self.task.video_id)
-        if video:
-            dive = self.repo.get_dive(video.dive_id)
-            if dive and dive.folder_path:
-                return str(Path(dive.folder_path) / "label_studio_export")
-        raise ValueError("Не удалось определить папку экспорта")
-
-    def _start_export(self):
-        try:
-            output_dir = self._get_output_dir()
-        except ValueError as e:
-            QMessageBox.warning(self, "Ошибка", str(e))
+    def _on_add(self):
+        """Создаёт подзадачи LABEL_STUDIO_EXPORT для каждой задачи."""
+        export_classes = self._get_export_classes()
+        if export_classes is not None and not export_classes:
+            QMessageBox.warning(self, "Нет классов", "Выберите хотя бы один класс")
             return
 
-        video = self.repo.get_video_file(self.task.video_id)
-        if not video:
-            QMessageBox.warning(self, "Ошибка", "Видеофайл не найден")
-            return
+        params = {
+            "frame_interval": self.spin_interval.value(),
+            "export_classes": export_classes,
+            "image_quality": 95,
+        }
 
-        self.btn_export.setEnabled(False)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setVisible(True)
-        self.label_status.setText("Экспорт...")
-        self.label_status.setVisible(True)
+        # Если указана папка — передаём в параметры
+        custom_dir = self.edit_dir.text().strip()
+        if custom_dir:
+            params["output_dir"] = custom_dir
 
-        self._worker = _ExportWorker(
-            video_path=video.filepath,
-            csv_path=self.task.detections_csv_path,
-            output_dir=output_dir,
-            video_name=Path(video.filepath).stem,
-            frame_interval=self.spin_interval.value(),
-            export_classes=self._get_export_classes(),
-        )
-        self._worker.progress.connect(self.progress_bar.setValue)
-        self._worker.finished.connect(self._on_finished)
-        self._worker.error.connect(self._on_error)
-        self._worker.start()
+        params_json = json.dumps(params, ensure_ascii=False)
 
-    def _on_finished(self, json_path: str):
-        self.progress_bar.setValue(100)
-        self.label_status.setText(f"Готово: {json_path}")
-        self.btn_export.setEnabled(True)
-        QMessageBox.information(
-            self, "Экспорт завершён",
-            f"Данные экспортированы.\n\nJSON: {json_path}"
-        )
+        created = 0
+        for task in self.tasks:
+            st = self.repo.create_subtask(
+                parent_task_id=task.id,
+                subtask_type=SubTaskType.LABEL_STUDIO_EXPORT,
+                position=0,
+                params_json=params_json,
+            )
+            if st:
+                created += 1
 
-    def _on_error(self, message: str):
-        self.label_status.setText(f"Ошибка: {message}")
-        self.btn_export.setEnabled(True)
-        QMessageBox.critical(self, "Ошибка экспорта", message)
-
-    def closeEvent(self, event):
-        if self._worker and self._worker.isRunning():
-            self._worker.cancel()
-            self._worker.wait(3000)
-        super().closeEvent(event)
+        if created:
+            QMessageBox.information(
+                self, "Добавлено",
+                f"Добавлено {created} подзадач экспорта в очередь.\n\n"
+                "Подзадачи будут выполнены автоматически\n"
+                "при запуске очереди."
+            )
+            self.task_manager.queue_changed.emit()
+            self.accept()
+        else:
+            QMessageBox.warning(self, "Ошибка", "Не удалось создать подзадачи")

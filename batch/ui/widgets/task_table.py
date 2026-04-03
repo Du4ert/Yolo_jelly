@@ -463,12 +463,15 @@ class TaskTable(QWidget):
         except ValueError as e:
             QMessageBox.warning(self, "Ошибка", str(e))
 
-    def _export_label_studio(self, task_id: int):
-        """Открывает диалог экспорта в Label Studio."""
+    def _export_label_studio(self, task_ids: list[int]):
+        """Открывает диалог экспорта в Label Studio для одной или нескольких задач."""
         try:
             from ..dialogs.export_ls_dialog import ExportLabelStudioDialog
-            dialog = ExportLabelStudioDialog(self.repo, task_id, parent=self)
+            dialog = ExportLabelStudioDialog(
+                self.repo, self.task_manager, task_ids, parent=self,
+            )
             dialog.exec()
+            self.refresh()
         except ValueError as e:
             QMessageBox.warning(self, "Ошибка", str(e))
 
@@ -545,7 +548,7 @@ class TaskTable(QWidget):
             action_postprocess = menu.addAction("📊 Добавить постобработку...")
             action_postprocess.triggered.connect(lambda: self._postprocess_task(task_id))
             action_export_ls = menu.addAction("🏷 Экспорт в Label Studio...")
-            action_export_ls.triggered.connect(lambda: self._export_label_studio(task_id))
+            action_export_ls.triggered.connect(lambda: self._export_label_studio([task_id]))
             menu.addSeparator()
         
         # Редактирование
@@ -717,11 +720,17 @@ class TaskTable(QWidget):
         pending_tasks = [t for t in tasks if t.status == TaskStatus.PENDING]
         unskippable = [t.id for t in pending_tasks if not t.is_skipped]
         skipped_ids = [t.id for t in pending_tasks if t.is_skipped]
+        done_ids = [t.id for t in tasks if t.status == TaskStatus.DONE]
         error_cancelled = [t.id for t in tasks if t.status in (TaskStatus.ERROR, TaskStatus.CANCELLED)]
         deletable_ids = [t.id for t in tasks if t.status != TaskStatus.RUNNING]
 
         menu = QMenu(self)
         has_items = False
+
+        if done_ids:
+            action = menu.addAction(f"🏷 Экспорт в Label Studio ({len(done_ids)})...")
+            action.triggered.connect(lambda: self._export_label_studio(done_ids))
+            has_items = True
 
         if unskippable:
             action = menu.addAction(f"⏭ Пропустить {len(unskippable)} задач")
