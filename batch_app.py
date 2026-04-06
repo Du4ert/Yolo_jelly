@@ -75,7 +75,12 @@ def main():
     
     # Инициализация репозитория
     repo = Repository(str(db_path))
-    
+
+    # Сбрасываем задачи/подзадачи, зависшие в RUNNING после предыдущего краша
+    stale = repo.reset_stale_running_tasks()
+    if stale:
+        print(f"Сброшено зависших задач/подзадач: {stale}")
+
     # Создание приложения
     app = QApplication(sys.argv)
     app.setApplicationName("YOLO Jellyfish Batch Processor")

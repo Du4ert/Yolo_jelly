@@ -641,6 +641,36 @@ class Repository:
             stmt = select(Task).where(Task.status == status).order_by(Task.position)
             return list(session.scalars(stmt))
 
+    def reset_stale_running_tasks(self) -> int:
+        """Сбрасывает задачи и подзадачи в статусе RUNNING в ERROR.
+
+        Вызывается при старте приложения, чтобы устранить задачи,
+        зависшие после аварийного завершения предыдущего сеанса.
+        Возвращает количество сброшенных записей.
+        """
+        count = 0
+        with self.get_session() as session:
+            result = session.execute(
+                update(Task)
+                .where(Task.status == TaskStatus.RUNNING)
+                .values(
+                    status=TaskStatus.ERROR,
+                    error_message="Прервано (аварийное завершение приложения)",
+                )
+            )
+            count += result.rowcount
+            result = session.execute(
+                update(SubTask)
+                .where(SubTask.status == TaskStatus.RUNNING)
+                .values(
+                    status=TaskStatus.ERROR,
+                    error_message="Прервано (аварийное завершение приложения)",
+                )
+            )
+            count += result.rowcount
+            session.commit()
+        return count
+
     def update_task(self, task_id: int, **kwargs) -> Optional[Task]:
         """Обновляет задачу."""
         with self.get_session() as session:
