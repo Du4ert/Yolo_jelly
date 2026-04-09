@@ -352,6 +352,9 @@ def _get_bbox_size_pixels(
     """
     w_pix = row['width'] * frame_width
     h_pix = row['height'] * frame_height
+    # Rhizostoma pulmo: берём меньший диаметр купола
+    if row.get('class_name') == 'Rhizostoma pulmo':
+        return min(w_pix, h_pix)
     return max(w_pix, h_pix)
 
 
