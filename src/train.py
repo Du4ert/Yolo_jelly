@@ -170,6 +170,7 @@ def train_model(
     _cls = get_param(config, 'advanced', 'cls', default=0.5)
     _dfl = get_param(config, 'advanced', 'dfl', default=1.5)
     _nbs = get_param(config, 'advanced', 'nbs', default=64)
+    _multi_scale = get_param(config, 'advanced', 'multi_scale', default=0.0)
     
     # Валидация и логирование
     _val = get_param(config, 'validation', 'val', default=True)
@@ -213,6 +214,12 @@ def train_model(
     print(f"  Геометрия: degrees={_degrees}, scale={_scale}, translate={_translate}")
     print(f"  Отражения: flipud={_flipud}, fliplr={_fliplr}")
     print(f"  Mosaic={_mosaic}, MixUp={_mixup}")
+    if _multi_scale and _multi_scale > 0:
+        _ms_lo = int(_imgsz * (1.0 - _multi_scale))
+        _ms_hi = int(_imgsz * (1.0 + _multi_scale))
+        print(f"  Multi-scale: ±{_multi_scale*100:.0f}% (диапазон ~{_ms_lo}–{_ms_hi} px)")
+    else:
+        print(f"  Multi-scale: отключен")
     print()
     print(f"CUDA доступна: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
@@ -262,6 +269,7 @@ def train_model(
         cls=_cls,
         dfl=_dfl,
         nbs=_nbs,
+        multi_scale=_multi_scale,
         
         # Сохранение
         project=_project,
