@@ -1770,15 +1770,24 @@ def process_video_geometry(
 
 @dataclass
 class VolumeEstimate:
-    """Результат оценки осмотренного объёма воды."""
+    """Результат оценки осмотренного объёма воды (цилиндрическая модель).
+
+    Столб воды моделируется как цилиндр с эллиптическим сечением, вписанным
+    в конус обзора камеры на эффективной дистанции d_eff:
+        V = A_eff × H
+        A_eff = (π/4) · w · h,  w = 2·d_eff·tan(fov_h/2), h = 2·d_eff·tan(fov_v/2)
+        H     = depth_traversed + d_eff    (шапка снизу)
+
+    d_eff определяется эмпирически как P-перцентиль (по умолчанию P90)
+    распределения distance_to_object_m по всем детекциям.
+    """
     total_volume_m3: float
-    frustum_volume_m3: float
-    swept_volume_m3: float
     depth_range_m: Tuple[float, float]
     depth_traversed_m: float
-    detection_distance_m: float
-    near_distance_m: float
-    cross_section_area_m2: float
+    detection_distance_m: float      # = effective_distance_m, сохранено для совместимости
+    effective_distance_m: float      # d_eff: P-перцентиль distance_to_object_m (clamp'ed)
+    cylinder_height_m: float         # H = depth_traversed + d_eff
+    cross_section_area_m2: float     # A_eff (эллипс)
     fov_horizontal_deg: float
     fov_vertical_deg: float
     duration_s: float
@@ -1796,75 +1805,73 @@ DEFAULT_DETECTION_DISTANCES = {
 }
 
 
-def calculate_frustum_volume(d_near: float, d_far: float, fov_h_rad: float, fov_v_rad: float) -> float:
-    """Вычисляет объём усечённой пирамиды (frustum)."""
-    w_near = 2 * d_near * np.tan(fov_h_rad / 2)
-    h_near = 2 * d_near * np.tan(fov_v_rad / 2)
-    A_near = w_near * h_near
-    
-    w_far = 2 * d_far * np.tan(fov_h_rad / 2)
-    h_far = 2 * d_far * np.tan(fov_v_rad / 2)
-    A_far = w_far * h_far
-    
-    depth = d_far - d_near
-    V = (depth / 3) * (A_near + A_far + np.sqrt(A_near * A_far))
-    return V
+def calculate_ellipse_area(distance: float, fov_h_rad: float, fov_v_rad: float) -> float:
+    """Вычисляет площадь эллиптического сечения конуса обзора камеры на заданной
+    дистанции, вписанного в прямоугольный FOV.
 
+    A = (π/4) · w · h,  w = 2·d·tan(fov_h/2), h = 2·d·tan(fov_v/2)
 
-def calculate_cross_section_area(distance: float, fov_h_rad: float, fov_v_rad: float) -> float:
-    """Вычисляет площадь поперечного сечения на заданной дистанции."""
+    Эллиптическая форма физически ближе к реально полезной зоне
+    детекции fisheye-объектива (GoPro Wide 156°), чем полный прямоугольник FOV,
+    включающий сильно искажённые углы кадра.
+    """
     w = 2 * distance * np.tan(fov_h_rad / 2)
     h = 2 * distance * np.tan(fov_v_rad / 2)
-    return w * h
+    return (np.pi / 4.0) * w * h
 
 
-def estimate_detection_distance(
-    tracks_df: pd.DataFrame,
+def estimate_effective_distance(
     detections_df: pd.DataFrame,
+    tracks_df: Optional[pd.DataFrame],
     calibration: CameraCalibration,
-    reference_class: str = 'Aurelia aurita'
+    percentile: float = 90.0,
+    reference_class: str = 'Aurelia aurita',
 ) -> float:
-    """Оценивает эффективную дистанцию обнаружения по данным треков."""
-    if tracks_df is None or len(tracks_df) == 0:
-        return DEFAULT_DETECTION_DISTANCES.get(reference_class, 1.5)
-    
-    if 'method' not in tracks_df.columns:
-        return DEFAULT_DETECTION_DISTANCES.get(reference_class, 1.5)
-    
-    ref_tracks = tracks_df[
-        (tracks_df['class_name'] == reference_class) & 
-        (tracks_df['method'] == 'k_method')
-    ]
-    
-    if len(ref_tracks) == 0:
-        ref_tracks = tracks_df[tracks_df['method'] == 'k_method']
-    
-    if len(ref_tracks) == 0:
-        return DEFAULT_DETECTION_DISTANCES.get(reference_class, 1.5)
-    
-    max_distances = []
-    
-    for _, track in ref_tracks.iterrows():
-        track_id = track['track_id']
-        object_depth = track['object_depth_m']
-        
-        if pd.isna(object_depth):
-            continue
-        
-        track_detections = detections_df[detections_df['track_id'] == track_id]
-        if len(track_detections) == 0:
-            continue
-        
-        min_camera_depth = track_detections['depth_m'].min()
-        max_dist = abs(object_depth - min_camera_depth)
-        
-        if 0.5 < max_dist < 5.0:
-            max_distances.append(max_dist)
-    
-    if max_distances:
-        return np.mean(max_distances) + np.std(max_distances) * 0.5
-    
-    return DEFAULT_DETECTION_DISTANCES.get(reference_class, 1.5)
+    """Эмпирически оценивает эффективную дистанцию обнаружения d_eff
+    как P-перцентиль фактических дистанций до детекций (по умолчанию P90).
+
+    Источники данных по приоритету:
+      1. detections_df['distance_to_object_m'] — покадровые дистанции
+         (заполняются подкомандой `size`).
+      2. tracks_df: (object_depth_m − camera_depth_first_m) по k_method трекам.
+      3. DEFAULT_DETECTION_DISTANCES[reference_class] — константный fallback.
+
+    Результат ограничивается диапазоном надёжных измерений калибровки
+    [min_reliable_distance, max_reliable_distance].
+    """
+    d_min = calibration.min_reliable_distance
+    d_max = calibration.max_reliable_distance
+    # Верхний барьер для отсева явных выбросов перед перцентилем.
+    outlier_cap = d_max * 2.0
+
+    # Источник 1: покадровые дистанции из detections_df
+    if (detections_df is not None
+            and 'distance_to_object_m' in detections_df.columns):
+        dists = pd.to_numeric(
+            detections_df['distance_to_object_m'], errors='coerce'
+        ).dropna()
+        dists = dists[(dists > 0) & (dists < outlier_cap)]
+        if len(dists) >= 5:
+            d_eff = float(np.percentile(dists, percentile))
+            return float(np.clip(d_eff, d_min, d_max))
+
+    # Источник 2: дистанции по k_method трекам
+    if (tracks_df is not None and len(tracks_df) > 0
+            and 'method' in tracks_df.columns
+            and 'object_depth_m' in tracks_df.columns
+            and 'camera_depth_first_m' in tracks_df.columns):
+        k_tracks = tracks_df[tracks_df['method'] == 'k_method']
+        if len(k_tracks) >= 3:
+            dists = (pd.to_numeric(k_tracks['object_depth_m'], errors='coerce')
+                     - pd.to_numeric(k_tracks['camera_depth_first_m'], errors='coerce')).dropna()
+            dists = dists[(dists > 0) & (dists < outlier_cap)]
+            if len(dists) >= 3:
+                d_eff = float(np.percentile(dists, percentile))
+                return float(np.clip(d_eff, d_min, d_max))
+
+    # Источник 3: дефолтное значение по виду (clamp на всякий случай)
+    fallback = DEFAULT_DETECTION_DISTANCES.get(reference_class, 1.5)
+    return float(np.clip(fallback, d_min, d_max))
 
 
 def calculate_surveyed_volume(
@@ -1878,19 +1885,33 @@ def calculate_surveyed_volume(
     depth_range: Optional[Tuple[float, float]] = None,
     total_duration_s: Optional[float] = None,
     fps: float = 60.0,
+    percentile: float = 90.0,
     verbose: bool = True
 ) -> VolumeEstimate:
-    """Вычисляет осмотренный объём воды на основе данных погружения."""
+    """Вычисляет осмотренный объём воды по цилиндрической модели.
+
+    Формула:
+        V = A_eff · H,
+        где A_eff = (π/4) · w · h — эллиптическое сечение на дистанции d_eff,
+              H     = depth_traversed + d_eff (шапка снизу).
+
+    d_eff — эмпирический P-перцентиль распределения distance_to_object_m
+    (по умолчанию P90) с clamp'ом в диапазон надёжных дистанций калибровки.
+
+    Параметр `near_distance_m` устарел: в цилиндрической модели он не используется,
+    оставлен в сигнатуре для обратной совместимости вызовов.
+    """
     if calibration is None:
         calibration = CameraCalibration()
-    
+
     fov_h_deg = fov_horizontal_deg
     aspect_ratio = calibration.frame_width / calibration.frame_height
     fov_v_deg = fov_h_deg / aspect_ratio
-    
+
     fov_h_rad = np.radians(fov_h_deg)
     fov_v_rad = np.radians(fov_v_deg)
-    
+
+    # --- Диапазон глубин ---
     if depth_range is not None:
         depth_min, depth_max = depth_range
         source = "явно задан"
@@ -1909,9 +1930,10 @@ def calculate_surveyed_volume(
         depth_min = depths.min()
         depth_max = depths.max()
         source = "детекции"
-    
+
     depth_traversed = depth_max - depth_min
-    
+
+    # --- Длительность ---
     if total_duration_s is not None:
         duration = total_duration_s
     elif ctd_df is not None and 'timestamp_s' in ctd_df.columns:
@@ -1924,52 +1946,60 @@ def calculate_surveyed_volume(
         else:
             timestamps = detections_df['timestamp_s'].dropna()
             duration = timestamps.max() - timestamps.min() if len(timestamps) > 1 else 0
-    
+
     descent_rate = depth_traversed / duration if duration > 0 else 0
-    
+
+    # --- Эффективная дистанция d_eff ---
     if detection_distance_m is None:
-        d_far = estimate_detection_distance(tracks_df, detections_df, calibration)
+        d_eff = estimate_effective_distance(
+            detections_df, tracks_df, calibration, percentile=percentile
+        )
+        d_eff_source = f"эмпирически (P{percentile:.0f})"
     else:
-        d_far = detection_distance_m
-    
-    d_near = near_distance_m
-    
+        d_eff = float(np.clip(
+            detection_distance_m,
+            calibration.min_reliable_distance,
+            calibration.max_reliable_distance,
+        ))
+        d_eff_source = "явно задан"
+
+    # --- Цилиндрическая модель: A_eff (эллипс) × H ---
+    A_eff = calculate_ellipse_area(d_eff, fov_h_rad, fov_v_rad)
+    H = depth_traversed + d_eff     # шапка снизу: на финальной глубине объекты
+                                    #               просматриваются на d_eff ниже
+    V_total = A_eff * H
+
     if verbose:
-        print(f"=== РАСЧЁТ ОСМОТРЕННОГО ОБЪЁМА ===")
-        print(f"Источник: {source}")
-        print(f"Диапазон глубин: {depth_min:.1f} - {depth_max:.1f} м")
-        print(f"Дистанция обнаружения: {d_near:.1f} - {d_far:.2f} м")
-    
-    V_frustum = calculate_frustum_volume(d_near, d_far, fov_h_rad, fov_v_rad)
-    A_far = calculate_cross_section_area(d_far, fov_h_rad, fov_v_rad)
-    V_swept = A_far * depth_traversed
-    V_total = V_frustum + V_swept
-    
-    if verbose:
-        print(f"ИТОГО объём: {V_total:.1f} м³")
-    
+        print(f"=== РАСЧЁТ ОСМОТРЕННОГО ОБЪЁМА (цилиндр) ===")
+        print(f"Источник глубины:      {source}")
+        print(f"Диапазон глубин:      {depth_min:.2f} – {depth_max:.2f} м  (Н={depth_traversed:.2f} м)")
+        print(f"Дистанция d_eff ({d_eff_source}): {d_eff:.2f} м")
+        print(f"Сечение A_eff (эллипс): {A_eff:.2f} м²")
+        print(f"Высота цилиндра H:    {H:.2f} м ({depth_traversed:.2f} + {d_eff:.2f})")
+        print(f"ИТОГО объём:          {V_total:.2f} м³")
+
     counts_by_class = {}
     density_by_class = {}
-    
+
     for class_name in detections_df['class_name'].unique():
         class_df = detections_df[detections_df['class_name'] == class_name]
         n_tracks = class_df['track_id'].nunique()
-        
+
         if n_tracks == 0 or class_df['track_id'].isna().all():
             n_tracks = len(class_df)
-        
+
         counts_by_class[class_name] = n_tracks
         density_by_class[class_name] = n_tracks / V_total if V_total > 0 else 0
-    
+
+    d_eff_rounded = round(d_eff, 2)
     return VolumeEstimate(
         total_volume_m3=round(V_total, 2),
-        frustum_volume_m3=round(V_frustum, 2),
-        swept_volume_m3=round(V_swept, 2),
         depth_range_m=(round(depth_min, 2), round(depth_max, 2)),
         depth_traversed_m=round(depth_traversed, 2),
-        detection_distance_m=round(d_far, 2),
-        near_distance_m=round(d_near, 2),
-        cross_section_area_m2=round(A_far, 2),
+        detection_distance_m=d_eff_rounded,      # алиас для совместимости
+        effective_distance_m=d_eff_rounded,
+        cylinder_height_m=round(H, 2),
+        cross_section_area_m2=round(A_eff, 2),
         fov_horizontal_deg=fov_h_deg,
         fov_vertical_deg=round(fov_v_deg, 1),
         duration_s=round(duration, 1),
@@ -1993,9 +2023,15 @@ def process_volume_estimation(
     fps: float = 60.0,
     frame_width: int = 3840,
     frame_height: int = 2160,
+    percentile: float = 90.0,
     verbose: bool = True
 ) -> VolumeEstimate:
-    """Обрабатывает файлы и вычисляет осмотренный объём."""
+    """Обрабатывает файлы и вычисляет осмотренный объём по цилиндрической модели.
+
+    Args:
+        percentile: перцентиль для эффективной дистанции d_eff (по умолчанию P90).
+        near_distance: устарел, не используется в цилиндрической модели.
+    """
     calibration = CameraCalibration()
     calibration.frame_width = frame_width
     calibration.frame_height = frame_height
@@ -2034,22 +2070,27 @@ def process_volume_estimation(
         depth_range=depth_range,
         total_duration_s=total_duration,
         fps=fps,
+        percentile=percentile,
         verbose=verbose
     )
     
     if output_csv:
         output_data = {
             'parameter': [
-                'total_volume_m3', 'frustum_volume_m3', 'swept_volume_m3',
+                'total_volume_m3',
+                'effective_distance_m', 'cylinder_height_m',
                 'depth_min_m', 'depth_max_m', 'depth_traversed_m',
-                'detection_distance_m', 'near_distance_m', 'cross_section_area_m2',
-                'fov_horizontal_deg', 'fov_vertical_deg', 'duration_s', 'descent_rate_m_s'
+                'cross_section_area_m2',
+                'fov_horizontal_deg', 'fov_vertical_deg',
+                'duration_s', 'descent_rate_m_s'
             ],
             'value': [
-                result.total_volume_m3, result.frustum_volume_m3, result.swept_volume_m3,
+                result.total_volume_m3,
+                result.effective_distance_m, result.cylinder_height_m,
                 result.depth_range_m[0], result.depth_range_m[1], result.depth_traversed_m,
-                result.detection_distance_m, result.near_distance_m, result.cross_section_area_m2,
-                result.fov_horizontal_deg, result.fov_vertical_deg, result.duration_s, result.descent_rate_m_s
+                result.cross_section_area_m2,
+                result.fov_horizontal_deg, result.fov_vertical_deg,
+                result.duration_s, result.descent_rate_m_s
             ]
         }
         
@@ -2889,14 +2930,21 @@ def main():
     calib.add_argument('--no-tilt-correction', dest='apply_tilt_correction', action='store_false')
 
     # volume
-    vol = subparsers.add_parser('volume', help='Расчёт осмотренного объёма воды')
+    vol = subparsers.add_parser('volume', help='Расчёт осмотренного объёма воды (цилиндрическая модель)')
     vol.add_argument('--detections', '-d', required=True)
     vol.add_argument('--tracks', '-t')
     vol.add_argument('--ctd', '-c')
     vol.add_argument('--output', '-o')
     vol.add_argument('--fov', type=float, default=156.0)
-    vol.add_argument('--near-distance', type=float, default=0.1)
-    vol.add_argument('--detection-distance', type=float)
+    vol.add_argument('--near-distance', type=float, default=0.1,
+                     help='Устарел: в цилиндрической модели параметр не используется. '
+                          'Оставлен для обратной совместимости CLI.')
+    vol.add_argument('--detection-distance', type=float,
+                     help='Ручное значение d_eff в метрах. Если не задано, '
+                          'оценивается эмпирически как P-перцентиль фактических дистанций.')
+    vol.add_argument('--percentile', type=float, default=90.0,
+                     help='Перцентиль (0–100) распределения distance_to_object_m для d_eff '
+                          '(по умолчанию 90).')
     vol.add_argument('--depth-min', type=float)
     vol.add_argument('--depth-max', type=float)
     vol.add_argument('--duration', type=float)
@@ -2958,7 +3006,8 @@ def main():
             total_duration=args.duration,
             fps=args.fps,
             frame_width=args.width,
-            frame_height=args.height
+            frame_height=args.height,
+            percentile=args.percentile
         )
     
     else:

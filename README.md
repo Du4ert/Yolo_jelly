@@ -402,39 +402,57 @@ python src/camera_geometry.py size \
 
 ```bash
 python src/camera_geometry.py volume \
-    --detections output/detections.csv \
+    --detections output/detections_with_size.csv \
     --tracks output/track_sizes.csv \
     --ctd ctd_data.csv \
     --output output/volume.csv \
-    --fov 100 \
-    --near-distance 0.3
+    --fov 156 \
+    --percentile 90
 ```
 
 | Параметр | По умолчанию | Описание |
 |----------|--------------|----------|
-| `--detections`, `-d` | — | CSV с детекциями (обязательный) |
-| `--tracks`, `-t` | None | CSV со статистикой треков |
-| `--ctd`, `-c` | None | CSV с данными CTD (для полного диапазона глубин) |
+| `--detections`, `-d` | — | CSV с детекциями (обязательный). Рекомендуется выход подкоманды `size` (с колонкой `distance_to_object_m`). |
+| `--tracks`, `-t` | None | CSV со статистикой треков (fallback-источник для дистанций). |
+| `--ctd`, `-c` | None | CSV с данными CTD (для полного диапазона глубин). |
 | `--output`, `-o` | auto | Выходной CSV |
-| `--fov` | 100.0 | Горизонтальный FOV камеры (°) |
-| `--near-distance` | 0.3 | Ближняя граница обнаружения (м) |
-| `--detection-distance` | None | Дистанция обнаружения (м), None = авто |
+| `--fov` | 156.0 | Горизонтальный FOV камеры (°) |
+| `--percentile` | 90.0 | Перцентиль распределения `distance_to_object_m` для эффективной дистанции d_eff (0–100) |
+| `--detection-distance` | None | Ручное значение d_eff (м). None = автоматически по перцентилю. |
+| `--near-distance` | 0.1 | Устарел, игнорируется (оставлен для совместимости CLI). |
 | `--depth-min` | None | Минимальная глубина (м) |
 | `--depth-max` | None | Максимальная глубина (м) |
 | `--duration` | None | Длительность записи (с) |
 | `--fps` | 60.0 | Частота кадров |
-| `--width` | 1920 | Ширина кадра |
-| `--height` | 1080 | Высота кадра |
+| `--width` | 3840 | Ширина кадра |
+| `--height` | 2160 | Высота кадра |
 
-**Важно:** Объём считается по ВСЕМУ диапазону погружения. Пустая вода учитывается для правильного расчёта плотности.
+**Цилиндрическая модель объёма**
 
-**Выходные параметры:**
-- `total_volume_m3` — общий осмотренный объём (м³)
-- `frustum_volume_m3` — объём начального frustum
-- `swept_volume_m3` — объём пройденных слоёв
-- `depth_min_m`, `depth_max_m` — диапазон глубин
-- `detection_distance_m` — эффективная дистанция обнаружения
-- `cross_section_area_m2` — площадь сечения
+Столб воды моделируется как цилиндр с эллиптическим сечением, вписанным в конус обзора камеры на эффективной дистанции `d_eff`:
+
+```
+V = A_eff · H
+A_eff = (π/4) · w · h,  w = 2·d_eff·tan(fov_h/2),  h = 2·d_eff·tan(fov_v/2)
+H     = depth_traversed + d_eff         # шапка снизу
+d_eff = clamp(P_percentile(distance_to_object_m), min_reliable, max_reliable)
+```
+
+Эффективная дистанция `d_eff` определяется эмпирически как `--percentile` (по умолчанию P90) распределения
+фактических дистанций до детекций (колонка `distance_to_object_m` в детекциях) с ограничением
+в диапазон надёжных измерений калибровки. Если детекции без `distance_to_object_m` — fallback на `object_depth_m − camera_depth`
+из `--tracks` по `k_method` трекам, затем на типичную дистанцию вида.
+
+**Важно:** объём считается по ВСЕМУ диапазону погружения. Пустая вода учитывается для правильного расчёта плотности.
+
+**Выходные параметры (`volume.csv`):**
+- `total_volume_m3` — осмотренный объём V (м³)
+- `effective_distance_m` — эффективная дистанция d_eff (м)
+- `cylinder_height_m` — высота цилиндра H = depth_traversed + d_eff (м)
+- `cross_section_area_m2` — площадь эллиптического сечения A_eff (м²)
+- `depth_min_m`, `depth_max_m`, `depth_traversed_m` — диапазон глубин
+- `fov_horizontal_deg`, `fov_vertical_deg` — углы обзора
+- `duration_s`, `descent_rate_m_s` — длительность и скорость погружения
 - `count_<Species>` — количество особей по видам
 - `density_<Species>_per_m3` — плотность (особей/м³)
 
