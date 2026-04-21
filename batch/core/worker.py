@@ -292,6 +292,45 @@ class Worker(QThread):
             
             if not detections_csv or not os.path.exists(detections_csv):
                 raise ValueError("Detections CSV not found")
+
+            # Disk fallback для geometry.csv: если в БД нет записи, но файл
+            # уже лежит в папке output (напр., рассчитан вне GUI или
+            # после пересоздания БД) — подхватываем и регистрируем в БД,
+            # чтобы последующие подзадачи тоже его видели.
+            if not geometry_csv:
+                candidate = output_dir / f"{base_name}_geometry.csv"
+                if candidate.exists():
+                    geometry_csv = str(candidate)
+                    try:
+                        self.repo.add_task_output(
+                            parent_task.id, OutputType.GEOMETRY_CSV, geometry_csv
+                        )
+                    except Exception:
+                        pass
+
+            # Аналогичный fallback для _detections_with_size.csv и _track_sizes.csv,
+            # чтобы SIZE_VIDEO_RENDER / VOLUME / ANALYSIS могли их найти,
+            # даже если в БД записи нет.
+            if not size_csv:
+                candidate = output_dir / f"{base_name}_detections_with_size.csv"
+                if candidate.exists():
+                    size_csv = str(candidate)
+                    try:
+                        self.repo.add_task_output(
+                            parent_task.id, OutputType.SIZE_CSV, size_csv
+                        )
+                    except Exception:
+                        pass
+            if not track_sizes_csv:
+                candidate = output_dir / f"{base_name}_track_sizes.csv"
+                if candidate.exists():
+                    track_sizes_csv = str(candidate)
+                    try:
+                        self.repo.add_task_output(
+                            parent_task.id, OutputType.TRACK_SIZES_CSV, track_sizes_csv
+                        )
+                    except Exception:
+                        pass
             
             # Получаем путь к видео с детекциями
             detected_video = None

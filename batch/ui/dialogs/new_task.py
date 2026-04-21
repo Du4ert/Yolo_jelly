@@ -488,9 +488,14 @@ class NewTaskDialog(QDialog):
         
         # Геометрия
         self.pp_chk_geometry = QCheckBox("📐 Геометрия камеры (FOE)")
-        self.pp_chk_geometry.setToolTip("Оценка наклона камеры по Focus of Expansion")
+        self.pp_chk_geometry.setToolTip(
+            "Оценка наклона камеры по Focus of Expansion.\n\n"
+            "Если выбрано — геометрия пересчитывается и используется для всей\n"
+            "последующей постобработки.\n"
+            "Если не выбрано, но в папке output уже есть *_geometry.csv —\n"
+            "постобработка использует существующий файл."
+        )
         self.pp_chk_geometry.setChecked(True)
-        self.pp_chk_geometry.toggled.connect(self._update_postprocess_dependencies)
         layout.addWidget(self.pp_chk_geometry)
 
         # Опция frame_step для геометрии
@@ -532,8 +537,12 @@ class NewTaskDialog(QDialog):
         size_indent_layout.setContentsMargins(20, 0, 0, 0)
         self.pp_chk_size_use_geometry = QCheckBox("С коррекцией наклона камеры")
         self.pp_chk_size_use_geometry.setToolTip(
-            "Коррекция k-значений с учётом угла наклона камеры.\n"
-            "Требует расчёта геометрии."
+            "Коррекция k-значений с учётом угла наклона камеры:\n"
+            "k_real = k_measured / cos(θ)\n\n"
+            "Применяется, если в папке output уже есть файл *_geometry.csv\n"
+            "или если выбран пункт «Геометрия камеры (FOE)» (он пересчитает\n"
+            "геометрию заново). Если геометрии нет — опция игнорируется,\n"
+            "размеры считаются как для вертикальной камеры."
         )
         self.pp_chk_size_use_geometry.setChecked(True)
         size_indent_layout.addWidget(self.pp_chk_size_use_geometry)
@@ -556,8 +565,10 @@ class NewTaskDialog(QDialog):
         video_indent_layout.setContentsMargins(20, 0, 0, 0)
         self.pp_chk_video_use_geometry = QCheckBox("Показывать углы наклона")
         self.pp_chk_video_use_geometry.setToolTip(
-            "Отображать информацию об углах наклона камеры.\n"
-            "Требует расчёта геометрии."
+            "Отображать информацию об углах наклона камеры на видео.\n\n"
+            "Применяется, если в папке output уже есть файл *_geometry.csv\n"
+            "или если выбран пункт «Геометрия камеры (FOE)».\n"
+            "Если геометрии нет — опция игнорируется."
         )
         self.pp_chk_video_use_geometry.setChecked(True)
         video_indent_layout.addWidget(self.pp_chk_video_use_geometry)
@@ -641,19 +652,17 @@ class NewTaskDialog(QDialog):
             self._update_postprocess_dependencies()
 
     def _update_postprocess_dependencies(self):
-        """Обновляет состояние зависимых элементов постобработки."""
-        geometry_selected = self.pp_chk_geometry.isChecked()
+        """Обновляет состояние зависимых элементов постобработки.
+
+        Чекбоксы «С коррекцией наклона камеры» и «Показывать углы наклона»
+        остаются всегда активными независимо от чекбокса «Геометрия камеры (FOE)».
+        Во время выполнения они применяются, только если в папке output
+        есть файл *_geometry.csv (либо рассчитанный этой же задачей, либо
+        существовавший ранее); иначе опция молча игнорируется.
+        """
         size_selected = self.pp_chk_size.isChecked()
         size_video_selected = self.pp_chk_size_video.isChecked()
-        
-        # Опции зависящие от геометрии
-        self.pp_chk_size_use_geometry.setEnabled(geometry_selected)
-        self.pp_chk_video_use_geometry.setEnabled(geometry_selected)
-        
-        if not geometry_selected:
-            self.pp_chk_size_use_geometry.setChecked(False)
-            self.pp_chk_video_use_geometry.setChecked(False)
-        
+
         # Видео с размерами требует размеров
         if size_video_selected and not size_selected:
             self.pp_chk_size.setChecked(True)
