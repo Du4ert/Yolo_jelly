@@ -106,7 +106,13 @@ class PostProcessDialog(QDialog):
         
         # Геометрия
         self.chk_geometry = QCheckBox("📐 Геометрия камеры (FOE)")
-        self.chk_geometry.setToolTip("Оценка наклона камеры по Focus of Expansion.\nРекомендуется для коррекции размеров.")
+        self.chk_geometry.setToolTip(
+            "Оценка наклона камеры по Focus of Expansion.\n\n"
+            "Если выбрано — геометрия пересчитывается и используется для всей\n"
+            "последующей постобработки.\n"
+            "Если не выбрано, но в папке output уже есть *_geometry.csv —\n"
+            "постобработка использует существующий файл."
+        )
         ops_layout.addWidget(self.chk_geometry)
 
         # Опция frame_step для геометрии
@@ -153,8 +159,10 @@ class PostProcessDialog(QDialog):
         self.chk_size_use_geometry.setToolTip(
             "Коррекция k-значений с учётом угла наклона камеры:\n"
             "k_real = k_measured / cos(θ)\n\n"
-            "Без коррекции при наклоне 30° размеры занижаются на ~15%.\n"
-            "Требует предварительного расчёта геометрии."
+            "Применяется, если в папке output уже есть файл *_geometry.csv\n"
+            "или если выбран пункт «Геометрия камеры (FOE)» (он пересчитает\n"
+            "геометрию заново). Если геометрии нет — опция игнорируется,\n"
+            "размеры считаются как для вертикальной камеры."
         )
         self.chk_size_use_geometry.setChecked(True)
         indent_layout_size.addWidget(self.chk_size_use_geometry)
@@ -195,7 +203,9 @@ class PostProcessDialog(QDialog):
         self.chk_video_use_geometry.setToolTip(
             "Отображать информацию об углах наклона камеры\n"
             "в левом нижнем углу видео.\n\n"
-            "Требует предварительного расчёта геометрии."
+            "Применяется, если в папке output уже есть файл *_geometry.csv\n"
+            "или если выбран пункт «Геометрия камеры (FOE)».\n"
+            "Если геометрии нет — опция игнорируется."
         )
         self.chk_video_use_geometry.setChecked(True)
         indent_layout_video.addWidget(self.chk_video_use_geometry)
@@ -288,32 +298,17 @@ class PostProcessDialog(QDialog):
         layout.addLayout(btn_layout)
     
     def _connect_signals(self):
-        """Подключение сигналов для взаимозависимостей."""
-        # Если выбрана геометрия - можно использовать её в других операциях
-        self.chk_geometry.toggled.connect(self._update_geometry_dependencies)
+        """Подключение сигналов для взаимозависимостей.
 
+        Чекбоксы «С коррекцией наклона камеры» и «Показывать углы наклона»
+        не зависят от чекбокса геометрии — решение о применении принимается
+        во время выполнения по наличию файла *_geometry.csv.
+        """
         # Если выбраны размеры - можно делать видео с размерами
         self.chk_size.toggled.connect(self._update_size_dependencies)
 
         # Начальное состояние
-        self._update_geometry_dependencies()
         self._update_size_dependencies()
-    
-    def _update_geometry_dependencies(self):
-        """Обновляет состояние элементов, зависящих от геометрии."""
-        geometry_selected = self.chk_geometry.isChecked() and self.chk_geometry.isEnabled()
-        geometry_exists = self._has_geometry_output()
-        geometry_available = geometry_selected or geometry_exists
-        
-        # Опция "с учётом наклона" активна если:
-        # - Геометрия будет рассчитана (выбрана в чекбоксе) ИЛИ
-        # - Геометрия уже существует
-        self.chk_size_use_geometry.setEnabled(geometry_available)
-        self.chk_video_use_geometry.setEnabled(geometry_available)
-        
-        if not geometry_available:
-            self.chk_size_use_geometry.setChecked(False)
-            self.chk_video_use_geometry.setChecked(False)
     
     def _update_size_dependencies(self):
         """Обновляет состояние элементов, зависящих от размеров."""
@@ -439,27 +434,11 @@ class PostProcessDialog(QDialog):
             QMessageBox.warning(self, "Нет операций", "Выберите хотя бы одну операцию")
             return
         
-        # Проверяем зависимости
+        # Флаги использования геометрии передаются как есть.
+        # Решение о реальном применении принимается во Worker по наличию
+        # файла *_geometry.csv в папке output на момент выполнения подзадачи.
         size_use_geometry = self.chk_size_use_geometry.isChecked()
         video_use_geometry = self.chk_video_use_geometry.isChecked()
-        
-        # Если хотим использовать геометрию, но она не выбрана и не существует
-        geometry_exists = self._has_geometry_output()
-        if (size_use_geometry or video_use_geometry) and not geometry and not geometry_exists:
-            reply = QMessageBox.question(
-                self,
-                "Добавить геометрию?",
-                "Для коррекции наклона требуется расчёт геометрии камеры.\n\n"
-                "Добавить расчёт геометрии в очередь?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes
-            )
-            if reply == QMessageBox.StandardButton.Yes:
-                geometry = True
-            else:
-                # Отключаем использование геометрии
-                size_use_geometry = False
-                video_use_geometry = False
         
         # Если выбрано видео с размерами, но размеры не выбраны и не существуют
         size_exists = self._has_size_output()
