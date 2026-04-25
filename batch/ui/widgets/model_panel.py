@@ -183,6 +183,16 @@ class ModelPanel(QWidget):
 
     def _delete_model(self, model_id: int):
         """Удаляет модель."""
+        tasks_count = self.repo.get_model_tasks_count(model_id)
+        if tasks_count > 0:
+            QMessageBox.warning(
+                self,
+                "Невозможно удалить модель",
+                f"Модель используется в {tasks_count} задач(ах).\n"
+                "Сначала удалите все задачи, использующие эту модель.",
+            )
+            return
+
         reply = QMessageBox.question(
             self,
             "Удалить модель?",
@@ -190,7 +200,7 @@ class ModelPanel(QWidget):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
-        
+
         if reply == QMessageBox.StandardButton.Yes:
             self.repo.delete_model(model_id)
             self._load_data()
