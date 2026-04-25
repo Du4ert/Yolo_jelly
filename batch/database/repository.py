@@ -516,6 +516,12 @@ class Repository:
                 session.refresh(model)
             return model
 
+    def get_model_tasks_count(self, model_id: int) -> int:
+        """Возвращает количество задач, использующих модель."""
+        with self.get_session() as session:
+            stmt = select(func.count()).select_from(Task).where(Task.model_id == model_id)
+            return session.scalar(stmt) or 0
+
     def delete_model(self, model_id: int) -> bool:
         """Удаляет модель из базы."""
         with self.get_session() as session:

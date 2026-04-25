@@ -324,8 +324,11 @@ class NewTaskDialog(QDialog):
         else:
             self.label_video.setText("Файл не найден")
         
-        # Модели
+        # Модели — в том же порядке, что и в панели моделей
         models = self.repo.get_all_models()
+        order = get_config().ui.models_order
+        if order:
+            models.sort(key=lambda m: order.index(m.id) if m.id in order else len(order))
         for model in models:
             display_name = model.name
             if model.base_model:
