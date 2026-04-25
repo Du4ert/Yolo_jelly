@@ -409,14 +409,16 @@ class MainWindow(QMainWindow):
         if dialog.exec():
             selected_model_id = dialog.get_model_id()
             params = dialog.get_task_params()
-            
+
+            self.model_panel.select_model(selected_model_id)
+
             task = self.task_manager.add_task(
                 video_id=video_id,
                 model_id=selected_model_id,
                 ctd_id=dialog.get_ctd_id(),
                 **params,
             )
-            
+
             if task:
                 self.statusBar().showMessage(f"Задача #{task.id} добавлена в очередь", 3000)
             else:
@@ -479,6 +481,8 @@ class MainWindow(QMainWindow):
 
         selected_model_id = dialog.get_model_id()
         params = dialog.get_task_params()
+
+        self.model_panel.select_model(selected_model_id)
 
         # Первое видео — CTD из диалога (пользователь мог изменить)
         self.task_manager.add_task(

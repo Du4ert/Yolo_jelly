@@ -42,6 +42,7 @@ class UISettings:
     task_table_expanded: Optional[list] = None  # [task_id, ...] развёрнутых задач
     task_table_expanded_groups: Optional[list] = None  # [catalog_id_or_null, ...] развёрнутых групп
     label_studio_dir: Optional[str] = None  # Общая папка экспорта для Label Studio
+    models_order: Optional[list] = None  # [model_id, ...] порядок моделей в списке
 
 
 @dataclass
@@ -112,6 +113,7 @@ class Config:
                 task_table_expanded=ui_data.get("task_table_expanded"),
                 task_table_expanded_groups=ui_data.get("task_table_expanded_groups"),
                 label_studio_dir=ui_data.get("label_studio_dir"),
+                models_order=ui_data.get("models_order"),
             ),
         )
 

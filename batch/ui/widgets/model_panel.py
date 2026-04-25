@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QInputDialog,
     QGroupBox,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QModelIndex
 
 from ...database import Repository, Model
 from ...core import get_config, save_config
@@ -66,6 +66,9 @@ class ModelPanel(QWidget):
         self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self._on_context_menu)
         self.list.itemSelectionChanged.connect(self._on_selection_changed)
+        self.list.setDragDropMode(self.list.DragDropMode.InternalMove)
+        self.list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.list.model().rowsMoved.connect(self._on_order_changed)
         group_layout.addWidget(self.list)
         
         # Кнопки
@@ -83,21 +86,37 @@ class ModelPanel(QWidget):
     def _load_data(self):
         """Загружает данные из БД."""
         self.list.clear()
-        
+
         models = self.repo.get_all_models()
         config = get_config()
-        
+
+        # Сортируем по сохранённому порядку
+        if config.ui.models_order:
+            order = config.ui.models_order
+            models.sort(key=lambda m: order.index(m.id) if m.id in order else len(order))
+
         for model in models:
             item = self._create_model_item(model)
             self.list.addItem(item)
-            
+
             # Выбираем последнюю использованную модель
             if config.ui.last_model_id == model.id:
                 item.setSelected(True)
-        
+
         # Если ничего не выбрано, выбираем первую
         if not self.list.selectedItems() and self.list.count() > 0:
             self.list.item(0).setSelected(True)
+
+    def _on_order_changed(self, _parent: QModelIndex, _start: int, _end: int,
+                          _dest: QModelIndex, _row: int):
+        """Сохраняет новый порядок моделей после drag-and-drop."""
+        order = [
+            self.list.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(self.list.count())
+        ]
+        config = get_config()
+        config.ui.models_order = order
+        save_config()
 
     def _create_model_item(self, model: Model) -> QListWidgetItem:
         """Создаёт элемент списка для модели."""
@@ -211,6 +230,13 @@ class ModelPanel(QWidget):
         if not items:
             return None
         return items[0].data(Qt.ItemDataRole.UserRole)
+
+    def select_model(self, model_id: int):
+        """Выбирает модель по ID."""
+        for i in range(self.list.count()):
+            if self.list.item(i).data(Qt.ItemDataRole.UserRole) == model_id:
+                self.list.item(i).setSelected(True)
+                return
 
     def refresh(self):
         """Обновляет отображение."""
