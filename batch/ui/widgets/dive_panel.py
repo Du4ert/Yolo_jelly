@@ -485,6 +485,13 @@ class DivePanel(QWidget):
         total = len(catalog_ids) + len(dive_ids)
 
         if dive_ids:
+            action_add_all = menu.addAction(f"📋 Добавить все видео в очередь ({len(dive_ids)} папок)")
+            action_add_all.triggered.connect(
+                lambda: self._add_all_selected_dives_videos_to_queue(dive_ids)
+            )
+
+            menu.addSeparator()
+
             move_menu = menu.addMenu(f"📦 Переместить {len(dive_ids)} погружений в...")
             catalogs = self.repo.get_all_catalogs()
             for cat in catalogs:
@@ -816,6 +823,17 @@ class DivePanel(QWidget):
         ctd_files = self.repo.get_ctd_by_dive(dive_id)
         ctd_id = ctd_files[0].id if ctd_files else None
         pairs = [(video.id, ctd_id) for video in videos]
+        if pairs:
+            self.batch_add_to_queue_requested.emit(pairs)
+
+    def _add_all_selected_dives_videos_to_queue(self, dive_ids: list):
+        """Добавляет все видео из нескольких выбранных папок (один диалог на всё)."""
+        pairs = []
+        for dive_id in dive_ids:
+            ctd_files = self.repo.get_ctd_by_dive(dive_id)
+            ctd_id = ctd_files[0].id if ctd_files else None
+            for video in self.repo.get_videos_by_dive(dive_id):
+                pairs.append((video.id, ctd_id))
         if pairs:
             self.batch_add_to_queue_requested.emit(pairs)
 
