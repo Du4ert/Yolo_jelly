@@ -1,17 +1,15 @@
 """
-Диалог добавления постобработки к задаче.
+Диалог добавления постобработки к задаче (или группе задач).
 
-Позволяет выбрать и добавить в очередь:
-- Оценку наклона камеры (FOE)
-- Расчёт размеров объектов (с/без коррекции наклона)
-- Рендеринг видео с размерами (с/без отображения углов)
-- Расчёт объёма воды
-- Анализ и графики
+Поддерживает:
+- повторный инференс (с другой моделью или другими параметрами) первым шагом;
+- per-операция выбор: «Не делать / Использовать существующее / Пересчитать»;
+- групповое применение к нескольким выделенным задачам.
 """
 
 import json
 import os
-from typing import Optional
+from typing import List, Optional, Set, Tuple
 
 from PyQt6.QtWidgets import (
     QDialog,
@@ -24,105 +22,109 @@ from PyQt6.QtWidgets import (
     QSpinBox,
     QDoubleSpinBox,
     QCheckBox,
+    QComboBox,
     QPushButton,
     QMessageBox,
     QFrame,
     QWidget,
+    QRadioButton,
+    QButtonGroup,
+    QScrollArea,
 )
 from PyQt6.QtCore import Qt
 
-from ...database import Repository, Task, TaskStatus, SubTaskType, OutputType
+from ...database import (
+    Repository,
+    Task,
+    TaskStatus,
+    SubTaskType,
+    OutputType,
+    SUBTASK_OUTPUT_TYPES,
+)
 from ...core import TaskManager, get_config
+
+
+# Радио-режимы для каждой операции.
+ACTION_NONE = "none"
+ACTION_KEEP = "keep"
+ACTION_RECOMPUTE = "recompute"
 
 
 class PostProcessDialog(QDialog):
     """
-    Диалог добавления постобработки к задаче.
-    Создаёт подзадачи, которые будут выполнены в общей очереди.
+    Диалог постобработки одной или нескольких задач.
+
+    Принимает список task_ids: для одной задачи — точечный режим, для группы —
+    сводные бейджи и общие параметры.
     """
-    
+
     def __init__(
-        self, 
-        repo: Repository, 
+        self,
+        repo: Repository,
         task_manager: TaskManager,
-        task_id: int, 
-        parent=None
+        task_ids: List[int],
+        parent=None,
     ):
         super().__init__(parent)
         self.repo = repo
         self.task_manager = task_manager
-        self.task_id = task_id
-        self.task = repo.get_task(task_id)
-        
-        if not self.task:
-            raise ValueError(f"Задача {task_id} не найдена")
-        
-        if self.task.status != TaskStatus.DONE:
-            raise ValueError("Постобработка доступна только для завершённых задач детекции")
-        
-        self.setWindowTitle(f"Постобработка задачи #{task_id}")
-        self.setMinimumWidth(520)
-        
+        self.task_ids: List[int] = list(task_ids)
+
+        self.tasks: List[Task] = [
+            t for t in (repo.get_task(tid) for tid in self.task_ids) if t is not None
+        ]
+        if not self.tasks:
+            raise ValueError("Не выбрано ни одной задачи")
+
+        # Группы радио-кнопок per операция.
+        self._radio_groups: dict = {}
+
+        if len(self.tasks) == 1:
+            self.setWindowTitle(f"Постобработка задачи #{self.tasks[0].id}")
+        else:
+            self.setWindowTitle(f"Постобработка {len(self.tasks)} задач")
+        self.setMinimumWidth(640)
+        self.setMinimumHeight(680)
+
         self._setup_ui()
-        self._load_existing_subtasks()
-        self._connect_signals()
-    
+        self._populate_models()
+        self._populate_inference_defaults()
+        self._populate_existing_state()
+        self._on_inference_mode_changed()
+
+    # ------------------------------------------------------------------ UI
+
     def _setup_ui(self):
-        """Настройка интерфейса."""
-        layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-        
-        # === Информация о задаче ===
-        info_group = QGroupBox("Задача детекции")
-        info_layout = QFormLayout(info_group)
-        
-        video = self.repo.get_video_file(self.task.video_id)
-        info_layout.addRow("Видео:", QLabel(video.filename if video else "???"))
-        
-        detections_info = f"{self.task.detections_count or 0} детекций"
-        if self.task.tracks_count:
-            detections_info += f", {self.task.tracks_count} треков"
-        info_layout.addRow("Результат:", QLabel(detections_info))
-        
-        # Показываем статус существующих файлов
-        status_parts = []
-        if self._has_geometry_output():
-            status_parts.append("📐 геометрия")
-        if self._has_size_output():
-            status_parts.append("📏 размеры")
-        if self._has_size_video_output():
-            status_parts.append("🎬 видео")
-        if self._has_volume_output():
-            status_parts.append("📦 объём")
-        
-        if status_parts:
-            info_layout.addRow("Уже есть:", QLabel(" | ".join(status_parts)))
-        
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 10)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        # === Заголовок-сводка ===
+        info_group = QGroupBox("Задачи")
+        info_layout = QVBoxLayout(info_group)
+        info_layout.addWidget(self._build_summary_label())
         layout.addWidget(info_group)
-        
-        # === Выбор операций ===
-        ops_group = QGroupBox("Добавить в очередь")
+
+        # === Повторная детекция ===
+        layout.addWidget(self._build_inference_group())
+
+        # === Операции постобработки ===
+        ops_group = QGroupBox("Операции постобработки")
         ops_layout = QVBoxLayout(ops_group)
-        
-        # Геометрия
-        self.chk_geometry = QCheckBox("📐 Геометрия камеры (FOE)")
-        self.chk_geometry.setToolTip(
-            "Оценка наклона камеры по Focus of Expansion.\n\n"
-            "Если выбрано — геометрия пересчитывается и используется для всей\n"
-            "последующей постобработки.\n"
-            "Если не выбрано, но в папке output уже есть *_geometry.csv —\n"
-            "постобработка использует существующий файл."
-        )
-        ops_layout.addWidget(self.chk_geometry)
+        ops_layout.setSpacing(6)
 
-        # Опция frame_step для геометрии
-        indent_widget_geom = QWidget()
-        indent_layout_geom = QHBoxLayout(indent_widget_geom)
-        indent_layout_geom.setContentsMargins(20, 0, 0, 0)
-
-        geom_step_label = QLabel("Шаг кадров:")
-        indent_layout_geom.addWidget(geom_step_label)
-
+        ops_layout.addWidget(self._build_op_row(
+            SubTaskType.GEOMETRY, "📐 Геометрия камеры (FOE)",
+            "Оценка наклона камеры по Focus of Expansion.",
+        ))
         self.spin_frame_step = QSpinBox()
         self.spin_frame_step.setRange(1, 5)
         self.spin_frame_step.setValue(1)
@@ -130,146 +132,94 @@ class PostProcessDialog(QDialog):
         self.spin_frame_step.setToolTip(
             "Шаг чтения кадров для optical flow.\n"
             "1 = каждый кадр (максимальная точность)\n"
-            "2 = через кадр (~2x быстрее, немного менее точные FOE)\n"
+            "2 = через кадр (~2x быстрее)\n"
             "3 = каждый 3-й (~3x быстрее)"
         )
-        indent_layout_geom.addWidget(self.spin_frame_step)
-        indent_layout_geom.addStretch()
-        ops_layout.addWidget(indent_widget_geom)
+        geom_row = QHBoxLayout()
+        geom_row.setContentsMargins(40, 0, 0, 0)
+        geom_row.addWidget(QLabel("Шаг кадров:"))
+        geom_row.addWidget(self.spin_frame_step)
+        geom_row.addStretch()
+        ops_layout.addLayout(geom_row)
 
-        # Разделитель
-        ops_layout.addSpacing(5)
-        separator1 = QFrame()
-        separator1.setFrameShape(QFrame.Shape.HLine)
-        separator1.setFrameShadow(QFrame.Shadow.Sunken)
-        ops_layout.addWidget(separator1)
-        ops_layout.addSpacing(5)
-        
-        # Размеры объектов
-        self.chk_size = QCheckBox("📏 Размеры объектов")
-        self.chk_size.setToolTip("Расчёт реальных размеров по k-методу (динамике изменения bbox)")
-        ops_layout.addWidget(self.chk_size)
-        
-        # Опция использования геометрии для размеров
-        indent_widget_size = QWidget()
-        indent_layout_size = QHBoxLayout(indent_widget_size)
-        indent_layout_size.setContentsMargins(20, 0, 0, 0)
-        
+        ops_layout.addWidget(self._build_separator())
+
+        ops_layout.addWidget(self._build_op_row(
+            SubTaskType.SIZE, "📏 Размеры объектов",
+            "Расчёт реальных размеров по k-методу.",
+        ))
         self.chk_size_use_geometry = QCheckBox("С коррекцией наклона камеры")
-        self.chk_size_use_geometry.setToolTip(
-            "Коррекция k-значений с учётом угла наклона камеры:\n"
-            "k_real = k_measured / cos(θ)\n\n"
-            "Применяется, если в папке output уже есть файл *_geometry.csv\n"
-            "или если выбран пункт «Геометрия камеры (FOE)» (он пересчитает\n"
-            "геометрию заново). Если геометрии нет — опция игнорируется,\n"
-            "размеры считаются как для вертикальной камеры."
-        )
         self.chk_size_use_geometry.setChecked(True)
-        indent_layout_size.addWidget(self.chk_size_use_geometry)
-        indent_layout_size.addStretch()
-        ops_layout.addWidget(indent_widget_size)
-
-        # Информация о глобальной калибровке
-        indent_widget_calib = QWidget()
-        indent_layout_calib = QHBoxLayout(indent_widget_calib)
-        indent_layout_calib.setContentsMargins(20, 0, 0, 0)
+        self.chk_size_use_geometry.setToolTip(
+            "Применяется, если есть файл *_geometry.csv (рассчитанный или существующий)."
+        )
+        size_geom_row = QHBoxLayout()
+        size_geom_row.setContentsMargins(40, 0, 0, 0)
+        size_geom_row.addWidget(self.chk_size_use_geometry)
+        size_geom_row.addStretch()
+        ops_layout.addLayout(size_geom_row)
 
         self.label_calibration = QLabel()
-        self.label_calibration.setToolTip(
-            "Файл калибровки задаётся глобально для всего приложения\n"
-            "на панели инструментов главного окна (кнопка 📏 Калибровка)."
-        )
-        indent_layout_calib.addWidget(self.label_calibration)
-        indent_layout_calib.addStretch()
-        ops_layout.addWidget(indent_widget_calib)
+        self.label_calibration.setStyleSheet("color: gray; padding-left: 40px;")
+        ops_layout.addWidget(self.label_calibration)
         self._update_calibration_label()
 
-        # Видео с размерами
-        self.chk_size_video = QCheckBox("🎬 Видео с размерами")
-        self.chk_size_video.setToolTip(
-            "Рендеринг видео с отображением:\n"
-            "- Дистанции до объекта и размера под рамками\n"
-            "- Углов наклона камеры в левом нижнем углу\n\n"
-            "Требует предварительного расчёта размеров."
-        )
-        ops_layout.addWidget(self.chk_size_video)
-        
-        # Опция отображения геометрии на видео
-        indent_widget_video = QWidget()
-        indent_layout_video = QHBoxLayout(indent_widget_video)
-        indent_layout_video.setContentsMargins(20, 0, 0, 0)
-        
+        ops_layout.addWidget(self._build_op_row(
+            SubTaskType.SIZE_VIDEO_RENDER, "🎬 Видео с размерами",
+            "Рендер видео с дистанцией и размером под рамками.",
+        ))
         self.chk_video_use_geometry = QCheckBox("Показывать углы наклона")
-        self.chk_video_use_geometry.setToolTip(
-            "Отображать информацию об углах наклона камеры\n"
-            "в левом нижнем углу видео.\n\n"
-            "Применяется, если в папке output уже есть файл *_geometry.csv\n"
-            "или если выбран пункт «Геометрия камеры (FOE)».\n"
-            "Если геометрии нет — опция игнорируется."
-        )
         self.chk_video_use_geometry.setChecked(True)
-        indent_layout_video.addWidget(self.chk_video_use_geometry)
-        indent_layout_video.addStretch()
-        ops_layout.addWidget(indent_widget_video)
-        
-        # Объём
-        self.chk_volume = QCheckBox("📦 Объём воды")
-        self.chk_volume.setToolTip(
-            "Расчёт осмотренного объёма воды и плотности организмов.\n"
-            "Использует данные CTD для полного диапазона глубин."
+        self.chk_video_use_geometry.setToolTip(
+            "Отображать информацию об углах наклона камеры на видео."
         )
-        ops_layout.addWidget(self.chk_volume)
-        
-        # Разделитель
-        ops_layout.addSpacing(5)
-        separator2 = QFrame()
-        separator2.setFrameShape(QFrame.Shape.HLine)
-        separator2.setFrameShadow(QFrame.Shadow.Sunken)
-        ops_layout.addWidget(separator2)
-        ops_layout.addSpacing(5)
-        
-        # Анализ
-        self.chk_analysis = QCheckBox("📊 Анализ и графики")
-        self.chk_analysis.setToolTip("Генерация графиков вертикального распределения и отчётов")
-        ops_layout.addWidget(self.chk_analysis)
+        video_geom_row = QHBoxLayout()
+        video_geom_row.setContentsMargins(40, 0, 0, 0)
+        video_geom_row.addWidget(self.chk_video_use_geometry)
+        video_geom_row.addStretch()
+        ops_layout.addLayout(video_geom_row)
 
-        # Колонки CTD для интерактивного графика
-        indent_widget_ctd = QWidget()
-        indent_layout_ctd = QHBoxLayout(indent_widget_ctd)
-        indent_layout_ctd.setContentsMargins(20, 0, 0, 0)
+        ops_layout.addWidget(self._build_op_row(
+            SubTaskType.VOLUME, "📦 Объём воды",
+            "Расчёт осмотренного объёма воды и плотности организмов.",
+        ))
 
+        ops_layout.addWidget(self._build_separator())
+
+        ops_layout.addWidget(self._build_op_row(
+            SubTaskType.ANALYSIS, "📊 Анализ и графики",
+            "Графики вертикального распределения и текстовый отчёт.",
+        ))
+        ctd_row = QHBoxLayout()
+        ctd_row.setContentsMargins(40, 0, 0, 0)
+        ctd_row.addWidget(QLabel("Колонки CTD:"))
         self.edit_ctd_columns = QLineEdit("6")
         self.edit_ctd_columns.setMaximumWidth(120)
         self.edit_ctd_columns.setToolTip(
-            "Колонки CTD для интерактивного графика (0-based индексы), через запятую.\n"
-            "Например: 6 или 5,6,7\n"
+            "Колонки CTD для интерактивного графика (через запятую).\n"
             "Используется только если к задаче привязан CTD-файл."
         )
-        ctd_col_label = QLabel("Колонки CTD:")
-        indent_layout_ctd.addWidget(ctd_col_label)
-        indent_layout_ctd.addWidget(self.edit_ctd_columns)
-        indent_layout_ctd.addStretch()
-        ops_layout.addWidget(indent_widget_ctd)
+        ctd_row.addWidget(self.edit_ctd_columns)
+        ctd_row.addStretch()
+        ops_layout.addLayout(ctd_row)
 
         layout.addWidget(ops_group)
-        
-        # === Параметры ===
-        params_group = QGroupBox("Параметры")
+
+        # === Общие параметры ===
+        params_group = QGroupBox("Параметры (общие для постобработки)")
         params_layout = QFormLayout(params_group)
-        
+
         self.spin_fov = QDoubleSpinBox()
         self.spin_fov.setRange(60, 180)
         self.spin_fov.setValue(156.0)
         self.spin_fov.setSuffix("°")
-        self.spin_fov.setToolTip("Горизонтальный угол обзора камеры (GoPro 12 Wide 4K ~156°)")
         params_layout.addRow("FOV камеры:", self.spin_fov)
-        
+
         self.spin_min_reliable = QDoubleSpinBox()
         self.spin_min_reliable.setRange(0.05, 2.0)
         self.spin_min_reliable.setValue(0.1)
         self.spin_min_reliable.setSingleStep(0.05)
         self.spin_min_reliable.setSuffix(" м")
-        self.spin_min_reliable.setToolTip("Ближняя дистанция: граница обнаружения для объёма и минимум для оценки размеров")
         params_layout.addRow("Ближняя дистанция:", self.spin_min_reliable)
 
         self.spin_depth_bin = QDoubleSpinBox()
@@ -277,279 +227,598 @@ class PostProcessDialog(QDialog):
         self.spin_depth_bin.setValue(2.0)
         self.spin_depth_bin.setSingleStep(0.5)
         self.spin_depth_bin.setSuffix(" м")
-        self.spin_depth_bin.setToolTip("Шаг биннинга по глубине для графиков распределения")
         params_layout.addRow("Бин глубины:", self.spin_depth_bin)
-        
+
         layout.addWidget(params_group)
-        
-        # === Кнопки ===
-        btn_layout = QHBoxLayout()
-        
+
+        # Footer-предупреждение
+        self.label_warning = QLabel()
+        self.label_warning.setStyleSheet("color: #b58900;")
+        self.label_warning.setWordWrap(True)
+        layout.addWidget(self.label_warning)
+
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
+
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(10, 0, 10, 0)
         self.btn_add = QPushButton("➕ Добавить в очередь")
         self.btn_add.clicked.connect(self._on_add)
-        btn_layout.addWidget(self.btn_add)
-        
-        btn_layout.addStretch()
-        
+        btn_row.addWidget(self.btn_add)
+        btn_row.addStretch()
         self.btn_close = QPushButton("Закрыть")
-        self.btn_close.clicked.connect(self.accept)
-        btn_layout.addWidget(self.btn_close)
-        
-        layout.addLayout(btn_layout)
-    
-    def _connect_signals(self):
-        """Подключение сигналов для взаимозависимостей.
+        self.btn_close.clicked.connect(self.reject)
+        btn_row.addWidget(self.btn_close)
+        outer.addLayout(btn_row)
 
-        Чекбоксы «С коррекцией наклона камеры» и «Показывать углы наклона»
-        не зависят от чекбокса геометрии — решение о применении принимается
-        во время выполнения по наличию файла *_geometry.csv.
-        """
-        # Если выбраны размеры - можно делать видео с размерами
-        self.chk_size.toggled.connect(self._update_size_dependencies)
+    def _build_separator(self) -> QFrame:
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        return sep
 
-        # Начальное состояние
-        self._update_size_dependencies()
-    
-    def _update_size_dependencies(self):
-        """Обновляет состояние элементов, зависящих от размеров."""
-        size_selected = self.chk_size.isChecked() and self.chk_size.isEnabled()
-        size_exists = self._has_size_output()
-        size_available = size_selected or size_exists
-        
-        # Видео с размерами требует расчёта размеров
-        if not size_available and not self.chk_size_video.isEnabled():
-            return
-        
-        # Если размеры ещё не выбраны и не существуют - предлагаем выбрать
-        if self.chk_size_video.isChecked() and not size_available:
-            self.chk_size.setChecked(True)
-    
+    def _build_summary_label(self) -> QLabel:
+        if len(self.tasks) == 1:
+            t = self.tasks[0]
+            video = self.repo.get_video_file(t.video_id)
+            text = f"Видео: {video.filename if video else '???'}"
+            if t.detections_count is not None:
+                text += f"\nДетекций: {t.detections_count}, треков: {t.tracks_count or 0}"
+            text += f"\nСтатус задачи: {t.status.value}"
+        else:
+            statuses: dict = {}
+            for t in self.tasks:
+                statuses[t.status] = statuses.get(t.status, 0) + 1
+            parts = [f"{count} × {st.value}" for st, count in statuses.items()]
+            text = f"{len(self.tasks)} задач — " + ", ".join(parts)
+        lbl = QLabel(text)
+        lbl.setWordWrap(True)
+        return lbl
+
+    def _build_inference_group(self) -> QGroupBox:
+        group = QGroupBox("🎯 Повторная детекция (инференс)")
+        layout = QVBoxLayout(group)
+
+        radio_row = QHBoxLayout()
+        self.rb_infer_none = QRadioButton("Не делать")
+        self.rb_infer_none.setChecked(True)
+        self.rb_infer_other = QRadioButton("С другими параметрами")
+        self.rb_infer_none.setToolTip(
+            "Не запускать инференс — использовать существующие детекции."
+        )
+        self.rb_infer_other.setToolTip(
+            "Запустить детекцию с переопределёнными моделью/параметрами."
+        )
+        bg = QButtonGroup(self)
+        bg.addButton(self.rb_infer_none)
+        bg.addButton(self.rb_infer_other)
+        for rb in (self.rb_infer_none, self.rb_infer_other):
+            radio_row.addWidget(rb)
+            rb.toggled.connect(self._on_inference_mode_changed)
+        radio_row.addStretch()
+        layout.addLayout(radio_row)
+
+        self.lbl_infer_existing = QLabel()
+        self.lbl_infer_existing.setStyleSheet("color: gray;")
+        layout.addWidget(self.lbl_infer_existing)
+
+        # Блок параметров детекции (скрыт по умолчанию)
+        self.infer_fields = QWidget()
+        f_outer = QVBoxLayout(self.infer_fields)
+        f_outer.setContentsMargins(10, 5, 10, 5)
+        f_outer.setSpacing(8)
+
+        # --- Модель + базовые параметры ---
+        detect_form = QFormLayout()
+        detect_form.setContentsMargins(0, 0, 0, 0)
+
+        self.infer_combo_model = QComboBox()
+        detect_form.addRow("Модель:", self.infer_combo_model)
+
+        self.infer_spin_conf = QDoubleSpinBox()
+        self.infer_spin_conf.setRange(0.01, 0.99)
+        self.infer_spin_conf.setSingleStep(0.05)
+        self.infer_spin_conf.setDecimals(2)
+        detect_form.addRow("Порог уверенности:", self.infer_spin_conf)
+
+        self.infer_spin_depth_rate = QDoubleSpinBox()
+        self.infer_spin_depth_rate.setRange(0.0, 10.0)
+        self.infer_spin_depth_rate.setSingleStep(0.1)
+        self.infer_spin_depth_rate.setDecimals(2)
+        self.infer_spin_depth_rate.setSpecialValueText("Не задано")
+        detect_form.addRow("Скорость погружения (м/с):", self.infer_spin_depth_rate)
+
+        f_outer.addLayout(detect_form)
+
+        # --- Трекинг ---
+        tracking_group = QGroupBox("Трекинг")
+        tracking_layout = QVBoxLayout(tracking_group)
+
+        self.infer_check_tracking = QCheckBox("Включить трекинг объектов")
+        self.infer_check_tracking.toggled.connect(self._on_infer_tracking_toggled)
+        tracking_layout.addWidget(self.infer_check_tracking)
+
+        tracking_form = QFormLayout()
+        tracking_form.setContentsMargins(20, 0, 0, 0)
+
+        self.infer_combo_tracker = QComboBox()
+        self.infer_combo_tracker.addItem("ByteTrack (быстрый)", "bytetrack.yaml")
+        self.infer_combo_tracker.addItem("BoT-SORT (точный)", "botsort.yaml")
+        tracking_form.addRow("Трекер:", self.infer_combo_tracker)
+
+        self.infer_check_trails = QCheckBox("Показывать траектории")
+        self.infer_check_trails.toggled.connect(
+            lambda checked: self.infer_spin_trail_length.setEnabled(
+                self.infer_check_tracking.isChecked() and checked
+            )
+        )
+        tracking_form.addRow("", self.infer_check_trails)
+
+        self.infer_spin_trail_length = QSpinBox()
+        self.infer_spin_trail_length.setRange(10, 200)
+        tracking_form.addRow("Длина траектории (кадров):", self.infer_spin_trail_length)
+
+        self.infer_spin_min_track = QSpinBox()
+        self.infer_spin_min_track.setRange(1, 50)
+        tracking_form.addRow("Мин. длина трека (кадров):", self.infer_spin_min_track)
+
+        tracking_layout.addLayout(tracking_form)
+        f_outer.addWidget(tracking_group)
+
+        # --- GPU / Ускорение ---
+        gpu_group = QGroupBox("GPU / Ускорение")
+        gpu_form = QFormLayout(gpu_group)
+
+        self.infer_combo_device = QComboBox()
+        self.infer_combo_device.addItem("Автоматически", "auto")
+        self.infer_combo_device.addItem("CPU", "cpu")
+        self.infer_combo_device.addItem("GPU 0", "0")
+        self.infer_combo_device.setToolTip(
+            "Устройство для инференса YOLO.\nauto — GPU если доступен, иначе CPU."
+        )
+        gpu_form.addRow("Устройство:", self.infer_combo_device)
+
+        self.infer_spin_imgsz = QSpinBox()
+        self.infer_spin_imgsz.setRange(320, 3840)
+        self.infer_spin_imgsz.setSingleStep(32)
+        self.infer_spin_imgsz.setToolTip(
+            "Размер изображения для YOLO-инференса.\n"
+            "Должен совпадать с imgsz при обучении модели.\n"
+            "Больше = точнее, но медленнее и больше памяти GPU."
+        )
+        gpu_form.addRow("Размер изображения (imgsz):", self.infer_spin_imgsz)
+
+        self.infer_check_half = QCheckBox("FP16 (half precision)")
+        self.infer_check_half.setToolTip(
+            "Использовать половинную точность для инференса.\n"
+            "Ускоряет обработку в ~2 раза на GPU с минимальным влиянием на точность.\n"
+            "Не поддерживается на CPU."
+        )
+        gpu_form.addRow("", self.infer_check_half)
+
+        f_outer.addWidget(gpu_group)
+
+        # --- Выход ---
+        self.infer_check_save_video = QCheckBox("Сохранять видео с разметкой")
+        f_outer.addWidget(self.infer_check_save_video)
+
+        layout.addWidget(self.infer_fields)
+
+        self.chk_cascade = QCheckBox("Удалить устаревшие результаты постобработки")
+        self.chk_cascade.setChecked(True)
+        self.chk_cascade.setToolTip(
+            "После успешного инференса автоматически удалить старые результаты\n"
+            "GEOMETRY/SIZE/VOLUME/ANALYSIS — их нужно будет пересчитать."
+        )
+        layout.addWidget(self.chk_cascade)
+
+        return group
+
+    def _build_op_row(
+        self, st_type: SubTaskType, label: str, tooltip: str,
+    ) -> QWidget:
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(0, 0, 0, 0)
+
+        title = QLabel(label)
+        title.setMinimumWidth(210)
+        title.setToolTip(tooltip)
+        h.addWidget(title)
+
+        checkmark = QLabel("✓")
+        checkmark.setStyleSheet(
+            "color: #27ae60; font-weight: bold; font-size: 13px; padding-right: 2px;"
+        )
+        checkmark.setToolTip("Результат уже посчитан")
+        checkmark.setVisible(False)
+        h.addWidget(checkmark)
+
+        rb_none = QRadioButton("Не делать")
+        rb_keep = QRadioButton("Исп. текущий")
+        rb_recompute = QRadioButton("Пересчитать")
+        rb_none.setChecked(True)
+
+        _f = rb_none.font()
+        _f.setPointSize(max(7, _f.pointSize() - 1))
+        for rb in (rb_none, rb_keep, rb_recompute):
+            rb.setFont(_f)
+
+        bg = QButtonGroup(w)
+        bg.addButton(rb_none)
+        bg.addButton(rb_keep)
+        bg.addButton(rb_recompute)
+
+        h.addWidget(rb_none)
+        h.addWidget(rb_keep)
+        h.addWidget(rb_recompute)
+
+        badge = QLabel("")
+        badge.setStyleSheet("color: gray; padding-left: 6px;")
+        badge.setFont(_f)
+        h.addWidget(badge)
+        h.addStretch()
+
+        self._radio_groups[st_type] = {
+            "none": rb_none,
+            "keep": rb_keep,
+            "recompute": rb_recompute,
+            "badge": badge,
+            "checkmark": checkmark,
+        }
+        return w
+
+    # ------------------------------------------------------------- helpers
+
+    def _populate_models(self):
+        models = self.repo.get_all_models()
+        order = get_config().ui.models_order
+        if order:
+            models.sort(
+                key=lambda m: order.index(m.id) if m.id in order else len(order)
+            )
+        for m in models:
+            display = m.name + (f" ({m.base_model})" if m.base_model else "")
+            self.infer_combo_model.addItem(display, m.id)
+
+    def _populate_inference_defaults(self):
+        """Заполняет поля инференса значениями задачи (одна) или дефолтами (группа)."""
+        config = get_config()
+        params = config.default_detection_params
+
+        if len(self.tasks) == 1:
+            t = self.tasks[0]
+
+            for i in range(self.infer_combo_model.count()):
+                if self.infer_combo_model.itemData(i) == t.model_id:
+                    self.infer_combo_model.setCurrentIndex(i)
+                    break
+
+            conf = t.conf_threshold if t.conf_threshold is not None else params.conf_threshold
+            self.infer_spin_conf.setValue(conf)
+
+            dr = getattr(t, "depth_rate", None)
+            self.infer_spin_depth_rate.setValue(dr if dr else 0.0)
+
+            et = getattr(t, "enable_tracking", None)
+            self.infer_check_tracking.setChecked(
+                et if et is not None else params.enable_tracking
+            )
+
+            tt = getattr(t, "tracker_type", None) or params.tracker_type
+            for i in range(self.infer_combo_tracker.count()):
+                if self.infer_combo_tracker.itemData(i) == tt:
+                    self.infer_combo_tracker.setCurrentIndex(i)
+                    break
+
+            st = getattr(t, "show_trails", None)
+            self.infer_check_trails.setChecked(
+                st if st is not None else params.show_trails
+            )
+
+            tl = getattr(t, "trail_length", None)
+            self.infer_spin_trail_length.setValue(tl if tl else params.trail_length)
+
+            mtl = getattr(t, "min_track_length", None)
+            self.infer_spin_min_track.setValue(mtl if mtl else params.min_track_length)
+
+            dev = getattr(t, "device", None) or params.device
+            for i in range(self.infer_combo_device.count()):
+                if self.infer_combo_device.itemData(i) == dev:
+                    self.infer_combo_device.setCurrentIndex(i)
+                    break
+
+            imgsz = getattr(t, "imgsz", None)
+            self.infer_spin_imgsz.setValue(imgsz if imgsz else params.imgsz)
+
+            half = getattr(t, "half", None)
+            self.infer_check_half.setChecked(
+                half if half is not None else params.half
+            )
+
+            sv = getattr(t, "save_video", None)
+            self.infer_check_save_video.setChecked(
+                sv if sv is not None else params.save_video
+            )
+        else:
+            # Группа задач — используем дефолтные параметры из конфига.
+            self.infer_spin_conf.setValue(params.conf_threshold)
+            self.infer_spin_depth_rate.setValue(0.0)
+            self.infer_check_tracking.setChecked(params.enable_tracking)
+            for i in range(self.infer_combo_tracker.count()):
+                if self.infer_combo_tracker.itemData(i) == params.tracker_type:
+                    self.infer_combo_tracker.setCurrentIndex(i)
+                    break
+            self.infer_check_trails.setChecked(params.show_trails)
+            self.infer_spin_trail_length.setValue(params.trail_length)
+            self.infer_spin_min_track.setValue(params.min_track_length)
+            for i in range(self.infer_combo_device.count()):
+                if self.infer_combo_device.itemData(i) == params.device:
+                    self.infer_combo_device.setCurrentIndex(i)
+                    break
+            self.infer_spin_imgsz.setValue(params.imgsz)
+            self.infer_check_half.setChecked(params.half)
+            self.infer_check_save_video.setChecked(params.save_video)
+
+        self._on_infer_tracking_toggled(self.infer_check_tracking.isChecked())
+
+    def _on_infer_tracking_toggled(self, enabled: bool):
+        self.infer_combo_tracker.setEnabled(enabled)
+        self.infer_check_trails.setEnabled(enabled)
+        self.infer_spin_trail_length.setEnabled(
+            enabled and self.infer_check_trails.isChecked()
+        )
+        self.infer_spin_min_track.setEnabled(enabled)
+
     def _update_calibration_label(self):
-        """Обновляет информационную строку о глобальной калибровке."""
         try:
             path = get_config().ui.calibration_json
         except Exception:
             path = None
-
         if path and os.path.exists(path):
-            name = os.path.basename(path)
-            self.label_calibration.setText(f"📏 Калибровка: {name}")
-            self.label_calibration.setStyleSheet("")
-        else:
-            self.label_calibration.setText("📏 Калибровка: дефолтные коэффициенты")
-            self.label_calibration.setStyleSheet("color: gray;")
-
-    def _has_geometry_output(self) -> bool:
-        """Проверяет, есть ли уже рассчитанная геометрия."""
-        outputs = self.repo.get_task_outputs(self.task_id)
-        return any(o.output_type == OutputType.GEOMETRY_CSV for o in outputs)
-    
-    def _has_size_output(self) -> bool:
-        """Проверяет, есть ли уже рассчитанные размеры."""
-        outputs = self.repo.get_task_outputs(self.task_id)
-        return any(o.output_type == OutputType.SIZE_CSV for o in outputs)
-    
-    def _has_size_video_output(self) -> bool:
-        """Проверяет, есть ли уже рендеренное видео с размерами."""
-        outputs = self.repo.get_task_outputs(self.task_id)
-        return any(o.output_type == OutputType.SIZE_VIDEO for o in outputs)
-    
-    def _has_volume_output(self) -> bool:
-        """Проверяет, есть ли уже рассчитанный объём."""
-        outputs = self.repo.get_task_outputs(self.task_id)
-        return any(o.output_type == OutputType.VOLUME_CSV for o in outputs)
-    
-    def _load_existing_subtasks(self):
-        """Загружает информацию о существующих подзадачах."""
-        subtasks = self.repo.get_subtasks_for_task(self.task_id)
-        
-        existing_types = {st.subtask_type for st in subtasks}
-        
-        # Отключаем чекбоксы для уже существующих подзадач
-        if SubTaskType.GEOMETRY in existing_types:
-            self.chk_geometry.setChecked(False)
-            self.chk_geometry.setEnabled(False)
-            self.chk_geometry.setText("📐 Геометрия камеры (уже в очереди)")
-        else:
-            self.chk_geometry.setChecked(True)
-        
-        if SubTaskType.SIZE in existing_types:
-            self.chk_size.setChecked(False)
-            self.chk_size.setEnabled(False)
-            self.chk_size.setText("📏 Размеры объектов (уже в очереди)")
-        else:
-            self.chk_size.setChecked(True)
-        
-        if SubTaskType.SIZE_VIDEO_RENDER in existing_types:
-            self.chk_size_video.setChecked(False)
-            self.chk_size_video.setEnabled(False)
-            self.chk_size_video.setText("🎬 Видео с размерами (уже в очереди)")
-        else:
-            self.chk_size_video.setChecked(True)
-        
-        if SubTaskType.VOLUME in existing_types:
-            self.chk_volume.setChecked(False)
-            self.chk_volume.setEnabled(False)
-            self.chk_volume.setText("📦 Объём воды (уже в очереди)")
-        else:
-            self.chk_volume.setChecked(True)
-        
-        if SubTaskType.ANALYSIS in existing_types:
-            self.chk_analysis.setChecked(False)
-            self.chk_analysis.setEnabled(False)
-            self.chk_analysis.setText("📊 Анализ и графики (уже в очереди)")
-        else:
-            self.chk_analysis.setChecked(True)
-        
-        # Проверяем, есть ли уже файлы геометрии/размеров
-        if self._has_geometry_output():
-            if self.chk_geometry.isEnabled():
-                self.chk_geometry.setChecked(False)
-                self.chk_geometry.setText("📐 Геометрия камеры (уже рассчитана)")
-        
-        if self._has_size_output():
-            if self.chk_size.isEnabled():
-                self.chk_size.setChecked(False)
-                self.chk_size.setText("📏 Размеры объектов (уже рассчитаны)")
-        
-        if self._has_size_video_output():
-            if self.chk_size_video.isEnabled():
-                self.chk_size_video.setChecked(False)
-                self.chk_size_video.setText("🎬 Видео с размерами (уже создано)")
-        
-        if self._has_volume_output():
-            if self.chk_volume.isEnabled():
-                self.chk_volume.setChecked(False)
-                self.chk_volume.setText("📦 Объём воды (уже рассчитан)")
-    
-    def _on_add(self):
-        """Добавляет выбранные подзадачи в очередь."""
-        geometry = self.chk_geometry.isChecked() and self.chk_geometry.isEnabled()
-        size = self.chk_size.isChecked() and self.chk_size.isEnabled()
-        size_video = self.chk_size_video.isChecked() and self.chk_size_video.isEnabled()
-        volume = self.chk_volume.isChecked() and self.chk_volume.isEnabled()
-        analysis = self.chk_analysis.isChecked() and self.chk_analysis.isEnabled()
-        
-        if not any([geometry, size, size_video, volume, analysis]):
-            QMessageBox.warning(self, "Нет операций", "Выберите хотя бы одну операцию")
-            return
-        
-        # Флаги использования геометрии передаются как есть.
-        # Решение о реальном применении принимается во Worker по наличию
-        # файла *_geometry.csv в папке output на момент выполнения подзадачи.
-        size_use_geometry = self.chk_size_use_geometry.isChecked()
-        video_use_geometry = self.chk_video_use_geometry.isChecked()
-        
-        # Если выбрано видео с размерами, но размеры не выбраны и не существуют
-        size_exists = self._has_size_output()
-        if size_video and not size and not size_exists:
-            reply = QMessageBox.question(
-                self,
-                "Добавить размеры?",
-                "Для рендеринга видео с размерами требуется расчёт размеров объектов.\n\n"
-                "Добавить расчёт размеров в очередь?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes
+            self.label_calibration.setText(
+                f"📏 Калибровка: {os.path.basename(path)}"
             )
-            if reply == QMessageBox.StandardButton.Yes:
-                size = True
+        else:
+            self.label_calibration.setText(
+                "📏 Калибровка: дефолтные коэффициенты"
+            )
+
+    def _has_output_for_task(self, task_id: int, st_type: SubTaskType) -> bool:
+        output_types = SUBTASK_OUTPUT_TYPES.get(st_type, [])
+        if not output_types:
+            return False
+        outs = self.repo.get_task_outputs(task_id)
+        return any(o.output_type in output_types for o in outs)
+
+    def _has_pending_or_running(self, task_id: int, st_type: SubTaskType) -> bool:
+        for st in self.repo.get_subtasks_for_task(task_id):
+            if st.subtask_type == st_type and st.status in (
+                TaskStatus.PENDING, TaskStatus.RUNNING,
+            ):
+                return True
+        return False
+
+    def _populate_existing_state(self):
+        op_types = [
+            SubTaskType.GEOMETRY,
+            SubTaskType.SIZE,
+            SubTaskType.SIZE_VIDEO_RENDER,
+            SubTaskType.VOLUME,
+            SubTaskType.ANALYSIS,
+        ]
+        N = len(self.tasks)
+
+        for st_type in op_types:
+            done_count = sum(
+                1 for t in self.tasks
+                if self._has_output_for_task(t.id, st_type)
+            )
+            queued_count = sum(
+                1 for t in self.tasks
+                if self._has_pending_or_running(t.id, st_type)
+            )
+            grp = self._radio_groups[st_type]
+
+            grp["checkmark"].setVisible(done_count > 0)
+
+            badge_parts = []
+            if done_count > 0 and N > 1:
+                badge_parts.append(f"{done_count}/{N}")
+            if queued_count > 0:
+                badge_parts.append(f"в очереди: {queued_count}")
+            grp["badge"].setText(" | ".join(badge_parts))
+
+            grp["keep"].setEnabled(done_count > 0)
+            if done_count > 0:
+                grp["keep"].setChecked(True)
             else:
-                size_video = False
-        
-        # Собираем параметры в JSON
-        params = {
+                grp["recompute"].setChecked(True)
+
+        done = sum(1 for t in self.tasks if t.status == TaskStatus.DONE)
+        non_done = N - done
+        parts = [f"DONE: {done}/{N}"]
+        if non_done > 0:
+            parts.append(f"не завершены: {non_done}")
+        self.lbl_infer_existing.setText(" | ".join(parts))
+
+        self._update_warning()
+
+    def _on_inference_mode_changed(self):
+        other = self.rb_infer_other.isChecked()
+        self.infer_fields.setEnabled(other)
+        self.infer_fields.setVisible(other)
+        self.chk_cascade.setEnabled(not self.rb_infer_none.isChecked())
+        self._update_warning()
+
+    def _update_warning(self):
+        non_done = [t for t in self.tasks if t.status != TaskStatus.DONE]
+        infer_active = self.rb_infer_other.isChecked()
+        if non_done and not infer_active:
+            self.label_warning.setText(
+                f"⚠ {len(non_done)} задач не в статусе DONE — "
+                "для них постобработка не будет добавлена. "
+                "Выберите «Повторная детекция» чтобы включить их."
+            )
+            self.label_warning.setVisible(True)
+        elif non_done and infer_active:
+            self.label_warning.setText(
+                f"ℹ {len(non_done)} задач не в статусе DONE — для них будет "
+                "выполнена только повторная детекция; постобработку "
+                "добавьте после её завершения."
+            )
+            self.label_warning.setVisible(True)
+        else:
+            self.label_warning.setVisible(False)
+
+    # ------------------------------------------------------------- on_add
+
+    def _collect_common_params(self) -> dict:
+        return {
             "fov": self.spin_fov.value(),
             "min_reliable_distance": self.spin_min_reliable.value(),
             "depth_bin": self.spin_depth_bin.value(),
             "ctd_columns": self.edit_ctd_columns.text().strip() or "6",
         }
-        
-        # Создаём подзадачи в правильном порядке
-        created = []
-        position = 0
-        
-        # Сначала геометрия (если нужна)
-        if geometry:
-            geom_params = params.copy()
-            geom_params["frame_step"] = self.spin_frame_step.value()
-            st = self.repo.create_subtask(
-                parent_task_id=self.task_id,
-                subtask_type=SubTaskType.GEOMETRY,
-                position=position,
-                params_json=json.dumps(geom_params),
+
+    def _build_inference_params(self) -> Optional[dict]:
+        """params_json для INFERENCE-подзадачи или None если не запускаем."""
+        if self.rb_infer_none.isChecked():
+            return None
+
+        params: dict = {
+            "cascade_invalidate": self.chk_cascade.isChecked(),
+            "model_id": self.infer_combo_model.currentData(),
+            "conf_threshold": self.infer_spin_conf.value(),
+            "enable_tracking": self.infer_check_tracking.isChecked(),
+            "tracker_type": self.infer_combo_tracker.currentData(),
+            "show_trails": self.infer_check_trails.isChecked(),
+            "trail_length": self.infer_spin_trail_length.value(),
+            "min_track_length": self.infer_spin_min_track.value(),
+            "device": self.infer_combo_device.currentData(),
+            "imgsz": self.infer_spin_imgsz.value(),
+            "half": self.infer_check_half.isChecked(),
+            "save_video": self.infer_check_save_video.isChecked(),
+        }
+
+        depth_rate = self.infer_spin_depth_rate.value()
+        if depth_rate > 0:
+            params["depth_rate"] = depth_rate
+
+        return params
+
+    def _selected_action(self, st_type: SubTaskType) -> str:
+        grp = self._radio_groups[st_type]
+        if grp["recompute"].isChecked():
+            return ACTION_RECOMPUTE
+        if grp["keep"].isChecked():
+            return ACTION_KEEP
+        return ACTION_NONE
+
+    def _on_add(self):
+        common = self._collect_common_params()
+        infer_params = self._build_inference_params()
+
+        per_op_params: dict = {}
+        for st_type in (
+            SubTaskType.GEOMETRY,
+            SubTaskType.SIZE,
+            SubTaskType.SIZE_VIDEO_RENDER,
+            SubTaskType.VOLUME,
+            SubTaskType.ANALYSIS,
+        ):
+            action = self._selected_action(st_type)
+            if action == ACTION_NONE or action == ACTION_KEEP:
+                continue
+            p = dict(common)
+            if st_type == SubTaskType.GEOMETRY:
+                p["frame_step"] = self.spin_frame_step.value()
+            elif st_type == SubTaskType.SIZE:
+                p["use_geometry"] = self.chk_size_use_geometry.isChecked()
+                try:
+                    cp = get_config().ui.calibration_json
+                    if cp and os.path.exists(cp):
+                        p["calibration_json"] = cp
+                except Exception:
+                    pass
+            elif st_type == SubTaskType.SIZE_VIDEO_RENDER:
+                p["use_geometry"] = self.chk_video_use_geometry.isChecked()
+            per_op_params[st_type] = p
+
+        if infer_params is None and not per_op_params:
+            QMessageBox.warning(
+                self, "Нет операций",
+                "Не выбрано ни одной операции для запуска.",
             )
-            if st:
-                created.append(st)
-                position += 1
-        
-        # Затем размеры (с указанием использовать ли геометрию)
-        if size:
-            size_params = params.copy()
-            size_params["use_geometry"] = size_use_geometry
+            return
+
+        applied = 0
+        skipped_non_done = 0
+        errors: List[str] = []
+        created_total = 0
+
+        for task in self.tasks:
+            ops: List[Tuple[SubTaskType, str]] = []
+            force: Set[SubTaskType] = set()
+
+            if infer_params is not None:
+                ops.append((
+                    SubTaskType.INFERENCE, json.dumps(infer_params),
+                ))
+                if self._task_has_finished_subtask(task.id, SubTaskType.INFERENCE):
+                    force.add(SubTaskType.INFERENCE)
+
+            postprocess_eligible = task.status == TaskStatus.DONE
+
+            if postprocess_eligible:
+                for st_type, p in per_op_params.items():
+                    ops.append((st_type, json.dumps(p)))
+                    if self._task_has_finished_subtask(task.id, st_type):
+                        force.add(st_type)
+
+            if not ops:
+                if task.status != TaskStatus.DONE and infer_params is None:
+                    skipped_non_done += 1
+                continue
+
             try:
-                calib_path = get_config().ui.calibration_json
-                if calib_path and os.path.exists(calib_path):
-                    size_params["calibration_json"] = calib_path
-            except Exception:
-                pass
-            st = self.repo.create_subtask(
-                parent_task_id=self.task_id,
-                subtask_type=SubTaskType.SIZE,
-                position=position,
-                params_json=json.dumps(size_params),
+                created = self.repo.create_postprocess_subtasks_v2(
+                    task.id, ops, force_overwrite_types=force,
+                )
+                created_total += len(created)
+                applied += 1
+            except RuntimeError as e:
+                errors.append(f"#{task.id}: {e}")
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                errors.append(f"#{task.id}: {e}")
+
+        if errors:
+            QMessageBox.warning(
+                self, "Часть задач не обработана",
+                "\n".join(errors[:10]),
             )
-            if st:
-                created.append(st)
-                position += 1
-        
-        # Видео с размерами (после размеров, с указанием использовать ли геометрию)
-        if size_video:
-            video_params = params.copy()
-            video_params["use_geometry"] = video_use_geometry
-            st = self.repo.create_subtask(
-                parent_task_id=self.task_id,
-                subtask_type=SubTaskType.SIZE_VIDEO_RENDER,
-                position=position,
-                params_json=json.dumps(video_params),
-            )
-            if st:
-                created.append(st)
-                position += 1
-        
-        # Объём
-        if volume:
-            st = self.repo.create_subtask(
-                parent_task_id=self.task_id,
-                subtask_type=SubTaskType.VOLUME,
-                position=position,
-                params_json=json.dumps(params),
-            )
-            if st:
-                created.append(st)
-                position += 1
-        
-        # Анализ в конце
-        if analysis:
-            st = self.repo.create_subtask(
-                parent_task_id=self.task_id,
-                subtask_type=SubTaskType.ANALYSIS,
-                position=position,
-                params_json=json.dumps(params),
-            )
-            if st:
-                created.append(st)
-                position += 1
-        
-        if created:
-            count = len(created)
-            QMessageBox.information(
-                self, "Добавлено",
-                f"Добавлено {count} подзадач в очередь.\n\n"
-                "Подзадачи будут выполнены автоматически\n"
-                "при запуске очереди."
-            )
-            # Обновляем очередь
+
+        if created_total > 0:
             self.task_manager.queue_changed.emit()
-            self.accept()
-        else:
-            QMessageBox.warning(self, "Ошибка", "Не удалось создать подзадачи")
+
+        msg_parts = [
+            f"Задач обработано: {applied}",
+            f"Создано подзадач: {created_total}",
+        ]
+        if skipped_non_done:
+            msg_parts.append(
+                f"Пропущено (не DONE, без инференса): {skipped_non_done}"
+            )
+        QMessageBox.information(self, "Готово", "\n".join(msg_parts))
+        self.accept()
+
+    def _task_has_finished_subtask(
+        self, task_id: int, st_type: SubTaskType,
+    ) -> bool:
+        for st in self.repo.get_subtasks_for_task(task_id):
+            if st.subtask_type == st_type and st.status in (
+                TaskStatus.DONE, TaskStatus.ERROR, TaskStatus.CANCELLED,
+            ):
+                return True
+        return False

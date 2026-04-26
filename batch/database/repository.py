@@ -24,6 +24,8 @@ from .models import (
     TaskOutput,
     TaskStatus,
     OutputType,
+    CANONICAL_SUBTASK_ORDER,
+    SUBTASK_OUTPUT_TYPES,
 )
 
 
@@ -1103,10 +1105,16 @@ class Repository:
             return list(session.scalars(stmt))
 
     def claim_pending_subtask(self) -> Optional[int]:
-        """Атомарно захватывает первую PENDING-подзадачу завершённого родителя.
+        """Атомарно захватывает первую PENDING-подзадачу.
+
+        Для всех типов кроме INFERENCE требует, чтобы родитель был в DONE
+        (детекция уже выполнена → постобработка имеет смысл). INFERENCE
+        сам выполняет детекцию, поэтому может запускаться у не-DONE задач
+        тоже (PENDING/ERROR/CANCELLED — но не RUNNING).
 
         Гарантирует последовательность: не берёт подзадачу, если у того же
-        родителя уже есть RUNNING-подзадача (GEOMETRY → SIZE → VOLUME → ANALYSIS).
+        родителя уже есть RUNNING-подзадача (INFERENCE → GEOMETRY → SIZE →
+        SIZE_VIDEO_RENDER → VOLUME → ANALYSIS).
 
         Returns:
             subtask_id захваченной подзадачи, или None если нет доступных.
@@ -1118,11 +1126,18 @@ class Repository:
                 select(SubTask)
                 .join(Task, SubTask.parent_task_id == Task.id)
                 .where(SubTask.status == TaskStatus.PENDING)
-                .where(Task.status == TaskStatus.DONE)
+                .where(Task.status != TaskStatus.RUNNING)
                 .order_by(SubTask.position)
             ).all()
 
             for subtask in candidates:
+                # INFERENCE может запускаться у не-DONE задач; остальные
+                # типы требуют завершённую детекцию.
+                if subtask.subtask_type != SubTaskType.INFERENCE:
+                    parent = session.get(Task, subtask.parent_task_id)
+                    if parent is None or parent.status != TaskStatus.DONE:
+                        continue
+
                 running_sibling = session.scalar(
                     select(SubTask)
                     .where(SubTask.parent_task_id == subtask.parent_task_id)
@@ -1273,3 +1288,327 @@ class Repository:
                 .options(joinedload(Task.subtasks))
             )
             return session.scalar(stmt)
+
+    # ========== POSTPROCESS DIALOG v2 HELPERS ==========
+
+    def delete_subtask_with_outputs(self, subtask_id: int) -> bool:
+        """Удаляет подзадачу и все связанные TaskOutput-записи в одной транзакции.
+
+        Файлы на диске НЕ удаляются — процессоры перезапишут их при следующем
+        запуске. Бросает RuntimeError, если подзадача в статусе RUNNING.
+
+        Returns:
+            True, если что-то удалено; False — если подзадача не найдена.
+        """
+        with self.get_session() as session:
+            subtask = session.get(SubTask, subtask_id)
+            if subtask is None:
+                return False
+            if subtask.status == TaskStatus.RUNNING:
+                raise RuntimeError(
+                    f"Нельзя удалить выполняющуюся подзадачу {subtask_id}"
+                )
+
+            output_types = SUBTASK_OUTPUT_TYPES.get(subtask.subtask_type, [])
+            if output_types:
+                session.execute(
+                    delete(TaskOutput)
+                    .where(TaskOutput.task_id == subtask.parent_task_id)
+                    .where(TaskOutput.output_type.in_(output_types))
+                )
+
+            session.delete(subtask)
+            session.commit()
+            return True
+
+    def delete_outputs_for_subtask_types(
+        self,
+        task_id: int,
+        subtask_types: List[SubTaskType],
+    ) -> int:
+        """Массово удаляет TaskOutput-записи для перечня типов подзадач.
+
+        Используется при каскадной инвалидации после INFERENCE.
+        Файлы на диске НЕ удаляются.
+
+        Returns:
+            Количество удалённых строк.
+        """
+        output_types: List[OutputType] = []
+        for st_type in subtask_types:
+            output_types.extend(SUBTASK_OUTPUT_TYPES.get(st_type, []))
+        if not output_types:
+            return 0
+
+        with self.get_session() as session:
+            result = session.execute(
+                delete(TaskOutput)
+                .where(TaskOutput.task_id == task_id)
+                .where(TaskOutput.output_type.in_(output_types))
+            )
+            session.commit()
+            return result.rowcount or 0
+
+    def delete_finished_subtasks_of_types(
+        self,
+        task_id: int,
+        subtask_types: List[SubTaskType],
+    ) -> int:
+        """Удаляет DONE/ERROR/CANCELLED-подзадачи указанных типов.
+
+        PENDING/RUNNING не трогаются. Используется при каскадной инвалидации
+        после INFERENCE: устаревшие результаты удаляются, новые подзадачи
+        будут созданы пользователем при необходимости.
+        """
+        if not subtask_types:
+            return 0
+
+        with self.get_session() as session:
+            result = session.execute(
+                delete(SubTask)
+                .where(SubTask.parent_task_id == task_id)
+                .where(SubTask.subtask_type.in_(subtask_types))
+                .where(SubTask.status.in_((
+                    TaskStatus.DONE,
+                    TaskStatus.ERROR,
+                    TaskStatus.CANCELLED,
+                )))
+            )
+            session.commit()
+            return result.rowcount or 0
+
+    def reset_subtask_positions(self, task_id: int) -> None:
+        """Переприсваивает position всем подзадачам Task по каноническому порядку.
+
+        Внутри одного типа сохраняется порядок по id (стабильность). Не трогает
+        подзадачи в RUNNING — их position остаётся прежней (но в практике
+        канонический порядок enforced через тип, а не position).
+        """
+        with self.get_session() as session:
+            subtasks = session.scalars(
+                select(SubTask).where(SubTask.parent_task_id == task_id)
+            ).all()
+
+            order_index = {t: i for i, t in enumerate(CANONICAL_SUBTASK_ORDER)}
+
+            def sort_key(st: SubTask):
+                return (order_index.get(st.subtask_type, 999), st.id)
+
+            for new_pos, st in enumerate(sorted(subtasks, key=sort_key)):
+                if st.status == TaskStatus.RUNNING:
+                    continue
+                st.position = new_pos
+            session.commit()
+
+    def create_postprocess_subtasks_v2(
+        self,
+        task_id: int,
+        ops: List[tuple],
+        force_overwrite_types: Optional[set] = None,
+    ) -> List["SubTask"]:
+        """Создаёт набор подзадач постобработки с поддержкой пересчёта.
+
+        Args:
+            task_id: ID родительской задачи.
+            ops: Список (SubTaskType, params_json:str). Порядок создания
+                определяется CANONICAL_SUBTASK_ORDER, а не порядком в списке.
+            force_overwrite_types: Множество типов, для которых нужно удалить
+                существующую DONE/ERROR/CANCELLED-подзадачу и связанные
+                TaskOutput'ы перед созданием новой. Если у типа есть
+                PENDING/RUNNING-подзадача — она не трогается, новая не создаётся
+                (избегаем дубликатов в очереди).
+
+        Returns:
+            Список созданных подзадач.
+
+        Raises:
+            RuntimeError: если попытка пересчитать подзадачу в RUNNING.
+        """
+        force_overwrite_types = force_overwrite_types or set()
+        created: List[SubTask] = []
+
+        with self.get_session() as session:
+            task = session.get(Task, task_id)
+            if task is None:
+                return []
+
+            # Сортируем ops по канону для предсказуемого порядка создания.
+            order_index = {t: i for i, t in enumerate(CANONICAL_SUBTASK_ORDER)}
+            ops_sorted = sorted(
+                ops, key=lambda op: order_index.get(op[0], 999)
+            )
+
+            for st_type, params_json in ops_sorted:
+                existing = session.scalars(
+                    select(SubTask)
+                    .where(SubTask.parent_task_id == task_id)
+                    .where(SubTask.subtask_type == st_type)
+                ).all()
+
+                # Если уже есть PENDING или RUNNING — не создаём дубликат.
+                in_queue = [
+                    e for e in existing
+                    if e.status in (TaskStatus.PENDING, TaskStatus.RUNNING)
+                ]
+                if in_queue:
+                    continue
+
+                # Если выбран принудительный пересчёт и есть DONE/ERROR/CANCELLED —
+                # удаляем старую подзадачу с её Output'ами.
+                if st_type in force_overwrite_types:
+                    finished = [
+                        e for e in existing
+                        if e.status in (
+                            TaskStatus.DONE, TaskStatus.ERROR, TaskStatus.CANCELLED
+                        )
+                    ]
+                    for old in finished:
+                        output_types = SUBTASK_OUTPUT_TYPES.get(old.subtask_type, [])
+                        if output_types:
+                            session.execute(
+                                delete(TaskOutput)
+                                .where(TaskOutput.task_id == task_id)
+                                .where(TaskOutput.output_type.in_(output_types))
+                            )
+                        session.delete(old)
+                    session.flush()
+                else:
+                    # Не пересчитываем, есть DONE-результат — пропускаем.
+                    has_done = any(e.status == TaskStatus.DONE for e in existing)
+                    if has_done:
+                        continue
+
+                # Если создаём INFERENCE для не-DONE задачи — отключаем её
+                # из обычной очереди, чтобы воркер не запустил параллельно
+                # старую детекцию через claim_pending_task.
+                if st_type == SubTaskType.INFERENCE and task.status != TaskStatus.DONE:
+                    if task.status == TaskStatus.PENDING:
+                        task.is_skipped = True
+
+                new_st = SubTask(
+                    parent_task_id=task_id,
+                    subtask_type=st_type,
+                    position=0,  # будет переприсвоен ниже
+                    params_json=params_json,
+                )
+                session.add(new_st)
+                session.flush()
+                created.append(new_st)
+
+            # Переприсваиваем position всем подзадачам Task'а по канону.
+            all_subtasks = session.scalars(
+                select(SubTask).where(SubTask.parent_task_id == task_id)
+            ).all()
+            for new_pos, st in enumerate(sorted(
+                all_subtasks,
+                key=lambda s: (order_index.get(s.subtask_type, 999), s.id),
+            )):
+                if st.status == TaskStatus.RUNNING:
+                    continue
+                st.position = new_pos
+
+            session.commit()
+            for st in created:
+                session.refresh(st)
+
+        return created
+
+    def apply_inference_result(
+        self,
+        task_id: int,
+        result_outputs: Dict[OutputType, str],
+        task_field_overrides: Dict[str, Any],
+        result_stats: Dict[str, Any],
+        cascade_invalidate: bool,
+    ) -> None:
+        """Транзакционно применяет результат INFERENCE-подзадачи.
+
+        - Удаляет старые TaskOutput типов VIDEO/CSV/TRACKS_CSV.
+        - Добавляет новые TaskOutput из result_outputs.
+        - Перезаписывает поля Task (overrides + статистика).
+        - Устанавливает Task.status = DONE и снимает is_skipped.
+        - Если cascade_invalidate=True: удаляет downstream-Output'ы и
+          DONE/ERROR-подзадачи downstream-типов.
+
+        Args:
+            task_id: ID Task.
+            result_outputs: { OutputType.VIDEO: path, ... }
+            task_field_overrides: { "model_id": 7, "conf_threshold": 0.5, ... }
+            result_stats: { "detections_count": 1234, "tracks_count": 56,
+                            "processing_time_s": 12.3, "class_stats_json": "..." }
+            cascade_invalidate: если True — каскадно очистить downstream.
+        """
+        with self.get_session() as session:
+            task = session.get(Task, task_id)
+            if task is None:
+                raise ValueError(f"Task {task_id} не найдена")
+
+            # 1. Удаляем старые INFERENCE-Output'ы.
+            inference_outputs = SUBTASK_OUTPUT_TYPES[SubTaskType.INFERENCE]
+            session.execute(
+                delete(TaskOutput)
+                .where(TaskOutput.task_id == task_id)
+                .where(TaskOutput.output_type.in_(inference_outputs))
+            )
+
+            # 2. Добавляем новые Output'ы.
+            for out_type, filepath in result_outputs.items():
+                if not filepath:
+                    continue
+                session.add(TaskOutput(
+                    task_id=task_id,
+                    output_type=out_type,
+                    filepath=filepath,
+                    filename=os.path.basename(filepath),
+                    filesize_mb=(
+                        os.path.getsize(filepath) / (1024 * 1024)
+                        if os.path.exists(filepath) else None
+                    ),
+                ))
+
+            # 3. Перезаписываем поля Task: overrides + статистика.
+            for key, value in task_field_overrides.items():
+                if value is None:
+                    continue
+                if hasattr(task, key):
+                    setattr(task, key, value)
+            for key, value in result_stats.items():
+                if hasattr(task, key) and value is not None:
+                    setattr(task, key, value)
+
+            task.status = TaskStatus.DONE
+            task.is_skipped = False
+            task.error_message = None
+            task.progress_percent = 100.0
+            task.completed_at = datetime.now()
+
+            # 4. Каскадная инвалидация downstream-результатов.
+            if cascade_invalidate:
+                downstream = [
+                    SubTaskType.GEOMETRY,
+                    SubTaskType.SIZE,
+                    SubTaskType.SIZE_VIDEO_RENDER,
+                    SubTaskType.VOLUME,
+                    SubTaskType.ANALYSIS,
+                ]
+                downstream_outputs: List[OutputType] = []
+                for t in downstream:
+                    downstream_outputs.extend(SUBTASK_OUTPUT_TYPES.get(t, []))
+                if downstream_outputs:
+                    session.execute(
+                        delete(TaskOutput)
+                        .where(TaskOutput.task_id == task_id)
+                        .where(TaskOutput.output_type.in_(downstream_outputs))
+                    )
+                session.execute(
+                    delete(SubTask)
+                    .where(SubTask.parent_task_id == task_id)
+                    .where(SubTask.subtask_type.in_(downstream))
+                    .where(SubTask.status.in_((
+                        TaskStatus.DONE,
+                        TaskStatus.ERROR,
+                        TaskStatus.CANCELLED,
+                    )))
+                )
+
+            session.commit()

@@ -15,6 +15,8 @@ from .models import (
     TaskOutput,
     TaskStatus,
     OutputType,
+    CANONICAL_SUBTASK_ORDER,
+    SUBTASK_OUTPUT_TYPES,
 )
 from .repository import Repository
 
@@ -31,5 +33,7 @@ __all__ = [
     "TaskOutput",
     "TaskStatus",
     "OutputType",
+    "CANONICAL_SUBTASK_ORDER",
+    "SUBTASK_OUTPUT_TYPES",
     "Repository",
 ]

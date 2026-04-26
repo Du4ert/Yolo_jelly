@@ -454,10 +454,20 @@ class TaskTable(QWidget):
         except ValueError as e:
             QMessageBox.warning(self, "Ошибка", str(e))
 
-    def _postprocess_task(self, task_id: int):
-        """Открывает диалог постобработки."""
+    def _postprocess_task(self, task_ids):
+        """Открывает диалог постобработки для одной или нескольких задач.
+
+        Принимает int или list[int] для обратной совместимости с прежними
+        вызовами по одному ID.
+        """
+        if isinstance(task_ids, int):
+            task_ids = [task_ids]
+        if not task_ids:
+            return
         try:
-            dialog = PostProcessDialog(self.repo, self.task_manager, task_id, parent=self)
+            dialog = PostProcessDialog(
+                self.repo, self.task_manager, task_ids, parent=self,
+            )
             dialog.exec()
             self.refresh()
         except ValueError as e:
@@ -476,23 +486,12 @@ class TaskTable(QWidget):
             QMessageBox.warning(self, "Ошибка", str(e))
 
     def _postprocess_selected(self):
-        """Открывает постобработку для выбранной задачи."""
-        if not self.tree.currentItem():
+        """Открывает постобработку для выбранных задач (одной или нескольких)."""
+        task_ids = self._get_selected_task_ids()
+        if not task_ids:
             QMessageBox.information(self, "Не выбрано", "Выберите задачу")
             return
-        task_id = self._get_selected_task_id()
-        if not task_id:
-            return
-        
-        task = self.task_manager.get_task(task_id)
-        if not task or task.status != TaskStatus.DONE:
-            QMessageBox.warning(
-                self, "Недоступно",
-                "Постобработка доступна только для завершённых задач детекции."
-            )
-            return
-        
-        self._postprocess_task(task_id)
+        self._postprocess_task(task_ids)
 
     def _get_selected_task_ids(self) -> list:
         """Возвращает список ID всех выбранных задач (группы и подзадачи игнорируются)."""
@@ -723,9 +722,19 @@ class TaskTable(QWidget):
         done_ids = [t.id for t in tasks if t.status == TaskStatus.DONE]
         error_cancelled = [t.id for t in tasks if t.status in (TaskStatus.ERROR, TaskStatus.CANCELLED)]
         deletable_ids = [t.id for t in tasks if t.status != TaskStatus.RUNNING]
+        non_running_ids = [t.id for t in tasks if t.status != TaskStatus.RUNNING]
 
         menu = QMenu(self)
         has_items = False
+
+        if non_running_ids:
+            action = menu.addAction(
+                f"📊 Постобработка {len(non_running_ids)} задач..."
+            )
+            action.triggered.connect(
+                lambda: self._postprocess_task(non_running_ids)
+            )
+            has_items = True
 
         if done_ids:
             action = menu.addAction(f"🏷 Экспорт в Label Studio ({len(done_ids)})...")

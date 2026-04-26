@@ -44,6 +44,7 @@ class TaskStatus(enum.Enum):
 
 class SubTaskType(enum.Enum):
     """Типы подзадач постобработки."""
+    INFERENCE = "inference"
     GEOMETRY = "geometry"
     SIZE = "size"
     VOLUME = "volume"
@@ -66,6 +67,35 @@ class OutputType(enum.Enum):
     ANALYSIS_REPORT = "analysis_report"
     INTERACTIVE_PLOT = "interactive_plot"
     LABEL_STUDIO_JSON = "label_studio_json"
+
+
+# Канонический порядок выполнения подзадач постобработки.
+# Используется в claim_pending_subtask и при пересчёте position'ов.
+CANONICAL_SUBTASK_ORDER: List["SubTaskType"] = [
+    SubTaskType.INFERENCE,
+    SubTaskType.GEOMETRY,
+    SubTaskType.SIZE,
+    SubTaskType.SIZE_VIDEO_RENDER,
+    SubTaskType.VOLUME,
+    SubTaskType.ANALYSIS,
+]
+
+
+# Какие OutputType принадлежат каждой подзадаче — для очистки при
+# пересчёте и каскадной инвалидации после INFERENCE.
+SUBTASK_OUTPUT_TYPES: dict["SubTaskType", List["OutputType"]] = {
+    SubTaskType.INFERENCE: [OutputType.VIDEO, OutputType.CSV, OutputType.TRACKS_CSV],
+    SubTaskType.GEOMETRY: [OutputType.GEOMETRY_CSV],
+    SubTaskType.SIZE: [OutputType.SIZE_CSV, OutputType.TRACK_SIZES_CSV],
+    SubTaskType.SIZE_VIDEO_RENDER: [OutputType.SIZE_VIDEO],
+    SubTaskType.VOLUME: [OutputType.VOLUME_CSV],
+    SubTaskType.ANALYSIS: [
+        OutputType.ANALYSIS_PLOT,
+        OutputType.ANALYSIS_REPORT,
+        OutputType.INTERACTIVE_PLOT,
+    ],
+    SubTaskType.LABEL_STUDIO_EXPORT: [OutputType.LABEL_STUDIO_JSON],
+}
 
 
 class Catalog(Base):
@@ -347,6 +377,7 @@ class SubTask(Base):
     def type_name(self) -> str:
         """Человекочитаемое название типа."""
         names = {
+            SubTaskType.INFERENCE: "Детекция",
             SubTaskType.GEOMETRY: "Геометрия",
             SubTaskType.SIZE: "Размеры",
             SubTaskType.VOLUME: "Объём",
@@ -355,11 +386,12 @@ class SubTask(Base):
             SubTaskType.LABEL_STUDIO_EXPORT: "Label Studio",
         }
         return names.get(self.subtask_type, "???")
-    
+
     @property
     def type_icon(self) -> str:
         """Иконка типа."""
         icons = {
+            SubTaskType.INFERENCE: "🎯",
             SubTaskType.GEOMETRY: "📐",
             SubTaskType.SIZE: "📏",
             SubTaskType.VOLUME: "📦",

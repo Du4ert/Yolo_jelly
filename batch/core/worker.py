@@ -262,11 +262,22 @@ class Worker(QThread):
             output_dir = Path(dive.folder_path) / "output"
             output_dir.mkdir(exist_ok=True)
             base_name = Path(video.filename).stem
-            
+
             params = {}
             if subtask.params_json:
                 params = json.loads(subtask.params_json)
-            
+
+            # INFERENCE — особая ветка: запускаем детекцию заново, не требуем
+            # существующего detections.csv. Обрабатываем до общей логики поиска
+            # путей и финализации (она применяется только к подзадачам
+            # постобработки, у которых уже есть результаты детекции).
+            if subtask.subtask_type == SubTaskType.INFERENCE:
+                self._run_inference_subtask(
+                    subtask_id, parent_task, video, dive, params,
+                    on_subtask_progress,
+                )
+                return
+
             # Получаем пути к файлам
             outputs = self.repo.get_task_outputs(parent_task.id)
             detections_csv = None
@@ -998,6 +1009,195 @@ class Worker(QThread):
     
     def get_current_task_id(self) -> Optional[int]:
         return self._current_task_id
-    
+
     def get_current_subtask_id(self) -> Optional[int]:
         return self._current_subtask_id
+
+    def _run_inference_subtask(
+        self,
+        subtask_id: int,
+        parent_task,
+        video,
+        dive,
+        params: dict,
+        on_subtask_progress,
+    ) -> None:
+        """Запускает повторный инференс по параметрам подзадачи INFERENCE.
+
+        params (из subtask.params_json) — overrides поверх Task'овых полей.
+        None в значении = «оставить как у задачи».
+        """
+        from ..database import Model as ModelEntity
+        from sqlalchemy.orm import joinedload
+        from sqlalchemy import select as sa_select
+
+        task_id = parent_task.id
+        cascade_invalidate = bool(params.get("cascade_invalidate", True))
+
+        try:
+            with self.repo.get_session() as session:
+                from ..database import Task as TaskModel, VideoFile as VF
+
+                stmt = (
+                    sa_select(TaskModel)
+                    .options(
+                        joinedload(TaskModel.video_file).joinedload(VF.dive),
+                        joinedload(TaskModel.ctd_file),
+                        joinedload(TaskModel.model),
+                    )
+                    .where(TaskModel.id == task_id)
+                )
+                task_data = session.scalar(stmt)
+                if not task_data:
+                    raise ValueError(f"Task {task_id} not found")
+
+                video_path = task_data.video_file.filepath
+                dive_folder = task_data.video_file.dive.folder_path
+                ctd_path = task_data.ctd_file.filepath if task_data.ctd_file else None
+                original_model_path = task_data.model.filepath
+
+                # Базовые параметры — из Task; затем accumulate overrides.
+                effective = {
+                    "conf_threshold": task_data.conf_threshold,
+                    "enable_tracking": task_data.enable_tracking,
+                    "tracker_type": task_data.tracker_type,
+                    "show_trails": task_data.show_trails,
+                    "trail_length": task_data.trail_length,
+                    "min_track_length": task_data.min_track_length,
+                    "depth_rate": task_data.depth_rate,
+                    "save_video": task_data.save_video,
+                    "export_label_studio": task_data.export_label_studio,
+                    "export_ls_interval": task_data.export_ls_interval,
+                    "export_ls_classes": task_data.export_ls_classes,
+                    "export_ls_dir": get_config().ui.label_studio_dir,
+                    "device": task_data.device or "auto",
+                    "imgsz": task_data.imgsz or 1280,
+                    "half": task_data.half if task_data.half is not None else True,
+                }
+                override_keys = (
+                    "conf_threshold", "enable_tracking", "tracker_type",
+                    "show_trails", "trail_length", "min_track_length",
+                    "device", "imgsz", "half",
+                )
+                for key in override_keys:
+                    if params.get(key) is not None:
+                        effective[key] = params[key]
+
+                # Override модели — загружаем по model_id.
+                model_path = original_model_path
+                model_override_id = params.get("model_id")
+                if model_override_id is not None and model_override_id != task_data.model_id:
+                    new_model = session.get(ModelEntity, model_override_id)
+                    if new_model is None:
+                        raise ValueError(f"Model {model_override_id} not found")
+                    model_path = new_model.filepath
+
+            processor = ProcessorFactory.from_task_data(
+                video_path=video_path,
+                model_path=model_path,
+                dive_folder=dive_folder,
+                ctd_path=ctd_path,
+                **effective,
+            )
+            self._current_processor = processor
+
+            # Проксируем прогресс: подзадаче нужен percent (0..100).
+            def on_progress(current_frame: int, total_frames: int,
+                            detections: int, tracks: int):
+                if total_frames > 0:
+                    percent = (current_frame / total_frames) * 100.0
+                else:
+                    percent = 0.0
+                on_subtask_progress(current_frame, total_frames)
+
+                if self._pause_requested:
+                    processor.pause()
+                else:
+                    processor.resume()
+
+                if self._stop_requested:
+                    processor.cancel()
+
+            processor.progress_callback = on_progress
+            result = processor.run()
+            self._current_processor = None
+
+            if result.cancelled or self._stop_requested:
+                self._current_subtask_id = None
+                self.repo.update_subtask_status(
+                    subtask_id, TaskStatus.CANCELLED,
+                    error_message="Отменено пользователем",
+                )
+                self.finished_subtask.emit(subtask_id, False, "Отменено пользователем")
+                return
+
+            if not result.success:
+                self._current_subtask_id = None
+                err = result.error_message or "Inference failed"
+                self.repo.update_subtask_status(
+                    subtask_id, TaskStatus.ERROR, error_message=err,
+                )
+                self.finished_subtask.emit(subtask_id, False, err)
+                return
+
+            # Транзакционно применяем результат: обновляем Output'ы, поля Task,
+            # каскадно очищаем downstream при cascade_invalidate=True.
+            outputs_map = {}
+            if result.output_video_path:
+                outputs_map[OutputType.VIDEO] = result.output_video_path
+            if result.output_csv_path:
+                outputs_map[OutputType.CSV] = result.output_csv_path
+            if result.output_tracks_path:
+                outputs_map[OutputType.TRACKS_CSV] = result.output_tracks_path
+
+            task_overrides = {
+                "model_id": model_override_id,
+                "conf_threshold": params.get("conf_threshold"),
+                "enable_tracking": params.get("enable_tracking"),
+                "tracker_type": params.get("tracker_type"),
+                "show_trails": params.get("show_trails"),
+                "trail_length": params.get("trail_length"),
+                "min_track_length": params.get("min_track_length"),
+                "device": params.get("device"),
+                "imgsz": params.get("imgsz"),
+                "half": params.get("half"),
+            }
+            result_stats = {
+                "detections_count": result.detections_count,
+                "tracks_count": result.tracks_count,
+                "processing_time_s": result.processing_time_s,
+                "class_stats_json": result.class_stats_json,
+            }
+            self.repo.apply_inference_result(
+                task_id=task_id,
+                result_outputs=outputs_map,
+                task_field_overrides=task_overrides,
+                result_stats=result_stats,
+                cascade_invalidate=cascade_invalidate,
+            )
+
+            self._current_subtask_id = None
+            self.repo.update_subtask_progress(subtask_id, 100.0)
+            self.subtask_progress.emit(subtask_id, 100.0)
+
+            result_text = (
+                f"{result.detections_count or 0} дет., "
+                f"{result.tracks_count or 0} тр."
+            )
+            self.repo.update_subtask_status(
+                subtask_id, TaskStatus.DONE,
+                result_value=float(result.detections_count or 0),
+                result_text=result_text,
+            )
+            self.finished_subtask.emit(subtask_id, True, "")
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._current_processor = None
+            self._current_subtask_id = None
+            error_msg = str(e)
+            self.repo.update_subtask_status(
+                subtask_id, TaskStatus.ERROR, error_message=error_msg,
+            )
+            self.finished_subtask.emit(subtask_id, False, error_msg)
