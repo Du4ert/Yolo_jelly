@@ -106,6 +106,7 @@ class NvencVideoWriter:
         bitrate: str = "20M",
     ):
         self.output_path = output_path
+        self._fps = fps
         self._proc: Optional[subprocess.Popen] = None
         self._fallback: Optional[cv2.VideoWriter] = None
 
@@ -127,7 +128,7 @@ class NvencVideoWriter:
                     ],
                     stdin=subprocess.PIPE,
                     stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
                 )
                 return
             except (OSError, subprocess.SubprocessError):
@@ -139,15 +140,19 @@ class NvencVideoWriter:
 
     @staticmethod
     def _ffmpeg_nvenc_available() -> bool:
-        """Проверяет доступность FFmpeg с поддержкой h264_nvenc."""
+        """Проверяет реальную доступность h264_nvenc (пробный encode)."""
         if not shutil.which("ffmpeg"):
             return False
         try:
             result = subprocess.run(
-                ["ffmpeg", "-hide_banner", "-encoders"],
-                capture_output=True, text=True, timeout=5,
+                [
+                    "ffmpeg", "-hide_banner",
+                    "-f", "lavfi", "-i", "nullsrc=s=64x64:d=0.1",
+                    "-c:v", "h264_nvenc", "-f", "null", "-",
+                ],
+                capture_output=True, timeout=10,
             )
-            return "h264_nvenc" in result.stdout
+            return result.returncode == 0
         except (subprocess.SubprocessError, OSError):
             return False
 
@@ -157,7 +162,25 @@ class NvencVideoWriter:
             try:
                 self._proc.stdin.write(frame.tobytes())
             except (BrokenPipeError, OSError):
-                pass
+                # ffmpeg упал — читаем stderr и переключаемся на cv2 fallback
+                stderr_out = ""
+                if self._proc.stderr:
+                    try:
+                        stderr_out = self._proc.stderr.read().decode("utf-8", errors="replace").strip()
+                    except OSError:
+                        pass
+                print(f"  Предупреждение: ffmpeg NVENC завершился с ошибкой, переключение на cv2")
+                if stderr_out:
+                    print(f"  ffmpeg stderr: {stderr_out}")
+                self._proc = None
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                self._fallback = cv2.VideoWriter(
+                    self.output_path,
+                    fourcc,
+                    self._fps,
+                    (frame.shape[1], frame.shape[0]),
+                )
+                self._fallback.write(frame)
         elif self._fallback:
             self._fallback.write(frame)
 
@@ -169,7 +192,22 @@ class NvencVideoWriter:
                     self._proc.stdin.close()
                 except OSError:
                     pass
-            self._proc.wait(timeout=30)
+            try:
+                self._proc.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                print("  Предупреждение: ffmpeg не завершился за 60 сек, принудительное завершение")
+                self._proc.kill()
+                self._proc.wait()
+            if self._proc.returncode != 0:
+                stderr_out = ""
+                if self._proc.stderr:
+                    try:
+                        stderr_out = self._proc.stderr.read().decode("utf-8", errors="replace").strip()
+                    except OSError:
+                        pass
+                print(f"  Предупреждение: ffmpeg завершился с кодом {self._proc.returncode} — видео может быть повреждено")
+                if stderr_out:
+                    print(f"  ffmpeg stderr: {stderr_out}")
             self._proc = None
         if self._fallback:
             self._fallback.release()
