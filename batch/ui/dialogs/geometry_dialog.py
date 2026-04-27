@@ -93,6 +93,7 @@ class SizeWorker(QThread):
         min_r_squared: float = 0.5,
         min_size_change: float = 0.3,
         apply_tilt_correction: bool = True,
+        min_reliable_distance: Optional[float] = None,
     ):
         super().__init__()
         self.detections_csv = detections_csv
@@ -106,13 +107,14 @@ class SizeWorker(QThread):
         self.min_r_squared = min_r_squared
         self.min_size_change = min_size_change
         self.apply_tilt_correction = apply_tilt_correction
+        self.min_reliable_distance = min_reliable_distance
         self._processor = None
-    
+
     def run(self):
         from ...core import SizeEstimationProcessor
-        
+
         self._processor = SizeEstimationProcessor()
-        
+
         result = self._processor.process(
             detections_csv=self.detections_csv,
             output_csv=self.output_csv,
@@ -125,6 +127,7 @@ class SizeWorker(QThread):
             min_r_squared=self.min_r_squared,
             min_size_change_ratio=self.min_size_change,
             apply_tilt_correction=self.apply_tilt_correction,
+            min_reliable_distance=self.min_reliable_distance,
         )
         self.finished.emit(result)
     
@@ -459,7 +462,14 @@ class GeometryDialog(QDialog):
         self.size_min_change.setValue(0.3)
         self.size_min_change.setSingleStep(0.05)
         params_layout.addRow("Мин. изменение размера:", self.size_min_change)
-        
+
+        self.size_min_reliable = QDoubleSpinBox()
+        self.size_min_reliable.setRange(0.05, 2.0)
+        self.size_min_reliable.setValue(0.1)
+        self.size_min_reliable.setSingleStep(0.05)
+        self.size_min_reliable.setSuffix(" м")
+        params_layout.addRow("Ближняя дистанция:", self.size_min_reliable)
+
         layout.addWidget(params_group)
         
         # Группа: Выход
@@ -846,6 +856,7 @@ class GeometryDialog(QDialog):
             min_track_points=self.size_min_points.value(),
             min_r_squared=self.size_min_r2.value(),
             min_size_change=self.size_min_change.value(),
+            min_reliable_distance=self.size_min_reliable.value(),
         )
         self._worker.finished.connect(self._on_size_finished)
         self._worker.start()

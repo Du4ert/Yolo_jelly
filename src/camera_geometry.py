@@ -33,7 +33,6 @@ REFERENCE_FRAME_WIDTH = 3840
 FIXED_SIZE_CLASSES = {
     'Pleurobrachia pileus': {
         'size_mm': 10.0,      # фиксированный размер
-        'distance_m': 0.2,    # фиксированная дистанция (200 мм)
     }
 }
 
@@ -121,6 +120,8 @@ class CameraCalibration:
             frame_width=data.get('frame_width', 3840),
             frame_height=data.get('frame_height', 2160),
             parallax_ref_percentile=data.get('parallax_ref_percentile', 95.0),
+            min_reliable_distance=data.get('min_reliable_distance', 0.1),
+            max_reliable_distance=data.get('max_reliable_distance', 3.0),
         )
 
     def to_json(self, json_path: str):
@@ -136,6 +137,8 @@ class CameraCalibration:
             'optical_center_x': self.optical_center_x,
             'optical_center_y': self.optical_center_y,
             'parallax_ref_percentile': self.parallax_ref_percentile,
+            'min_reliable_distance': self.min_reliable_distance,
+            'max_reliable_distance': self.max_reliable_distance,
         }
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
@@ -822,7 +825,11 @@ def estimate_size_by_k_method(
         confidence = 0.6
     
     if distance_final < calibration.min_reliable_distance:
-        warnings_list.append("distance_too_close")
+        distance_final = calibration.min_reliable_distance
+        pixel_calib = calibration.pixel_calib_C * (distance_final ** calibration.pixel_calib_D)
+        size_mm = final_size_pixels / pixel_calib
+        size_cm = size_mm / 10.0
+        warnings_list.append("distance_clamped_to_min")
         confidence *= 0.8
     
     # Проверка стабильности k
@@ -922,7 +929,7 @@ def estimate_size_fixed(
     
     fixed = FIXED_SIZE_CLASSES[class_name]
     size_mm = fixed['size_mm']
-    distance = fixed['distance_m']
+    distance = calibration.min_reliable_distance
     
     frame_width = calibration.frame_width
     frame_height = calibration.frame_height
