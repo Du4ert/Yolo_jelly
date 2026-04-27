@@ -663,9 +663,9 @@ class PostProcessDialog(QDialog):
             self.label_warning.setVisible(True)
         elif non_done and infer_active:
             self.label_warning.setText(
-                f"ℹ {len(non_done)} задач не в статусе DONE — для них будет "
-                "выполнена только повторная детекция; постобработку "
-                "добавьте после её завершения."
+                f"ℹ {len(non_done)} задач не в статусе DONE — "
+                "они будут сброшены в очередь с новыми параметрами; "
+                "выбранная постобработка запустится автоматически после детекции."
             )
             self.label_warning.setVisible(True)
         else:
@@ -758,27 +758,48 @@ class PostProcessDialog(QDialog):
         created_total = 0
 
         for task in self.tasks:
-            ops: List[Tuple[SubTaskType, str]] = []
-            force: Set[SubTaskType] = set()
-
             if infer_params is not None:
-                ops.append((
-                    SubTaskType.INFERENCE, json.dumps(infer_params),
-                ))
-                if self._task_has_finished_subtask(task.id, SubTaskType.INFERENCE):
-                    force.add(SubTaskType.INFERENCE)
+                # Сбрасываем задачу в PENDING с новыми параметрами
+                # (без создания INFERENCE-подзадачи)
+                try:
+                    self.repo.reset_task_for_reinference(task.id, infer_params)
+                except Exception as e:
+                    import traceback; traceback.print_exc()
+                    errors.append(f"#{task.id}: {e}")
+                    continue
 
-            postprocess_eligible = task.status == TaskStatus.DONE
-
-            if postprocess_eligible:
+                # Создаём подзадачи постобработки (запустятся после детекции)
+                ops: List[Tuple[SubTaskType, str]] = []
+                force: Set[SubTaskType] = set()
                 for st_type, p in per_op_params.items():
                     ops.append((st_type, json.dumps(p)))
                     if self._task_has_finished_subtask(task.id, st_type):
                         force.add(st_type)
+                if ops:
+                    try:
+                        created = self.repo.create_postprocess_subtasks_v2(
+                            task.id, ops, force_overwrite_types=force,
+                        )
+                        created_total += len(created)
+                    except Exception as e:
+                        import traceback; traceback.print_exc()
+                        errors.append(f"#{task.id} (постобработка): {e}")
+                applied += 1
+                continue
+
+            # Только постобработка — задача должна быть DONE
+            if task.status != TaskStatus.DONE:
+                skipped_non_done += 1
+                continue
+
+            ops = []
+            force = set()
+            for st_type, p in per_op_params.items():
+                ops.append((st_type, json.dumps(p)))
+                if self._task_has_finished_subtask(task.id, st_type):
+                    force.add(st_type)
 
             if not ops:
-                if task.status != TaskStatus.DONE and infer_params is None:
-                    skipped_non_done += 1
                 continue
 
             try:

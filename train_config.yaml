@@ -4,18 +4,18 @@
 # Основные параметры
 base:
   data_yaml: data.yaml                # Путь к конфигурации датасета
-  model: yolo11m.pt                   # Базовая модель: yolov8n/s/m/l/x.pt
+  model: runs/yolo11m.pt                   # Базовая модель: yolov8n/s/m/l/x.pt
   project: runs             # Директория для сохранения результатов
-  name: model_11m_1280                    # Имя эксперимента
+  name: model_11m_BIG_1280_HOPE                    # Имя эксперимента
 
 # Параметры обучения
 training:
-  epochs: 150                         # Количество эпох
-  batch: 8                           # Размер батча (-1 для автоподбора)
+  epochs: 180                         # Количество эпох
+  batch: 4                           # Размер батча (-1 для автоподбора)
   imgsz: 1280                          # Размер входного изображения
   device: auto                        # Устройство: 0, 1, cpu, auto
   workers: 8                          # Количество воркеров DataLoader
-  patience: 30                        # Early stopping patience (эпохи без улучшения)
+  patience: 40                        # Early stopping patience (эпохи без улучшения)
   save_period: 10                     # Сохранять чекпоинт каждые N эпох
 
 # Оптимизатор
@@ -42,12 +42,12 @@ augmentation:
   # Геометрические преобразования
   degrees: 180                        # Вращение ±degrees
   translate: 0.1                      # Сдвиг ±translate (доля от размера)
-  scale: 0.5                          # Масштабирование ±scale
+  scale: 0.3                          # Масштабирование ±scale
   shear: 0.0                          # Скос ±shear градусов
   perspective: 0.0                    # Перспектива [0, 0.001]
   
   # Отражения
-  flipud: 0.3                         # Вертикальное отражение (вероятность)
+  flipud: 0.5                         # Вертикальное отражение (вероятность)
   fliplr: 0.5                         # Горизонтальное отражение (вероятность)
   
   # Мозаика и смешивание
@@ -57,11 +57,15 @@ augmentation:
 
 # Дополнительные параметры YOLO
 advanced:
-  close_mosaic: 10                    # Отключить мозаику за N эпох до конца
+  close_mosaic: 15                    # Отключить мозаику за N эпох до конца
   box: 7.5                            # Box loss gain
   cls: 0.5                            # Class loss gain
   dfl: 1.5                            # DFL loss gain
   nbs: 64                             # Nominal batch size для масштабирования lr
+  multi_scale: 0.5                    # Случайное масштабирование imgsz в диапазоне ±multi_scale*imgsz
+                                      # 0.0 = отключено, 0.5 = диапазон 0.5*imgsz … 1.5*imgsz
+                                      # ВНИМАНИЕ: всплеск VRAM на макс. разрешении диапазона,
+                                      # подбирайте batch под верхнюю границу
   overlap_mask: true                  # Маски могут перекрываться при сегментации
   mask_ratio: 4                       # Downsampling ratio для масок
   

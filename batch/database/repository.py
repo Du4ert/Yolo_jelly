@@ -1513,6 +1513,97 @@ class Repository:
 
         return created
 
+    def reset_task_for_reinference(self, task_id: int, params: dict) -> None:
+        """Сбрасывает задачу для повторной детекции без создания INFERENCE-подзадачи.
+
+        - Обновляет параметры детекции (модель, порог, трекинг, save_video и т.д.).
+        - Удаляет старые первичные Output'ы (VIDEO, CSV, TRACKS_CSV).
+        - Если cascade_invalidate=True: удаляет downstream Output'ы и подзадачи.
+        - Удаляет все существующие INFERENCE-подзадачи.
+        - Сбрасывает Task в статус PENDING.
+        """
+        cascade = bool(params.get("cascade_invalidate", True))
+
+        with self.get_session() as session:
+            task = session.get(Task, task_id)
+            if task is None:
+                raise ValueError(f"Task {task_id} не найдена")
+
+            if task.status == TaskStatus.RUNNING:
+                raise RuntimeError(f"Задача #{task_id} сейчас выполняется — нельзя сбросить")
+
+            model_id = params.get("model_id")
+            if model_id is not None:
+                model_obj = session.get(Model, model_id)
+                if model_obj is None:
+                    raise ValueError(f"Модель {model_id} не найдена")
+                task.model_id = model_id
+
+            for key in (
+                "conf_threshold", "enable_tracking", "tracker_type",
+                "show_trails", "trail_length", "min_track_length",
+                "device", "imgsz", "half", "save_video",
+            ):
+                if params.get(key) is not None:
+                    setattr(task, key, params[key])
+
+            depth_rate = params.get("depth_rate")
+            if depth_rate is not None:
+                task.depth_rate = depth_rate
+
+            primary_types = SUBTASK_OUTPUT_TYPES[SubTaskType.INFERENCE]
+            session.execute(
+                delete(TaskOutput)
+                .where(TaskOutput.task_id == task_id)
+                .where(TaskOutput.output_type.in_(primary_types))
+            )
+
+            downstream = [
+                SubTaskType.GEOMETRY,
+                SubTaskType.SIZE,
+                SubTaskType.SIZE_VIDEO_RENDER,
+                SubTaskType.VOLUME,
+                SubTaskType.ANALYSIS,
+            ]
+
+            if cascade:
+                downstream_outputs: List[OutputType] = []
+                for t in downstream:
+                    downstream_outputs.extend(SUBTASK_OUTPUT_TYPES.get(t, []))
+                if downstream_outputs:
+                    session.execute(
+                        delete(TaskOutput)
+                        .where(TaskOutput.task_id == task_id)
+                        .where(TaskOutput.output_type.in_(downstream_outputs))
+                    )
+                session.execute(
+                    delete(SubTask)
+                    .where(SubTask.parent_task_id == task_id)
+                    .where(SubTask.subtask_type.in_(downstream))
+                )
+
+            session.execute(
+                delete(SubTask)
+                .where(SubTask.parent_task_id == task_id)
+                .where(SubTask.subtask_type == SubTaskType.INFERENCE)
+                .where(SubTask.status != TaskStatus.RUNNING)
+            )
+
+            task.status = TaskStatus.PENDING
+            task.is_skipped = False
+            task.auto_postprocess = False  # постобработка управляется подзадачами из диалога
+            task.progress_percent = 0.0
+            task.current_frame = 0
+            task.detections_count = None
+            task.tracks_count = None
+            task.processing_time_s = None
+            task.error_message = None
+            task.started_at = None
+            task.completed_at = None
+            task.class_stats_json = None
+
+            session.commit()
+
     def apply_inference_result(
         self,
         task_id: int,
