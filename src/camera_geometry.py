@@ -799,6 +799,69 @@ def estimate_size_by_k_method(
     pair_data_filtered = _filter_pairs_by_mad(pair_data)
     _apply_moving_median(pair_data_filtered, smoothing_window)
 
+    # ===== Гибридная обработка при массовом клэмпе дистанции =====
+    n_clamped_check = sum(1 for p in pair_data_filtered if p.get('clamped_to_min'))
+    frac_clamped = n_clamped_check / len(pair_data_filtered) if pair_data_filtered else 0.0
+    clamp_override_method = None  # None = normal, 'unclamped' = только неклэмпленные, 'peak'/'none' = возврат
+
+    if frac_clamped >= 0.5:
+        unclamped_pairs = [p for p in pair_data_filtered if not p.get('clamped_to_min')]
+
+        if len(unclamped_pairs) >= 2:
+            # Путь 1: используем только неклэмпленные пары
+            pair_data_filtered = unclamped_pairs
+            _apply_moving_median(pair_data_filtered, smoothing_window)
+            clamp_override_method = 'unclamped'
+
+        else:
+            # Оценка качества k и наклона для peak-frame fallback
+            k_vals = np.array([p['k_percent'] for p in pair_data_filtered])
+            k_cv_now = float(np.std(k_vals) / np.mean(k_vals)) if np.mean(k_vals) > 0 else 999.0
+            tilt_stable = (tilt_correction_applied and avg_tilt_deg < 20.0)
+
+            if k_cv_now < 0.3 and tilt_stable:
+                # Путь 2: пик-кадр на min_reliable_distance
+                peak_idx, peak_row, peak_px = _find_max_size_frame(
+                    valid_df, frame_width, frame_height, calibration
+                )
+                peak_depth = peak_row.get('depth_m', np.nan)
+                peak_frame = int(peak_row['frame'])
+                peak_px_ref = peak_px / calibration.resolution_scale
+                d_assumed = calibration.min_reliable_distance
+                px_calib = _calculate_pixel_calibration(d_assumed, calibration)
+                peak_size_mm = _calculate_size_mm(peak_px_ref, px_calib)
+                obj_d = peak_depth + d_assumed if pd.notna(peak_depth) else np.nan
+
+                extra_warnings = ["all_pairs_clamped", "peak_frame_estimate"]
+                if tilt_correction_applied:
+                    extra_warnings.append(f"tilt_corrected_{avg_tilt_deg:.0f}deg")
+                n_flt_peak = len(pair_data) - len(pair_data_filtered)
+                if n_flt_peak > 0:
+                    extra_warnings.append(f"outliers_filtered_{n_flt_peak}")
+
+                return TrackSizeEstimate(
+                    track_id=track_id,
+                    class_name=class_name,
+                    real_size_mm=round(peak_size_mm, 1),
+                    real_size_cm=round(peak_size_mm / 10.0, 2),
+                    distance_m=d_assumed,
+                    object_depth_m=round(obj_d, 2) if pd.notna(obj_d) else None,
+                    first_frame=peak_frame,
+                    first_size_pixels=round(peak_px, 1),
+                    camera_depth_first=round(peak_depth, 2) if pd.notna(peak_depth) else None,
+                    k_mean=round(np.mean(k_vals), 2),
+                    k_std=round(np.std(k_vals), 2),
+                    pixel_calibration=round(px_calib, 4),
+                    confidence=0.55,
+                    method="k_method_near",
+                    n_points_used=len(pair_data_filtered),
+                    warnings=extra_warnings,
+                    frame_data={peak_frame: round(peak_size_mm, 1)}
+                )
+            else:
+                # Путь 3: отказ — уходим на estimate_size_from_typical
+                return None
+
     smoothed_sizes = [p['size_mm_smoothed'] for p in pair_data_filtered]
     final_size_mm, final_idx = _select_final_size(smoothed_sizes, pair_data_filtered)
     
@@ -829,7 +892,10 @@ def estimate_size_by_k_method(
         warnings_list.append("distance_marginal")
         confidence = 0.6
     
-    if pair_data_filtered:
+    if clamp_override_method == 'unclamped':
+        warnings_list.append(f"clamped_pairs_excluded_{n_clamped_check}")
+        confidence *= 0.8
+    elif pair_data_filtered:
         n_clamped = sum(1 for p in pair_data_filtered if p.get('clamped_to_min'))
         if n_clamped > 0:
             warnings_list.append(f"pairs_clamped_to_min_{n_clamped}")
