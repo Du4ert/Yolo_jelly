@@ -25,6 +25,8 @@ venv/
 
 # Database
 batch.db
+batch.db-shm
+batch.db-wal
 
 # Other
 yolo_train.py
