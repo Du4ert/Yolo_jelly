@@ -547,6 +547,10 @@ def _find_size_pairs(
         if k > 0:
             k_percent = k * 100
             distance = _calculate_distance_from_k(k_percent, calibration)
+            clamped = False
+            if distance < calibration.min_reliable_distance:
+                distance = calibration.min_reliable_distance
+                clamped = True
             pixel_calib = _calculate_pixel_calibration(distance, calibration)
 
             # Используем скорректированные пиксели конечного кадра (уже посчитаны выше)
@@ -572,7 +576,8 @@ def _find_size_pairs(
                 'size_pixels_start': pixels1,
                 'depth_camera': camera_depth_end,
                 'object_depth': object_depth,
-                'size_change_pct': (pixels2 / pixels1 - 1) * 100
+                'size_change_pct': (pixels2 / pixels1 - 1) * 100,
+                'clamped_to_min': clamped,
             })
 
         i = found_j
@@ -824,13 +829,15 @@ def estimate_size_by_k_method(
         warnings_list.append("distance_marginal")
         confidence = 0.6
     
-    if distance_final < calibration.min_reliable_distance:
-        distance_final = calibration.min_reliable_distance
-        pixel_calib = calibration.pixel_calib_C * (distance_final ** calibration.pixel_calib_D)
-        size_mm = final_size_pixels / pixel_calib
-        size_cm = size_mm / 10.0
-        warnings_list.append("distance_clamped_to_min")
-        confidence *= 0.8
+    if pair_data_filtered:
+        n_clamped = sum(1 for p in pair_data_filtered if p.get('clamped_to_min'))
+        if n_clamped > 0:
+            warnings_list.append(f"pairs_clamped_to_min_{n_clamped}")
+            fraction_clamped = n_clamped / len(pair_data_filtered)
+            if fraction_clamped >= 0.5:
+                confidence *= 0.5
+            else:
+                confidence *= 0.8
     
     # Проверка стабильности k
     if k_std > 0 and k_mean > 0:
