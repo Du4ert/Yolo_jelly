@@ -836,6 +836,26 @@ class Repository:
             session.commit()
             return True
 
+    def get_tasks_by_catalog(self, catalog_id: int) -> List[Task]:
+        """Возвращает все завершённые задачи детекции в указанной экспедиции."""
+        from sqlalchemy.orm import joinedload
+
+        with self.get_session() as session:
+            stmt = (
+                select(Task)
+                .join(Task.video_file)
+                .join(VideoFile.dive)
+                .where(Dive.catalog_id == catalog_id)
+                .where(Task.status == TaskStatus.DONE)
+                .options(
+                    joinedload(Task.video_file).joinedload(VideoFile.dive),
+                    joinedload(Task.outputs),
+                    joinedload(Task.subtasks),
+                )
+                .order_by(Task.position)
+            )
+            return list(session.scalars(stmt).unique())
+
     def delete_task(self, task_id: int) -> bool:
         """Удаляет задачу."""
         with self.get_session() as session:

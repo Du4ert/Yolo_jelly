@@ -520,6 +520,8 @@ class TaskTable(QWidget):
             return
         item_type = item.data(0, Qt.ItemDataRole.UserRole + 1)
         if item_type == "group":
+            catalog_id = item.data(0, Qt.ItemDataRole.UserRole)
+            self._show_group_context_menu(item, catalog_id, position)
             return
 
         # Множественный выбор задач
@@ -622,6 +624,21 @@ class TaskTable(QWidget):
             action_delete.triggered.connect(lambda: self._delete_subtask(subtask_id))
         
         menu.exec(self.tree.viewport().mapToGlobal(position))
+
+    def _show_group_context_menu(self, item, catalog_id, position):
+        if catalog_id is None:
+            return
+
+        menu = QMenu(self)
+        action_export = menu.addAction("📊 Экспорт данных экспедиции")
+        action_export.triggered.connect(
+            lambda: self._export_expedition_data(catalog_id)
+        )
+        menu.exec(self.tree.viewport().mapToGlobal(position))
+
+    def _export_expedition_data(self, catalog_id: int):
+        from ..dialogs.expedition_export_dialog import export_expedition_data
+        export_expedition_data(self, self.repo, catalog_id)
 
     def _retry_subtask(self, subtask_id: int):
         """Повторяет подзадачу."""
