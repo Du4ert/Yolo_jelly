@@ -17,6 +17,7 @@ from ..database.models import OutputType
 
 VOLUME_FIELD_MAPPING: dict[str, dict[str, Any]] = {
     "depth_max_m": {"key": "depth_max_m", "default": 0.0, "parser": float},
+    "effective_distance_m": {"key": "effective_distance_m", "default": 0.0, "parser": float},
     "total_volume_m3": {"key": "total_volume_m3", "default": 0.0, "parser": float},
 }
 
