@@ -1406,6 +1406,7 @@ def _build_tracks_dataframe(all_estimates: List['TrackSizeEstimate']) -> pd.Data
 def _assign_size_columns_to_detections(
     df: pd.DataFrame,
     size_map: dict,
+    calibration: CameraCalibration = None,
 ) -> pd.DataFrame:
     """
     Добавляет к DataFrame детекций колонки размеров:
@@ -1450,7 +1451,8 @@ def _assign_size_columns_to_detections(
     if dist_mask.any():
         obj_d = df.loc[dist_mask, 'object_depth_m'].astype(float)
         cam_d = df.loc[dist_mask, 'depth_m'].astype(float)
-        distances = (obj_d - cam_d).clip(lower=0.0).round(3)
+        lo = calibration.min_reliable_distance if calibration else 0.0
+        distances = (obj_d - cam_d).clip(lower=lo).round(3)
         df.loc[dist_mask, 'distance_to_object_m'] = distances.values
 
     # Интерполяция размеров по кадрам для каждого трека
@@ -1645,7 +1647,7 @@ def process_detections_with_size(
     tracks_df = _build_tracks_dataframe(all_estimates)
 
     size_map = {e.track_id: e for e in all_estimates}
-    df = _assign_size_columns_to_detections(df, size_map)
+    df = _assign_size_columns_to_detections(df, size_map, calibration)
     
     # Сохранение
     if output_csv:
