@@ -87,7 +87,9 @@ class VerifyDialog(QDialog):
         self._tracks: List[TrackInfo] = []
         self._track_detections: Dict[int, pd.DataFrame] = {}
         self._deleted_detections: Dict[int, pd.DataFrame] = {}
+        self._confirmed_detections: Dict[int, pd.DataFrame] = {}
         self._delete_crosses: Dict[int, tuple] = {}
+        self._confirm_marks: Dict[int, tuple] = {}
         self._selected_track: Optional[TrackInfo] = None
         self._modified = False
         self._seeking = False
@@ -192,6 +194,10 @@ class VerifyDialog(QDialog):
             for t in self._tracks:
                 if t.deleted:
                     self._deleted_detections[t.track_id] = load_track_detections(
+                        self._detections_csv, t.track_id
+                    )
+                if t.confirmed:
+                    self._confirmed_detections[t.track_id] = load_track_detections(
                         self._detections_csv, t.track_id
                     )
 
@@ -536,6 +542,7 @@ class VerifyDialog(QDialog):
         self._update_time_label()
         self._update_highlight(ms)
         self._update_delete_crosses(ms)
+        self._update_confirm_marks(ms)
         self._check_track_end(ms)
         self._update_track_button()
 
@@ -686,6 +693,75 @@ class VerifyDialog(QDialog):
 
             line1.setLine(bx, by, bx + bbox_w, by + bbox_h)
             line2.setLine(bx + bbox_w, by, bx, by + bbox_h)
+            line1.setVisible(True)
+            line2.setVisible(True)
+
+    def _update_confirm_marks(self, position_ms: int):
+        if not self._video_item:
+            return
+
+        native = self._video_item.nativeSize()
+        if not native.isValid():
+            return
+
+        scene_w = native.width()
+        scene_h = native.height()
+        current_sec = position_ms / 1000.0
+
+        confirmed_ids = {t.track_id for t in self._tracks if t.confirmed}
+
+        for tid in list(self._confirm_marks.keys()):
+            if tid not in confirmed_ids:
+                line1, line2 = self._confirm_marks.pop(tid)
+                self._scene.removeItem(line1)
+                self._scene.removeItem(line2)
+
+        for tid in confirmed_ids:
+            df = self._confirmed_detections.get(tid)
+            if df is None or df.empty:
+                continue
+
+            idx = (df["timestamp_s"] - current_sec).abs().idxmin()
+            row = df.loc[idx]
+            if abs(row["timestamp_s"] - current_sec) > 0.15:
+                if tid in self._confirm_marks:
+                    line1, line2 = self._confirm_marks[tid]
+                    line1.setVisible(False)
+                    line2.setVisible(False)
+                continue
+
+            xc = float(row["x_center"])
+            yc = float(row["y_center"])
+            bw = float(row["width"])
+            bh = float(row["height"])
+
+            bx = (xc - bw / 2) * scene_w
+            by = (yc - bh / 2) * scene_h
+            bbox_w = bw * scene_w
+            bbox_h = bh * scene_h
+
+            if tid not in self._confirm_marks:
+                pen = QPen(QColor(60, 255, 60, 200))
+                pen.setCosmetic(True)
+                pen.setWidth(2)
+                line1 = self._scene.addLine(0, 0, 0, 0, pen)
+                line2 = self._scene.addLine(0, 0, 0, 0, pen)
+                line1.setZValue(2)
+                line2.setZValue(2)
+                self._confirm_marks[tid] = (line1, line2)
+            else:
+                line1, line2 = self._confirm_marks[tid]
+
+            # checkmark ✓ shape
+            cx1 = bx + bbox_w * 0.2
+            cy1 = by + bbox_h * 0.5
+            cx2 = bx + bbox_w * 0.45
+            cy2 = by + bbox_h * 0.8
+            cx3 = bx + bbox_w * 0.8
+            cy3 = by + bbox_h * 0.25
+
+            line1.setLine(cx1, cy1, cx2, cy2)
+            line2.setLine(cx2, cy2, cx3, cy3)
             line1.setVisible(True)
             line2.setVisible(True)
 
@@ -871,6 +947,7 @@ class VerifyDialog(QDialog):
                         self._on_track_selected(row_idx, seek_to_first=False)
                         self._update_highlight(self._player.position())
                         self._update_delete_crosses(self._player.position())
+                        self._update_confirm_marks(self._player.position())
                         return
             else:
                 cx = bx + bbox_w / 2
@@ -889,6 +966,7 @@ class VerifyDialog(QDialog):
                     self._on_track_selected(row_idx, seek_to_first=False)
                     self._update_highlight(self._player.position())
                     self._update_delete_crosses(self._player.position())
+                    self._update_confirm_marks(self._player.position())
                     return
 
     def _toggle_delete(self):
@@ -909,6 +987,11 @@ class VerifyDialog(QDialog):
 
         tid = self._selected_track.track_id
         if self._selected_track.deleted:
+            self._confirmed_detections.pop(tid, None)
+            mark = self._confirm_marks.pop(tid, None)
+            if mark:
+                self._scene.removeItem(mark[0])
+                self._scene.removeItem(mark[1])
             if tid not in self._deleted_detections:
                 self._deleted_detections[tid] = self._load_detections_for_track(tid)
         else:
@@ -966,6 +1049,17 @@ class VerifyDialog(QDialog):
         self._selected_track.confirmed = not self._selected_track.confirmed
         self._modified = True
 
+        tid = self._selected_track.track_id
+        if self._selected_track.confirmed:
+            if tid not in self._confirmed_detections:
+                self._confirmed_detections[tid] = self._load_detections_for_track(tid)
+        else:
+            self._confirmed_detections.pop(tid, None)
+            mark = self._confirm_marks.pop(tid, None)
+            if mark:
+                self._scene.removeItem(mark[0])
+                self._scene.removeItem(mark[1])
+
         self._btn_confirm.setText(
             "✘ Отменить подтверждение"
             if self._selected_track.confirmed
@@ -982,6 +1076,9 @@ class VerifyDialog(QDialog):
                 save_verified(self._tracks, self._tracks_csv)
             except Exception:
                 pass
+
+        if self._player:
+            self._update_confirm_marks(self._player.position())
 
         if self._selected_track.confirmed:
             self._select_next_unconfirmed()
