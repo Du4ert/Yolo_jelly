@@ -866,7 +866,7 @@ class VerifyDialog(QDialog):
             if bbox.contains(scene_pos):
                 tid = int(row["track_id"])
                 for row_idx, t in enumerate(self._tracks):
-                    if t.track_id == tid and not t.deleted:
+                    if t.track_id == tid:
                         self._table.selectRow(row_idx)
                         self._on_track_selected(row_idx, seek_to_first=False)
                         self._update_highlight(self._player.position())
@@ -884,7 +884,7 @@ class VerifyDialog(QDialog):
 
         if best_track_id is not None:
             for row_idx, t in enumerate(self._tracks):
-                if t.track_id == best_track_id and not t.deleted:
+                if t.track_id == best_track_id:
                     self._table.selectRow(row_idx)
                     self._on_track_selected(row_idx, seek_to_first=False)
                     self._update_highlight(self._player.position())
