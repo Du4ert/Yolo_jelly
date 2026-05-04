@@ -81,6 +81,7 @@ class VerifyDialog(QDialog):
         self._video_item = None
         self._highlight_rect = None
         self._fitting = False
+        self._track_play_active = False
 
         self._resolve_paths()
         self._load_data()
@@ -202,12 +203,19 @@ class VerifyDialog(QDialog):
         # Контролы воспроизведения
         controls = QHBoxLayout()
 
-        self._btn_restart = QPushButton("↻")
-        self._btn_restart.setFixedWidth(36)
-        self._btn_restart.setToolTip("К началу трека")
-        self._btn_restart.setEnabled(False)
-        self._btn_restart.clicked.connect(self._restart_track)
-        controls.addWidget(self._btn_restart)
+        self._btn_track_play = QPushButton("▶")
+        self._btn_track_play.setFixedWidth(36)
+        self._btn_track_play.setToolTip("Воспроизвести трек")
+        self._btn_track_play.setEnabled(False)
+        self._btn_track_play.setStyleSheet(
+            "QPushButton { background-color: #E07000; color: white;"
+            " border-radius: 4px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #FF8C00; }"
+            "QPushButton:pressed { background-color: #C06000; }"
+            "QPushButton:disabled { background-color: #555; color: #888; }"
+        )
+        self._btn_track_play.clicked.connect(self._on_track_play_click)
+        controls.addWidget(self._btn_track_play)
 
         self._btn_play = QPushButton("▶")
         self._btn_play.setFixedWidth(36)
@@ -369,7 +377,7 @@ class VerifyDialog(QDialog):
         self._highlight_rect.setVisible(False)
 
         self._btn_play.setEnabled(True)
-        self._btn_restart.setEnabled(True)
+        self._btn_track_play.setEnabled(True)
         self._btn_back.setEnabled(True)
         self._btn_fwd.setEnabled(True)
         self._time_slider.setEnabled(True)
@@ -427,14 +435,16 @@ class VerifyDialog(QDialog):
         self._update_time_label()
         self._update_highlight(ms)
         self._check_track_end(ms)
+        self._update_track_button()
 
     def _check_track_end(self, ms: int):
-        if not self._selected_track or not self._player:
+        if not self._track_play_active or not self._selected_track or not self._player:
             return
         if self._player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
             return
         end_ms = int(self._selected_track.last_timestamp_s * 1000)
         if ms >= end_ms:
+            self._track_play_active = False
             self._player.pause()
 
     def _on_state_changed(self, state):
@@ -442,6 +452,7 @@ class VerifyDialog(QDialog):
             self._btn_play.setText("⏸")
         else:
             self._btn_play.setText("▶")
+        self._update_track_button()
 
     def _on_video_error(self, error, error_string):
         QMessageBox.warning(
@@ -514,6 +525,7 @@ class VerifyDialog(QDialog):
     def _toggle_play(self):
         if not HAS_MULTIMEDIA or not self._player:
             return
+        self._track_play_active = False
         if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self._player.pause()
         else:
@@ -538,6 +550,50 @@ class VerifyDialog(QDialog):
             return
         first_ms = int(self._selected_track.first_timestamp_s * 1000)
         self._seek_to(first_ms)
+
+    def _on_track_play_click(self):
+        if not self._selected_track or not self._player:
+            return
+
+        t = self._selected_track
+        end_ms = int(t.last_timestamp_s * 1000)
+        pos = self._player.position()
+
+        if self._track_play_active:
+            self._track_play_active = False
+            self._player.pause()
+        elif self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self._track_play_active = True
+            self._player.pause()
+        elif pos >= end_ms:
+            self._track_play_active = False
+            self._btn_track_play.setText("▶")
+            self._seek_to(int(t.first_timestamp_s * 1000))
+        else:
+            self._track_play_active = True
+            self._player.play()
+
+    def _update_track_button(self):
+        if not self._btn_track_play:
+            return
+
+        t = self._selected_track
+        if not t:
+            self._btn_track_play.setText("▶")
+            return
+
+        end_ms = int(t.last_timestamp_s * 1000)
+
+        if self._track_play_active:
+            self._btn_track_play.setText("⏸")
+        elif (
+            self._player
+            and self._player.playbackState() == QMediaPlayer.PlaybackState.PausedState
+            and self._player.position() >= end_ms
+        ):
+            self._btn_track_play.setText("↻")
+        else:
+            self._btn_track_play.setText("▶")
 
     def _seek_to(self, ms: int):
         if not HAS_MULTIMEDIA or not self._player:
@@ -587,9 +643,10 @@ class VerifyDialog(QDialog):
         )
 
         # Перемотка видео на начало трека
+        self._track_play_active = False
         first_ms = int(t.first_timestamp_s * 1000)
         self._seek_to(first_ms)
-        self._btn_play.setText("▶")
+        self._update_track_button()
 
     def _toggle_delete(self):
         if not self._selected_track:
