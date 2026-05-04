@@ -82,6 +82,7 @@ class VerifyDialog(QDialog):
         self._highlight_rect = None
         self._fitting = False
         self._track_play_active = False
+        self._highlight_active = False
 
         self._resolve_paths()
         self._load_data()
@@ -388,7 +389,7 @@ class VerifyDialog(QDialog):
         self._flash_timer.start(HIGHLIGHT_FLASH_MS)
 
     def _flash_tick(self):
-        if self._highlight_rect and self._selected_track:
+        if self._highlight_active and self._highlight_rect:
             self._highlight_rect.setVisible(
                 not self._highlight_rect.isVisible()
             )
@@ -473,12 +474,14 @@ class VerifyDialog(QDialog):
 
     def _update_highlight(self, position_ms: int):
         if not self._highlight_rect or not self._selected_track or not self._video_item:
+            self._highlight_active = False
             if self._highlight_rect:
                 self._highlight_rect.setVisible(False)
             return
 
         native = self._video_item.nativeSize()
         if not native.isValid():
+            self._highlight_active = False
             self._highlight_rect.setVisible(False)
             return
 
@@ -487,17 +490,27 @@ class VerifyDialog(QDialog):
 
         current_sec = position_ms / 1000.0
 
+        t = self._selected_track
+        if current_sec < t.first_timestamp_s or current_sec > t.last_timestamp_s + 0.5:
+            self._highlight_active = False
+            self._highlight_rect.setVisible(False)
+            return
+
+        search_sec = max(t.first_timestamp_s, min(t.last_timestamp_s, current_sec))
+
         df = self._track_detections.get(self._selected_track.track_id)
         if df is None or df.empty:
             df = self._load_detections_for_track(self._selected_track.track_id)
 
         if df is None or df.empty:
+            self._highlight_active = False
             self._highlight_rect.setVisible(False)
             return
 
-        idx = (df["timestamp_s"] - current_sec).abs().idxmin()
+        idx = (df["timestamp_s"] - search_sec).abs().idxmin()
         row = df.loc[idx]
-        if abs(row["timestamp_s"] - current_sec) > 0.15:
+        if search_sec == current_sec and abs(row["timestamp_s"] - current_sec) > 0.15:
+            self._highlight_active = False
             self._highlight_rect.setVisible(False)
             return
 
@@ -511,6 +524,7 @@ class VerifyDialog(QDialog):
         w = bw * scene_w
         h = bh * scene_h
 
+        self._highlight_active = True
         self._highlight_rect.setRect(x, y, w, h)
 
     def _load_detections_for_track(self, track_id: int):
