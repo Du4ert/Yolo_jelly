@@ -28,7 +28,7 @@ from PyQt6.QtGui import QColor, QBrush, QFont, QKeySequence, QShortcut
 
 from ...database import Repository, Task, SubTask, SubTaskType, TaskStatus, VideoFile, Model
 from ...core import TaskManager, get_config, save_config
-from ..dialogs import EditTaskDialog, PostProcessDialog
+from ..dialogs import EditTaskDialog, PostProcessDialog, VerifyDialog
 
 
 class TaskTable(QWidget):
@@ -485,6 +485,29 @@ class TaskTable(QWidget):
         except ValueError as e:
             QMessageBox.warning(self, "Ошибка", str(e))
 
+    def _verify_tracks(self, task_id: int):
+        """Открывает диалог ручной проверки треков."""
+        task = self.repo.get_task_with_outputs(task_id)
+        if not task:
+            QMessageBox.warning(self, "Ошибка", "Задача не найдена.")
+            return
+
+        if not task.tracks_csv_path or not os.path.exists(task.tracks_csv_path):
+            QMessageBox.warning(
+                self,
+                "Нет треков",
+                "Для этой задачи не найден файл _tracks.csv.\n"
+                "Возможно, трекинг не был включён при детекции.",
+            )
+            return
+
+        try:
+            dialog = VerifyDialog(task, parent=self)
+            dialog.exec()
+            self.refresh()
+        except Exception as e:
+            QMessageBox.warning(self, "Ошибка", str(e))
+
     def _postprocess_selected(self):
         """Открывает постобработку для выбранных задач (одной или нескольких)."""
         task_ids = self._get_selected_task_ids()
@@ -550,6 +573,9 @@ class TaskTable(QWidget):
             action_postprocess.triggered.connect(lambda: self._postprocess_task(task_id))
             action_export_ls = menu.addAction("🏷 Экспорт в Label Studio...")
             action_export_ls.triggered.connect(lambda: self._export_label_studio([task_id]))
+            if task.enable_tracking:
+                action_verify = menu.addAction("🔍 Проверить треки...")
+                action_verify.triggered.connect(lambda: self._verify_tracks(task_id))
             menu.addSeparator()
         
         # Редактирование

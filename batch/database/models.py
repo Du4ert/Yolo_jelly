@@ -67,6 +67,7 @@ class OutputType(enum.Enum):
     ANALYSIS_REPORT = "analysis_report"
     INTERACTIVE_PLOT = "interactive_plot"
     LABEL_STUDIO_JSON = "label_studio_json"
+    VERIFIED_CSV = "verified_csv"
 
 
 # Канонический порядок выполнения подзадач постобработки.

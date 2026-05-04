@@ -12,6 +12,7 @@ from .catalog_dialog import CatalogDialog
 from .postprocess_dialog import PostProcessDialog
 from .export_ls_dialog import ExportLabelStudioDialog
 from .expedition_export_dialog import export_expedition_data
+from .verify_dialog import VerifyDialog
 
 __all__ = [
     "NewTaskDialog",
@@ -24,4 +25,5 @@ __all__ = [
     "PostProcessDialog",
     "ExportLabelStudioDialog",
     "export_expedition_data",
+    "VerifyDialog",
 ]
