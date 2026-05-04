@@ -86,6 +86,8 @@ class VerifyDialog(QDialog):
         self._task = task
         self._tracks: List[TrackInfo] = []
         self._track_detections: Dict[int, pd.DataFrame] = {}
+        self._deleted_detections: Dict[int, pd.DataFrame] = {}
+        self._delete_crosses: Dict[int, tuple] = {}
         self._selected_track: Optional[TrackInfo] = None
         self._modified = False
         self._seeking = False
@@ -185,6 +187,13 @@ class VerifyDialog(QDialog):
                 t.deleted = verified[t.track_id]["deleted"]
                 t.new_class_id = verified[t.track_id]["new_class_id"]
                 t.confirmed = verified[t.track_id].get("confirmed", False)
+
+        if self._detections_csv:
+            for t in self._tracks:
+                if t.deleted:
+                    self._deleted_detections[t.track_id] = load_track_detections(
+                        self._detections_csv, t.track_id
+                    )
 
     # ── UI ───────────────────────────────────────────────────────────
 
@@ -526,6 +535,7 @@ class VerifyDialog(QDialog):
             self._time_slider.blockSignals(False)
         self._update_time_label()
         self._update_highlight(ms)
+        self._update_delete_crosses(ms)
         self._check_track_end(ms)
         self._update_track_button()
 
@@ -617,6 +627,67 @@ class VerifyDialog(QDialog):
 
         self._highlight_active = True
         self._highlight_rect.setRect(x, y, w, h)
+
+    def _update_delete_crosses(self, position_ms: int):
+        if not self._video_item:
+            return
+
+        native = self._video_item.nativeSize()
+        if not native.isValid():
+            return
+
+        scene_w = native.width()
+        scene_h = native.height()
+        current_sec = position_ms / 1000.0
+
+        deleted_ids = {t.track_id for t in self._tracks if t.deleted}
+
+        for tid in list(self._delete_crosses.keys()):
+            if tid not in deleted_ids:
+                line1, line2 = self._delete_crosses.pop(tid)
+                self._scene.removeItem(line1)
+                self._scene.removeItem(line2)
+
+        for tid in deleted_ids:
+            df = self._deleted_detections.get(tid)
+            if df is None or df.empty:
+                continue
+
+            idx = (df["timestamp_s"] - current_sec).abs().idxmin()
+            row = df.loc[idx]
+            if abs(row["timestamp_s"] - current_sec) > 0.15:
+                if tid in self._delete_crosses:
+                    line1, line2 = self._delete_crosses[tid]
+                    line1.setVisible(False)
+                    line2.setVisible(False)
+                continue
+
+            xc = float(row["x_center"])
+            yc = float(row["y_center"])
+            bw = float(row["width"])
+            bh = float(row["height"])
+
+            bx = (xc - bw / 2) * scene_w
+            by = (yc - bh / 2) * scene_h
+            bbox_w = bw * scene_w
+            bbox_h = bh * scene_h
+
+            if tid not in self._delete_crosses:
+                pen = QPen(QColor(255, 60, 60, 200))
+                pen.setCosmetic(True)
+                pen.setWidth(2)
+                line1 = self._scene.addLine(0, 0, 0, 0, pen)
+                line2 = self._scene.addLine(0, 0, 0, 0, pen)
+                line1.setZValue(2)
+                line2.setZValue(2)
+                self._delete_crosses[tid] = (line1, line2)
+            else:
+                line1, line2 = self._delete_crosses[tid]
+
+            line1.setLine(bx, by, bx + bbox_w, by + bbox_h)
+            line2.setLine(bx + bbox_w, by, bx, by + bbox_h)
+            line1.setVisible(True)
+            line2.setVisible(True)
 
     def _load_detections_for_track(self, track_id: int):
         if not self._detections_csv:
@@ -799,6 +870,7 @@ class VerifyDialog(QDialog):
                         self._table.selectRow(row_idx)
                         self._on_track_selected(row_idx, seek_to_first=False)
                         self._update_highlight(self._player.position())
+                        self._update_delete_crosses(self._player.position())
                         return
             else:
                 cx = bx + bbox_w / 2
@@ -816,6 +888,7 @@ class VerifyDialog(QDialog):
                     self._table.selectRow(row_idx)
                     self._on_track_selected(row_idx, seek_to_first=False)
                     self._update_highlight(self._player.position())
+                    self._update_delete_crosses(self._player.position())
                     return
 
     def _toggle_delete(self):
@@ -834,6 +907,17 @@ class VerifyDialog(QDialog):
         if self._selected_track.deleted:
             self._selected_track.confirmed = False
 
+        tid = self._selected_track.track_id
+        if self._selected_track.deleted:
+            if tid not in self._deleted_detections:
+                self._deleted_detections[tid] = self._load_detections_for_track(tid)
+        else:
+            self._deleted_detections.pop(tid, None)
+            cross = self._delete_crosses.pop(tid, None)
+            if cross:
+                self._scene.removeItem(cross[0])
+                self._scene.removeItem(cross[1])
+
         row = self._table.currentRow()
         self._set_track_row(row, self._selected_track)
         self._table.resizeColumnsToContents()
@@ -844,6 +928,9 @@ class VerifyDialog(QDialog):
                 save_verified(self._tracks, self._tracks_csv)
             except Exception:
                 pass
+
+        if self._player:
+            self._update_delete_crosses(self._player.position())
 
         if self._selected_track.deleted:
             self._select_next_unconfirmed()
