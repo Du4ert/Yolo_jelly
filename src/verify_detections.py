@@ -38,6 +38,7 @@ class TrackInfo:
 
     deleted: bool = False
     new_class_id: Optional[int] = None
+    confirmed: bool = False
 
     @property
     def effective_class_id(self) -> int:
@@ -52,12 +53,14 @@ class TrackInfo:
 
     @property
     def is_modified(self) -> bool:
-        return self.deleted or self.new_class_id is not None
+        return self.deleted or self.new_class_id is not None or self.confirmed
 
     @property
     def status_text(self) -> str:
         if self.deleted:
             return "Удалён"
+        if self.confirmed:
+            return "Подтверждён"
         if self.new_class_id is not None:
             return f"→ {CLASS_NAMES.get(self.new_class_id, str(self.new_class_id))}"
         return "OK"
@@ -105,7 +108,7 @@ def load_verified(verified_csv_path: str) -> Dict[int, dict]:
     """Загружает сохранённое состояние проверки из _verified.csv.
 
     Returns:
-        Словарь {track_id: {'deleted': bool, 'new_class_id': int | None}}
+        Словарь {track_id: {'deleted': bool, 'new_class_id': int | None, 'confirmed': bool}}
     """
     if not os.path.exists(verified_csv_path):
         return {}
@@ -117,8 +120,84 @@ def load_verified(verified_csv_path: str) -> Dict[int, dict]:
         state[tid] = {
             "deleted": bool(row["deleted"]),
             "new_class_id": _safe_int(row, "new_class_id"),
+            "confirmed": bool(row["confirmed"]) if "confirmed" in row else False,
         }
     return state
+
+
+def save_verified(
+    tracks: List[TrackInfo],
+    tracks_csv_path: str,
+) -> str:
+    """Сохраняет текущее состояние верификации в _verified.csv.
+
+    Не трогает _detections.csv и _tracks.csv.
+    Returns:
+        Путь к записанному файлу.
+    """
+    vp = verified_csv_path(tracks_csv_path)
+    now = datetime.now().isoformat()
+    rows = []
+    for t in tracks:
+        rows.append(
+            {
+                "track_id": t.track_id,
+                "original_class_id": t.class_id,
+                "original_class_name": t.class_name,
+                "deleted": t.deleted,
+                "new_class_id": t.new_class_id,
+                "confirmed": t.confirmed,
+                "verified_at": now,
+            }
+        )
+    pd.DataFrame(rows).to_csv(vp, index=False)
+    return vp
+
+
+def get_task_verification_status(tracks_csv_path: str) -> str:
+    """Возвращает статус проверки задачи: 'Подтверждено', 'В работе', или ''.
+
+    'Подтверждено' — только если все треки разрешены (confirmed|deleted)
+    и изменения применены к _tracks.csv (удалённых треков в нём уже нет).
+    """
+    vp = verified_csv_path(tracks_csv_path)
+
+    if not os.path.exists(vp) or not os.path.exists(tracks_csv_path):
+        return ""
+
+    verified_df = pd.read_csv(vp)
+    if verified_df.empty:
+        return ""
+
+    tracks_df = pd.read_csv(tracks_csv_path)
+    track_ids_csv = set(tracks_df["track_id"].astype(int))
+
+    all_resolved = True
+    has_pending = False
+
+    for _, row in verified_df.iterrows():
+        tid = int(row["track_id"])
+        is_deleted = bool(row["deleted"])
+        is_confirmed = bool(row.get("confirmed", False))
+
+        if not is_deleted and not is_confirmed:
+            all_resolved = False
+            has_pending = True
+
+        if is_deleted and tid in track_ids_csv:
+            all_resolved = False
+
+    if not has_pending and all_resolved:
+        return "Подтверждено"
+
+    resolved_any = any(
+        bool(row["deleted"]) or bool(row.get("confirmed", False))
+        for _, row in verified_df.iterrows()
+    )
+    if resolved_any:
+        return "В работе"
+
+    return ""
 
 
 def load_track_detections(detections_csv_path: str, track_id: int) -> pd.DataFrame:
@@ -168,6 +247,9 @@ def apply_changes(
         if deleted_ids:
             det_df = det_df[~det_df["track_id"].isin(deleted_ids)]
 
+        remaining_ids = set(t.track_id for t in tracks if not t.deleted)
+        det_df = det_df[det_df["track_id"].isin(remaining_ids)]
+
         for tid, new_cid in changed_map.items():
             mask = det_df["track_id"] == tid
             det_df.loc[mask, "class_id"] = new_cid
@@ -205,6 +287,7 @@ def apply_changes(
                 "original_class_name": t.class_name,
                 "deleted": t.deleted,
                 "new_class_id": t.new_class_id,
+                "confirmed": t.confirmed,
                 "verified_at": now,
             }
         )

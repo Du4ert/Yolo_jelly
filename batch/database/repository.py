@@ -595,8 +595,13 @@ class Repository:
     def get_all_tasks(self) -> List[Task]:
         """Получает все задачи."""
         with self.get_session() as session:
-            stmt = select(Task).order_by(Task.position)
-            return list(session.scalars(stmt))
+            from sqlalchemy.orm import joinedload
+            stmt = (
+                select(Task)
+                .options(joinedload(Task.outputs))
+                .order_by(Task.position)
+            )
+            return list(session.scalars(stmt).unique())
 
     def get_pending_tasks(self) -> List[Task]:
         """Получает задачи в ожидании (не пропущенные)."""

@@ -7,6 +7,8 @@
 
 import os
 import sys
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Optional, List, Dict
 
@@ -33,7 +35,7 @@ from PyQt6.QtWidgets import (
     QGraphicsScene,
 )
 from PyQt6.QtCore import Qt, QTimer, QUrl, QEvent
-from PyQt6.QtGui import QPen, QColor, QBrush
+from PyQt6.QtGui import QPen, QColor, QBrush, QPalette
 
 try:
     from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
@@ -54,6 +56,7 @@ from verify_detections import (
     load_verified,
     load_track_detections,
     apply_changes,
+    save_verified,
     verified_csv_path,
     TrackInfo,
     VerificationResult,
@@ -83,8 +86,13 @@ class VerifyDialog(QDialog):
         self._fitting = False
         self._track_play_active = False
         self._highlight_active = False
+        self._sort_column = -1
+        self._sort_reverse = False
+        self._verified_backup = None
+        self._closing = False
 
         self._resolve_paths()
+        self._backup_verified()
         self._load_data()
         self._setup_ui()
         self._setup_video()
@@ -115,6 +123,43 @@ class VerifyDialog(QDialog):
         if self._tracks_csv:
             self._verified_csv = verified_csv_path(self._tracks_csv)
 
+    def _backup_verified(self):
+        if self._verified_csv and os.path.exists(self._verified_csv):
+            fd, self._verified_backup = tempfile.mkstemp(
+                suffix=".csv", prefix="verify_backup_"
+            )
+            os.close(fd)
+            shutil.copy2(self._verified_csv, self._verified_backup)
+
+    def reject(self):
+        if self._closing:
+            return
+        self._closing = True
+        self._restore_backup()
+        super().reject()
+
+    def _restore_backup(self):
+        try:
+            if self._verified_backup and os.path.exists(self._verified_backup):
+                if self._verified_csv:
+                    shutil.copy2(self._verified_backup, self._verified_csv)
+            elif (
+                self._verified_csv
+                and os.path.exists(self._verified_csv)
+                and self._verified_backup is None
+            ):
+                os.remove(self._verified_csv)
+        except Exception:
+            pass
+        self._cleanup_backup()
+
+    def _cleanup_backup(self):
+        if self._verified_backup and os.path.exists(self._verified_backup):
+            try:
+                os.unlink(self._verified_backup)
+            except Exception:
+                pass
+
     # ── data ─────────────────────────────────────────────────────────
 
     def _load_data(self):
@@ -128,6 +173,7 @@ class VerifyDialog(QDialog):
             if t.track_id in verified:
                 t.deleted = verified[t.track_id]["deleted"]
                 t.new_class_id = verified[t.track_id]["new_class_id"]
+                t.confirmed = verified[t.track_id].get("confirmed", False)
 
     # ── UI ───────────────────────────────────────────────────────────
 
@@ -151,6 +197,12 @@ class VerifyDialog(QDialog):
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
 
+        self._task_status_label = QLabel()
+        self._task_status_label.setStyleSheet(
+            "padding: 4px 8px; font-size: 14px; font-weight: bold;"
+        )
+        left_layout.addWidget(self._task_status_label)
+
         self._table = QTableWidget()
         self._setup_table()
         left_layout.addWidget(self._table)
@@ -161,6 +213,11 @@ class VerifyDialog(QDialog):
         self._btn_delete.setEnabled(False)
         self._btn_delete.clicked.connect(self._toggle_delete)
         btn_layout.addWidget(self._btn_delete)
+
+        self._btn_confirm = QPushButton("✔ Подтвердить")
+        self._btn_confirm.setEnabled(False)
+        self._btn_confirm.clicked.connect(self._on_confirm)
+        btn_layout.addWidget(self._btn_confirm)
 
         self._class_combo = QComboBox()
         self._class_combo.setEnabled(False)
@@ -269,14 +326,18 @@ class VerifyDialog(QDialog):
 
         # ── нижние кнопки ──
         button_box = QDialogButtonBox()
-        self._btn_save = button_box.addButton(
-            "Сохранить и закрыть", QDialogButtonBox.ButtonRole.AcceptRole
-        )
         self._btn_cancel = button_box.addButton(
             "Отмена", QDialogButtonBox.ButtonRole.RejectRole
         )
-        self._btn_save.clicked.connect(self._save_and_close)
+        self._btn_apply = button_box.addButton(
+            "Применить к данным", QDialogButtonBox.ButtonRole.ApplyRole
+        )
+        self._btn_save = button_box.addButton(
+            "Сохранить и закрыть", QDialogButtonBox.ButtonRole.AcceptRole
+        )
         self._btn_cancel.clicked.connect(self.reject)
+        self._btn_apply.clicked.connect(self._on_apply)
+        self._btn_save.clicked.connect(self.accept)
         layout.addWidget(button_box)
 
     def _setup_table(self):
@@ -306,12 +367,26 @@ class VerifyDialog(QDialog):
         self._table.horizontalHeader().setStretchLastSection(True)
 
         self._table.cellClicked.connect(self._on_track_selected)
+        self._table.horizontalHeader().sectionClicked.connect(self._on_sort)
+
+        palette = self._table.palette()
+        palette.setColor(
+            QPalette.ColorGroup.Inactive, QPalette.ColorRole.Highlight,
+            palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.Highlight),
+        )
+        palette.setColor(
+            QPalette.ColorGroup.Inactive, QPalette.ColorRole.HighlightedText,
+            palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.HighlightedText),
+        )
+        self._table.setPalette(palette)
 
         self._table.setRowCount(len(self._tracks))
         for row, track in enumerate(self._tracks):
             self._set_track_row(row, track)
 
         self._table.resizeColumnsToContents()
+
+        self._update_task_status_label()
 
     def _set_track_row(self, row: int, track: TrackInfo):
         depth_str = ""
@@ -341,6 +416,8 @@ class VerifyDialog(QDialog):
                 f = item.font()
                 f.setStrikeOut(True)
                 item.setFont(f)
+            elif track.confirmed:
+                item.setBackground(QBrush(QColor(60, 180, 60)))
             elif track.new_class_id is not None:
                 item.setForeground(QBrush(QColor(200, 150, 0)))
             self._table.setItem(row, col, item)
@@ -634,12 +711,17 @@ class VerifyDialog(QDialog):
 
         self._selected_track = self._tracks[row]
 
-        # Обновить кнопки
         self._btn_delete.setEnabled(True)
         self._btn_delete.setText(
             "↩ Восстановить трек"
             if self._selected_track.deleted
             else "🗑 Удалить трек"
+        )
+        self._btn_confirm.setEnabled(not self._selected_track.deleted)
+        self._btn_confirm.setText(
+            "✘ Отменить подтверждение"
+            if self._selected_track.confirmed
+            else "✔ Подтвердить"
         )
         self._class_combo.setEnabled(True)
         self._class_combo.blockSignals(True)
@@ -677,10 +759,23 @@ class VerifyDialog(QDialog):
             if self._selected_track.deleted
             else "🗑 Удалить трек"
         )
+        self._btn_confirm.setEnabled(not self._selected_track.deleted)
+        if self._selected_track.deleted:
+            self._selected_track.confirmed = False
 
         row = self._table.currentRow()
         self._set_track_row(row, self._selected_track)
         self._table.resizeColumnsToContents()
+        self._update_task_status_label()
+
+        if self._tracks_csv:
+            try:
+                save_verified(self._tracks, self._tracks_csv)
+            except Exception:
+                pass
+
+        if self._selected_track.deleted:
+            self._select_next_unconfirmed()
 
     def _on_class_changed(self, index: int):
         if not self._selected_track:
@@ -696,18 +791,61 @@ class VerifyDialog(QDialog):
         row = self._table.currentRow()
         self._set_track_row(row, self._selected_track)
         self._table.resizeColumnsToContents()
+        self._update_task_status_label()
 
-    # ── save ─────────────────────────────────────────────────────────
+        if self._tracks_csv:
+            try:
+                save_verified(self._tracks, self._tracks_csv)
+            except Exception:
+                pass
 
-    def _save_and_close(self):
-        if not self._modified:
-            self.accept()
+    # ── confirm / apply / sort ────────────────────────────────────────
+
+    def _on_confirm(self):
+        if not self._selected_track or self._selected_track.deleted:
             return
 
+        self._selected_track.confirmed = not self._selected_track.confirmed
+        self._modified = True
+
+        self._btn_confirm.setText(
+            "✘ Отменить подтверждение"
+            if self._selected_track.confirmed
+            else "✔ Подтвердить"
+        )
+
+        row = self._table.currentRow()
+        self._set_track_row(row, self._selected_track)
+        self._table.resizeColumnsToContents()
+        self._update_task_status_label()
+
+        if self._tracks_csv:
+            try:
+                save_verified(self._tracks, self._tracks_csv)
+            except Exception:
+                pass
+
+        if self._selected_track.confirmed:
+            self._select_next_unconfirmed()
+
+    def _on_apply(self):
         modified_tracks = [t for t in self._tracks if t.is_modified]
         if not modified_tracks:
-            self.accept()
+            QMessageBox.information(self, "Применить", "Нет изменений для применения.")
             return
+
+        destructive = [t for t in self._tracks if t.deleted or t.new_class_id is not None]
+        if destructive:
+            reply = QMessageBox.question(
+                self,
+                "Применить изменения",
+                "Изменения будут применены к файлам _tracks.csv и _detections.csv.\n"
+                "Удалённые треки будут безвозвратно удалены из этих файлов.\n\n"
+                "Продолжить?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
 
         try:
             result = apply_changes(
@@ -719,20 +857,142 @@ class VerifyDialog(QDialog):
             QMessageBox.critical(
                 self,
                 "Ошибка сохранения",
-                f"Не удалось сохранить изменения:\n{e}",
+                f"Не удалось применить изменения:\n{e}",
             )
             return
 
+        self._load_data()
+        self._rebuild_table()
+        self._modified = False
+        self._cleanup_backup()
+
         QMessageBox.information(
             self,
-            "Сохранено",
+            "Применено",
             f"Изменения применены.\n"
             f"Всего треков: {result.total_tracks}\n"
             f"Удалено: {result.deleted_count}\n"
-            f"Изменён класс: {result.changed_class_count}\n\n"
-            f"Файл верификации: {result.verified_csv_path}",
+            f"Изменён класс: {result.changed_class_count}",
         )
-        self.accept()
+
+        if self._tracks:
+            self._table.selectRow(0)
+            self._on_track_selected(0)
+
+    def _on_sort(self, column: int):
+        if column == self._sort_column:
+            self._sort_reverse = not self._sort_reverse
+        else:
+            self._sort_column = column
+            self._sort_reverse = False
+
+        key_map = {
+            0: lambda t: t.track_id,
+            1: lambda t: t.effective_class_name.lower(),
+            2: lambda t: t.status_text,
+            3: lambda t: t.first_frame,
+            4: lambda t: t.duration_s,
+            5: lambda t: t.first_depth_m or 0.0,
+            6: lambda t: t.detections_count,
+            7: lambda t: t.avg_confidence,
+        }
+        key = key_map.get(column, lambda t: t.track_id)
+
+        self._tracks.sort(key=key, reverse=self._sort_reverse)
+
+        self._table.horizontalHeader().setSortIndicator(
+            self._sort_column,
+            Qt.SortOrder.DescendingOrder if self._sort_reverse else Qt.SortOrder.AscendingOrder,
+        )
+
+        self._rebuild_table()
+
+        if self._tracks:
+            self._table.selectRow(0)
+            self._on_track_selected(0)
+
+    def _rebuild_table(self):
+        selected_track_id = self._selected_track.track_id if self._selected_track else None
+
+        self._table.setRowCount(len(self._tracks))
+        for row, track in enumerate(self._tracks):
+            self._set_track_row(row, track)
+
+        self._table.resizeColumnsToContents()
+
+        if selected_track_id is not None:
+            for row, track in enumerate(self._tracks):
+                if track.track_id == selected_track_id:
+                    self._table.selectRow(row)
+                    self._on_track_selected(row)
+                    break
+
+        self._update_task_status_label()
+
+    def _select_next_unconfirmed(self):
+        current_row = self._table.currentRow()
+        n = len(self._tracks)
+
+        for offset in range(1, n):
+            idx = (current_row + offset) % n
+            t = self._tracks[idx]
+            if not t.confirmed and not t.deleted:
+                self._table.selectRow(idx)
+                self._on_track_selected(idx)
+                return
+
+    def _compute_task_status(self) -> str:
+        if not self._tracks:
+            return ""
+
+        resolved = sum(1 for t in self._tracks if t.confirmed or t.deleted)
+        if resolved == 0:
+            return ""
+        if resolved == len(self._tracks):
+            return "Подтверждено"
+        return "В работе"
+
+    def _update_task_status_label(self):
+        status = self._compute_task_status()
+        if status == "Подтверждено":
+            self._task_status_label.setText("✓ Подтверждено")
+            self._task_status_label.setStyleSheet(
+                "padding: 4px 8px; font-size: 14px; font-weight: bold;"
+                " background: #2D5A2D; color: #A0FFA0; border-radius: 4px;"
+            )
+        elif status == "В работе":
+            self._task_status_label.setText("⏳ В работе")
+            self._task_status_label.setStyleSheet(
+                "padding: 4px 8px; font-size: 14px; font-weight: bold;"
+                " background: #5A5A20; color: #FFE080; border-radius: 4px;"
+            )
+        else:
+            self._task_status_label.setText("")
+            self._task_status_label.setStyleSheet("")
+
+        self.setWindowTitle(
+            f"Проверка треков — задача #{self._task.id}"
+            + (f"  [{status}]" if status else "")
+        )
+
+    # ── close ─────────────────────────────────────────────────────────
+
+    def accept(self):
+        if self._closing:
+            return
+        if self._modified and self._tracks_csv:
+            try:
+                save_verified(self._tracks, self._tracks_csv)
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    "Ошибка сохранения",
+                    f"Не удалось сохранить состояние проверки:\n{e}",
+                )
+                return
+        self._closing = True
+        self._cleanup_backup()
+        super().accept()
 
 
 def _format_ms(ms: int) -> str:

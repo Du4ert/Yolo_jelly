@@ -3,9 +3,14 @@
 """
 
 import os
+import sys
 import subprocess
 import platform
 from pathlib import Path
+
+ROOT_DIR = Path(__file__).parent.parent.parent.parent
+sys.path.insert(0, str(ROOT_DIR / "src"))
+from verify_detections import get_task_verification_status
 from typing import Optional
 
 from PyQt6.QtWidgets import (
@@ -91,8 +96,8 @@ class TaskTable(QWidget):
         
         # Дерево задач
         self.tree = QTreeWidget()
-        self.tree.setColumnCount(5)
-        self.tree.setHeaderLabels(["#", "Задача", "Статус", "Прогресс", "Результат"])
+        self.tree.setColumnCount(6)
+        self.tree.setHeaderLabels(["#", "Задача", "Статус", "Прогресс", "Результат", "Проверка"])
         
         # Настройка колонок
         header = self.tree.header()
@@ -101,9 +106,11 @@ class TaskTable(QWidget):
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
         
         self.tree.setColumnWidth(0, 50)
         self.tree.setColumnWidth(3, 80)
+        self.tree.setColumnWidth(5, 130)
         
         # Настройка поведения
         self.tree.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -361,6 +368,22 @@ class TaskTable(QWidget):
             for col in range(5):
                 item.setForeground(col, QBrush(QColor(150, 0, 0)))
         
+        verif_status = ""
+        if task.status == TaskStatus.DONE and task.enable_tracking and task.tracks_csv_path:
+            try:
+                verif_status = get_task_verification_status(task.tracks_csv_path)
+            except Exception:
+                verif_status = ""
+        if verif_status == "Подтверждено":
+            item.setText(5, "✓ Подтверждено")
+            item.setForeground(5, QBrush(QColor(0, 180, 0)))
+        elif verif_status == "В работе":
+            item.setText(5, "⏳ В работе")
+            item.setForeground(5, QBrush(QColor(180, 160, 0)))
+        else:
+            item.setText(5, "")
+        item.setTextAlignment(5, Qt.AlignmentFlag.AlignCenter)
+        
         # Жирный шрифт для основных задач
         font = item.font(1)
         font.setBold(True)
@@ -422,13 +445,13 @@ class TaskTable(QWidget):
         
         # Стиль для подзадач - чуть светлее
         if subtask.status == TaskStatus.DONE:
-            for col in range(5):
+            for col in range(6):
                 item.setForeground(col, QBrush(QColor(60, 130, 60)))
         elif subtask.status == TaskStatus.ERROR:
-            for col in range(5):
+            for col in range(6):
                 item.setForeground(col, QBrush(QColor(180, 60, 60)))
         else:
-            for col in range(5):
+            for col in range(6):
                 item.setForeground(col, QBrush(QColor(80, 80, 80)))
         
         return item
