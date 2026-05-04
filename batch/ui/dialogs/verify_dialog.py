@@ -34,8 +34,8 @@ from PyQt6.QtWidgets import (
     QGraphicsView,
     QGraphicsScene,
 )
-from PyQt6.QtCore import Qt, QTimer, QUrl, QEvent
-from PyQt6.QtGui import QPen, QColor, QBrush, QPalette
+from PyQt6.QtCore import Qt, QTimer, QUrl, QEvent, pyqtSignal, QPointF, QRectF
+from PyQt6.QtGui import QPen, QColor, QBrush, QPalette, QMouseEvent
 
 try:
     from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
@@ -55,6 +55,7 @@ from verify_detections import (
     load_tracks,
     load_verified,
     load_track_detections,
+    load_frame_detections,
     apply_changes,
     save_verified,
     verified_csv_path,
@@ -65,6 +66,16 @@ from constants import CLASS_NAMES
 
 HIGHLIGHT_COLOR = QColor(255, 255, 0, 200)
 HIGHLIGHT_FLASH_MS = 400
+
+
+class _ClickableGraphicsView(QGraphicsView):
+    clicked = pyqtSignal(QPointF)
+
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton:
+            scene_pos = self.mapToScene(event.pos())
+            self.clicked.emit(scene_pos)
+        super().mousePressEvent(event)
 
 
 class VerifyDialog(QDialog):
@@ -236,7 +247,7 @@ class VerifyDialog(QDialog):
         right_layout.setContentsMargins(0, 0, 0, 0)
 
         if HAS_MULTIMEDIA and self._video_path:
-            self._graphics_view = QGraphicsView()
+            self._graphics_view = _ClickableGraphicsView()
             self._graphics_view.setStyleSheet("background: black;")
             self._graphics_view.setFrameShape(QFrame.Shape.NoFrame)
             self._graphics_view.setHorizontalScrollBarPolicy(
@@ -246,6 +257,7 @@ class VerifyDialog(QDialog):
                 Qt.ScrollBarPolicy.ScrollBarAlwaysOff
             )
             self._graphics_view.installEventFilter(self)
+            self._graphics_view.clicked.connect(self._on_video_clicked)
             right_layout.addWidget(self._graphics_view)
         else:
             self._graphics_view = None
@@ -705,7 +717,7 @@ class VerifyDialog(QDialog):
 
     # ── track actions ────────────────────────────────────────────────
 
-    def _on_track_selected(self, row: int):
+    def _on_track_selected(self, row: int, seek_to_first: bool = True):
         if row < 0 or row >= len(self._tracks):
             return
 
@@ -741,11 +753,70 @@ class VerifyDialog(QDialog):
             f"Conf {t.avg_confidence:.2f}"
         )
 
-        # Перемотка видео на начало трека
-        self._track_play_active = False
-        first_ms = int(t.first_timestamp_s * 1000)
-        self._seek_to(first_ms)
+        if seek_to_first:
+            self._track_play_active = False
+            first_ms = int(t.first_timestamp_s * 1000)
+            self._seek_to(first_ms)
         self._update_track_button()
+
+    def _on_video_clicked(self, scene_pos: QPointF):
+        if not self._player or not self._video_item or not self._detections_csv:
+            return
+
+        native = self._video_item.nativeSize()
+        if not native.isValid():
+            return
+
+        scene_w = native.width()
+        scene_h = native.height()
+        current_sec = self._player.position() / 1000.0
+
+        frame_df = load_frame_detections(
+            self._detections_csv, current_sec, tolerance_s=0.15
+        )
+        if frame_df.empty:
+            return
+
+        best_track_id = None
+        best_dist = float("inf")
+
+        for _, row in frame_df.iterrows():
+            xc = float(row["x_center"])
+            yc = float(row["y_center"])
+            bw = float(row["width"])
+            bh = float(row["height"])
+
+            bx = (xc - bw / 2) * scene_w
+            by = (yc - bh / 2) * scene_h
+            bbox_w = bw * scene_w
+            bbox_h = bh * scene_h
+            bbox = QRectF(bx, by, bbox_w, bbox_h)
+
+            if bbox.contains(scene_pos):
+                tid = int(row["track_id"])
+                for row_idx, t in enumerate(self._tracks):
+                    if t.track_id == tid and not t.deleted:
+                        self._table.selectRow(row_idx)
+                        self._on_track_selected(row_idx, seek_to_first=False)
+                        self._update_highlight(self._player.position())
+                        return
+            else:
+                cx = bx + bbox_w / 2
+                cy = by + bbox_h / 2
+                dx = scene_pos.x() - cx
+                dy = scene_pos.y() - cy
+                dist = dx * dx + dy * dy
+                if dist < best_dist:
+                    best_dist = dist
+                    best_track_id = int(row["track_id"])
+
+        if best_track_id is not None:
+            for row_idx, t in enumerate(self._tracks):
+                if t.track_id == best_track_id and not t.deleted:
+                    self._table.selectRow(row_idx)
+                    self._on_track_selected(row_idx, seek_to_first=False)
+                    self._update_highlight(self._player.position())
+                    return
 
     def _toggle_delete(self):
         if not self._selected_track:

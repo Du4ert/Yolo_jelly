@@ -215,6 +215,31 @@ def load_track_detections(detections_csv_path: str, track_id: int) -> pd.DataFra
     return pd.concat(chunks, ignore_index=True)
 
 
+def load_frame_detections(
+    detections_csv_path: str,
+    timestamp_s: float,
+    tolerance_s: float = 0.15,
+) -> pd.DataFrame:
+    """Загружает все детекции на заданный момент времени из _detections.csv."""
+    if not os.path.exists(detections_csv_path):
+        return pd.DataFrame()
+
+    t_min = timestamp_s - tolerance_s
+    t_max = timestamp_s + tolerance_s
+
+    chunks = []
+    for chunk in pd.read_csv(detections_csv_path, chunksize=50000):
+        if chunk["timestamp_s"].min() > t_max:
+            break
+        mask = (chunk["timestamp_s"] >= t_min) & (chunk["timestamp_s"] <= t_max)
+        if mask.any():
+            chunks.append(chunk[mask])
+
+    if not chunks:
+        return pd.DataFrame()
+    return pd.concat(chunks, ignore_index=True)
+
+
 def verified_csv_path(tracks_csv_path: str) -> str:
     """Вычисляет путь к _verified.csv на основе пути _tracks.csv."""
     p = Path(tracks_csv_path)
