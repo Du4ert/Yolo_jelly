@@ -220,11 +220,13 @@ class VerifyDialog(QDialog):
 
         self._btn_play = QPushButton("▶")
         self._btn_play.setFixedWidth(36)
+        self._btn_play.setToolTip("Play / Pause — всё видео")
         self._btn_play.setEnabled(False)
         self._btn_play.clicked.connect(self._toggle_play)
         controls.addWidget(self._btn_play)
 
         self._time_slider = QSlider(Qt.Orientation.Horizontal)
+        self._time_slider.setToolTip("Перемотка видео")
         self._time_slider.setEnabled(False)
         self._time_slider.sliderPressed.connect(self._on_slider_pressed)
         self._time_slider.sliderReleased.connect(self._on_slider_released)
@@ -546,17 +548,18 @@ class VerifyDialog(QDialog):
             self._player.play()
 
     def _seek_frame(self, direction: int):
-        if not HAS_MULTIMEDIA or not self._player or not self._selected_track:
+        if not HAS_MULTIMEDIA or not self._player:
             return
 
-        t = self._selected_track
-        fps = t.frame_span / t.duration_s if t.duration_s > 0 else 30.0
+        if self._selected_track:
+            t = self._selected_track
+            fps = t.frame_span / t.duration_s if t.duration_s > 0 else 30.0
+        else:
+            fps = 30.0
         frame_ms = int(1000.0 / fps)
 
         new_pos = self._player.position() + direction * frame_ms
-        first_ms = int(t.first_timestamp_s * 1000)
-        last_ms = int(t.last_timestamp_s * 1000)
-        new_pos = max(first_ms, min(last_ms, new_pos))
+        new_pos = max(0, min(self._player.duration(), new_pos))
         self._player.setPosition(new_pos)
 
     def _restart_track(self):
