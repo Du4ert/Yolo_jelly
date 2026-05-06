@@ -97,6 +97,8 @@ class AnalyzeProcessor:
         
         try:
             import pandas as pd
+            import matplotlib
+            matplotlib.use('Agg')
             from analyze import (
                 plot_vertical_distribution,
                 plot_detection_timeline,
