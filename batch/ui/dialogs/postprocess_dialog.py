@@ -228,14 +228,16 @@ class PostProcessDialog(QDialog):
         self.spin_max_reliable.setValue(3.0)
         self.spin_max_reliable.setSingleStep(0.5)
         self.spin_max_reliable.setSuffix(" м")
-        params_layout.addRow("Дальняя надёжная дистанция:", self.spin_max_reliable)
+        params_layout.addRow("Дальняя дистанция:", self.spin_max_reliable)
 
+        effective_group = QGroupBox("Эффективная дистанция")
+        effective_layout = QFormLayout(effective_group)
         self.chk_effective_distance_auto = QCheckBox("Рассчитать автоматически")
         self.chk_effective_distance_auto.setChecked(True)
         self.chk_effective_distance_auto.toggled.connect(
             self._on_effective_distance_auto_toggled
         )
-        params_layout.addRow("Effective distance:", self.chk_effective_distance_auto)
+        effective_layout.addRow("Режим:", self.chk_effective_distance_auto)
 
         self.spin_effective_distance = QDoubleSpinBox()
         self.spin_effective_distance.setRange(0.05, 20.0)
@@ -243,7 +245,8 @@ class PostProcessDialog(QDialog):
         self.spin_effective_distance.setSingleStep(0.5)
         self.spin_effective_distance.setSuffix(" м")
         self.spin_effective_distance.setEnabled(False)
-        params_layout.addRow("Ручная effective distance:", self.spin_effective_distance)
+        effective_layout.addRow("Фиксированная:", self.spin_effective_distance)
+        params_layout.addRow(effective_group)
 
         self.spin_depth_bin = QDoubleSpinBox()
         self.spin_depth_bin.setRange(0.5, 10.0)

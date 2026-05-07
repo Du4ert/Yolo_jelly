@@ -1386,6 +1386,7 @@ def _build_tracks_dataframe(all_estimates: List['TrackSizeEstimate']) -> pd.Data
             'class_name': e.class_name,
             'real_size_mm': e.real_size_mm,
             'real_size_cm': e.real_size_cm,
+            'max_detection_distance_m': None,
             'distance_m': e.distance_m,
             'object_depth_m': e.object_depth_m,
             'first_frame': e.first_frame,
@@ -1489,6 +1490,46 @@ def _assign_size_columns_to_detections(
         df.loc[size_assigned, 'estimated_size_cm'] = (sizes_mm / 10.0).round(2).values
 
     return df
+
+
+def _add_track_detection_distances(
+    tracks_df: pd.DataFrame,
+    detections_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Добавляет дальнюю рабочую дистанцию обнаружения трека.
+
+    Значение считается как P95 покадровых distance_to_object_m внутри трека:
+    это устойчивее строгого максимума, но в выходном CSV называется
+    max_detection_distance_m как практическая дальняя граница обнаружения.
+    """
+    if tracks_df is None or tracks_df.empty:
+        return tracks_df
+    if (detections_df is None or detections_df.empty
+            or 'track_id' not in detections_df.columns
+            or 'distance_to_object_m' not in detections_df.columns):
+        return tracks_df
+
+    valid = detections_df[
+        detections_df['track_id'].notna()
+        & detections_df['distance_to_object_m'].notna()
+    ].copy()
+    if valid.empty:
+        return tracks_df
+
+    valid['distance_to_object_m'] = pd.to_numeric(
+        valid['distance_to_object_m'], errors='coerce'
+    )
+    valid = valid[
+        valid['distance_to_object_m'].notna()
+        & (valid['distance_to_object_m'] > 0)
+    ]
+    if valid.empty:
+        return tracks_df
+
+    track_distances = valid.groupby('track_id')['distance_to_object_m'].quantile(0.95)
+    tracks_df = tracks_df.copy()
+    tracks_df['max_detection_distance_m'] = tracks_df['track_id'].map(track_distances).round(3)
+    return tracks_df
 
 
 def process_detections_with_size(
@@ -1648,6 +1689,7 @@ def process_detections_with_size(
 
     size_map = {e.track_id: e for e in all_estimates}
     df = _assign_size_columns_to_detections(df, size_map, calibration)
+    tracks_df = _add_track_detection_distances(tracks_df, df)
     
     # Сохранение
     if output_csv:
@@ -1861,7 +1903,7 @@ class VolumeEstimate:
         H     = depth_traversed + d_eff    (шапка снизу)
 
     d_eff определяется эмпирически как P-перцентиль (по умолчанию P90)
-    распределения distance_to_object_m по всем детекциям.
+    дальних дистанций обнаружения треков.
     """
     total_volume_m3: float
     depth_range_m: Tuple[float, float]
@@ -1910,12 +1952,13 @@ def estimate_effective_distance(
     reference_class: str = 'Aurelia aurita',
 ) -> float:
     """Эмпирически оценивает эффективную дистанцию обнаружения d_eff
-    как P-перцентиль фактических дистанций до детекций (по умолчанию P90).
+    как P-перцентиль дальних дистанций обнаружения треков (по умолчанию P90).
 
     Источники данных по приоритету:
-      1. detections_df['distance_to_object_m'] — покадровые дистанции
-         (заполняются подкомандой `size`).
-      2. tracks_df: (object_depth_m − camera_depth_first_m) по k_method трекам.
+      1. tracks_df['max_detection_distance_m'] — P95 distance_to_object_m
+         внутри каждого трека (заполняется подкомандой `size`).
+      2. detections_df['distance_to_object_m'] — группируется по track_id,
+         затем для каждого трека берётся P95.
       3. DEFAULT_DETECTION_DISTANCES[reference_class] — константный fallback.
 
     Результат ограничивается диапазоном надёжных измерений калибровки
@@ -1926,30 +1969,37 @@ def estimate_effective_distance(
     # Верхний барьер для отсева явных выбросов перед перцентилем.
     outlier_cap = d_max * 2.0
 
-    # Источник 1: покадровые дистанции из detections_df
-    if (detections_df is not None
-            and 'distance_to_object_m' in detections_df.columns):
+    # Источник 1: дальняя дистанция обнаружения из track_sizes.csv
+    if (tracks_df is not None and len(tracks_df) > 0
+            and 'max_detection_distance_m' in tracks_df.columns):
         dists = pd.to_numeric(
-            detections_df['distance_to_object_m'], errors='coerce'
+            tracks_df['max_detection_distance_m'], errors='coerce'
         ).dropna()
         dists = dists[(dists > 0) & (dists < outlier_cap)]
-        if len(dists) >= 5:
+        if len(dists) >= 3:
             d_eff = float(np.percentile(dists, percentile))
             return float(np.clip(d_eff, d_min, d_max))
 
-    # Источник 2: дистанции по k_method трекам
-    if (tracks_df is not None and len(tracks_df) > 0
-            and 'method' in tracks_df.columns
-            and 'object_depth_m' in tracks_df.columns
-            and 'camera_depth_first_m' in tracks_df.columns):
-        k_tracks = tracks_df[tracks_df['method'] == 'k_method']
-        if len(k_tracks) >= 3:
-            dists = (pd.to_numeric(k_tracks['object_depth_m'], errors='coerce')
-                     - pd.to_numeric(k_tracks['camera_depth_first_m'], errors='coerce')).dropna()
-            dists = dists[(dists > 0) & (dists < outlier_cap)]
-            if len(dists) >= 3:
-                d_eff = float(np.percentile(dists, percentile))
+    # Источник 2: покадровые дистанции, агрегированные по трекам
+    if (detections_df is not None
+            and 'distance_to_object_m' in detections_df.columns):
+        df = detections_df.copy()
+        df['distance_to_object_m'] = pd.to_numeric(
+            df['distance_to_object_m'], errors='coerce'
+        )
+        df = df[
+            df['distance_to_object_m'].notna()
+            & (df['distance_to_object_m'] > 0)
+            & (df['distance_to_object_m'] < outlier_cap)
+        ]
+        if 'track_id' in df.columns and df['track_id'].notna().any():
+            track_dists = df[df['track_id'].notna()].groupby('track_id')['distance_to_object_m'].quantile(0.95)
+            if len(track_dists) >= 3:
+                d_eff = float(np.percentile(track_dists, percentile))
                 return float(np.clip(d_eff, d_min, d_max))
+        elif len(df) >= 5:
+            d_eff = float(np.percentile(df['distance_to_object_m'], percentile))
+            return float(np.clip(d_eff, d_min, d_max))
 
     # Источник 3: дефолтное значение по виду (clamp на всякий случай)
     fallback = DEFAULT_DETECTION_DISTANCES.get(reference_class, 1.5)
@@ -1977,7 +2027,7 @@ def calculate_surveyed_volume(
         где A_eff = (π/4) · w · h — эллиптическое сечение на дистанции d_eff,
               H     = depth_traversed + d_eff (шапка снизу).
 
-    d_eff — эмпирический P-перцентиль распределения distance_to_object_m
+    d_eff — эмпирический P-перцентиль дальних дистанций обнаружения треков
     (по умолчанию P90) с clamp'ом в диапазон надёжных дистанций калибровки.
     Если detection_distance_m задан вручную, он используется напрямую.
 
@@ -3064,7 +3114,7 @@ def main():
                      help='Ручное значение d_eff в метрах, используется напрямую. Если не задано, '
                           'оценивается эмпирически как P-перцентиль фактических дистанций.')
     vol.add_argument('--percentile', type=float, default=90.0,
-                     help='Перцентиль (0–100) распределения distance_to_object_m для d_eff '
+                     help='Перцентиль (0–100) дальних дистанций обнаружения треков для d_eff '
                           '(по умолчанию 90).')
     vol.add_argument('--depth-min', type=float)
     vol.add_argument('--depth-max', type=float)

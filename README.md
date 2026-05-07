@@ -437,12 +437,12 @@ python src/camera_geometry.py volume \
 
 | Параметр | По умолчанию | Описание |
 |----------|--------------|----------|
-| `--detections`, `-d` | — | CSV с детекциями (обязательный). Рекомендуется выход подкоманды `size` (с колонкой `distance_to_object_m`). |
-| `--tracks`, `-t` | None | CSV со статистикой треков (fallback-источник для дистанций). |
+| `--detections`, `-d` | — | CSV с детекциями (обязательный). Рекомендуется выход подкоманды `size`. |
+| `--tracks`, `-t` | None | CSV со статистикой треков с колонкой `max_detection_distance_m`. |
 | `--ctd`, `-c` | None | CSV с данными CTD (для полного диапазона глубин). |
 | `--output`, `-o` | auto | Выходной CSV |
 | `--fov` | 156.0 | Горизонтальный FOV камеры (°) |
-| `--percentile` | 90.0 | Перцентиль распределения `distance_to_object_m` для эффективной дистанции d_eff (0–100) |
+| `--percentile` | 90.0 | Перцентиль дальних дистанций обнаружения треков для эффективной дистанции d_eff (0–100) |
 | `--detection-distance` | None | Ручное значение d_eff (м). None = автоматически по перцентилю. |
 | `--near-distance` | 0.1 | Устарел, игнорируется (оставлен для совместимости CLI). |
 | `--depth-min` | None | Минимальная глубина (м) |
@@ -460,13 +460,13 @@ python src/camera_geometry.py volume \
 V = A_eff · H
 A_eff = (π/4) · w · h,  w = 2·d_eff·tan(fov_h/2),  h = 2·d_eff·tan(fov_v/2)
 H     = depth_traversed + d_eff         # шапка снизу
-d_eff = clamp(P_percentile(distance_to_object_m), min_reliable, max_reliable)
+d_eff = clamp(P_percentile(max_detection_distance_m), min_reliable, max_reliable)
 ```
 
-Эффективная дистанция `d_eff` определяется эмпирически как `--percentile` (по умолчанию P90) распределения
-фактических дистанций до детекций (колонка `distance_to_object_m` в детекциях) с ограничением
-в диапазон надёжных измерений калибровки. Если детекции без `distance_to_object_m` — fallback на `object_depth_m − camera_depth`
-из `--tracks` по `k_method` трекам, затем на типичную дистанцию вида.
+Эффективная дистанция `d_eff` определяется эмпирически как `--percentile` (по умолчанию P90)
+дальних дистанций обнаружения треков. В `track_sizes.csv` это колонка `max_detection_distance_m`,
+рассчитанная как P95 покадрового `distance_to_object_m` внутри трека. Если `--tracks` без этой колонки,
+дистанции агрегируются из детекций по `track_id`; затем используется типичная дистанция вида.
 
 **Важно:** объём считается по ВСЕМУ диапазону погружения. Пустая вода учитывается для правильного расчёта плотности.
 
