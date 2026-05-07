@@ -41,7 +41,7 @@ from ...database import (
     OutputType,
     SUBTASK_OUTPUT_TYPES,
 )
-from ...core import TaskManager, get_config
+from ...core import TaskManager, get_calibration_defaults, get_config, save_config
 
 
 # Радио-режимы для каждой операции.
@@ -87,6 +87,7 @@ class PostProcessDialog(QDialog):
         self.setMinimumHeight(680)
 
         self._setup_ui()
+        self._populate_calibration_defaults()
         self._populate_models()
         self._populate_inference_defaults()
         self._populate_existing_state()
@@ -221,6 +222,28 @@ class PostProcessDialog(QDialog):
         self.spin_min_reliable.setSingleStep(0.05)
         self.spin_min_reliable.setSuffix(" м")
         params_layout.addRow("Ближняя дистанция:", self.spin_min_reliable)
+
+        self.spin_max_reliable = QDoubleSpinBox()
+        self.spin_max_reliable.setRange(0.1, 20.0)
+        self.spin_max_reliable.setValue(3.0)
+        self.spin_max_reliable.setSingleStep(0.5)
+        self.spin_max_reliable.setSuffix(" м")
+        params_layout.addRow("Дальняя надёжная дистанция:", self.spin_max_reliable)
+
+        self.chk_effective_distance_auto = QCheckBox("Рассчитать автоматически")
+        self.chk_effective_distance_auto.setChecked(True)
+        self.chk_effective_distance_auto.toggled.connect(
+            self._on_effective_distance_auto_toggled
+        )
+        params_layout.addRow("Effective distance:", self.chk_effective_distance_auto)
+
+        self.spin_effective_distance = QDoubleSpinBox()
+        self.spin_effective_distance.setRange(0.05, 20.0)
+        self.spin_effective_distance.setValue(1.0)
+        self.spin_effective_distance.setSingleStep(0.5)
+        self.spin_effective_distance.setSuffix(" м")
+        self.spin_effective_distance.setEnabled(False)
+        params_layout.addRow("Ручная effective distance:", self.spin_effective_distance)
 
         self.spin_depth_bin = QDoubleSpinBox()
         self.spin_depth_bin.setRange(0.5, 10.0)
@@ -584,6 +607,23 @@ class PostProcessDialog(QDialog):
                 "📏 Калибровка: дефолтные коэффициенты"
             )
 
+    def _populate_calibration_defaults(self):
+        try:
+            path = get_config().ui.calibration_json
+        except Exception:
+            path = None
+        defaults = get_calibration_defaults(path)
+        self.spin_min_reliable.setValue(defaults["min_reliable_distance"])
+        self.spin_max_reliable.setValue(defaults["max_reliable_distance"])
+        auto = defaults.get("effective_distance_auto", True)
+        self.chk_effective_distance_auto.setChecked(auto)
+        if defaults.get("effective_distance") is not None:
+            self.spin_effective_distance.setValue(defaults["effective_distance"])
+        self._on_effective_distance_auto_toggled(auto)
+
+    def _on_effective_distance_auto_toggled(self, enabled: bool):
+        self.spin_effective_distance.setEnabled(not enabled)
+
     def _has_output_for_task(self, task_id: int, st_type: SubTaskType) -> bool:
         output_types = SUBTASK_OUTPUT_TYPES.get(st_type, [])
         if not output_types:
@@ -674,12 +714,35 @@ class PostProcessDialog(QDialog):
     # ------------------------------------------------------------- on_add
 
     def _collect_common_params(self) -> dict:
-        return {
+        effective_distance_auto = self.chk_effective_distance_auto.isChecked()
+        try:
+            config = get_config()
+            config.ui.min_reliable_distance = self.spin_min_reliable.value()
+            config.ui.max_reliable_distance = self.spin_max_reliable.value()
+            config.ui.effective_distance_auto = effective_distance_auto
+            config.ui.effective_distance = self.spin_effective_distance.value()
+            save_config()
+        except Exception:
+            pass
+
+        params = {
             "fov": self.spin_fov.value(),
             "min_reliable_distance": self.spin_min_reliable.value(),
+            "max_reliable_distance": self.spin_max_reliable.value(),
+            "effective_distance_auto": effective_distance_auto,
+            "detection_distance": (
+                None if effective_distance_auto else self.spin_effective_distance.value()
+            ),
             "depth_bin": self.spin_depth_bin.value(),
             "ctd_columns": self.edit_ctd_columns.text().strip() or "6",
         }
+        try:
+            calib_path = get_config().ui.calibration_json
+            if calib_path and os.path.exists(calib_path):
+                params["calibration_json"] = calib_path
+        except Exception:
+            pass
+        return params
 
     def _build_inference_params(self) -> Optional[dict]:
         """params_json для INFERENCE-подзадачи или None если не запускаем."""

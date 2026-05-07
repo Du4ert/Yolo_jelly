@@ -3,6 +3,7 @@
 """
 
 from .config import Config, get_config, init_config, save_config
+from .calibration_defaults import get_calibration_defaults
 from .processor import Processor, ProcessorFactory, ProcessingResult
 from .task_manager import TaskManager
 from .worker import Worker
@@ -28,6 +29,7 @@ __all__ = [
     "get_config",
     "init_config",
     "save_config",
+    "get_calibration_defaults",
     # Detection processor
     "Processor",
     "ProcessorFactory",

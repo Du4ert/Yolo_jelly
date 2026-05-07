@@ -43,6 +43,10 @@ class UISettings:
     task_table_expanded_groups: Optional[list] = None  # [catalog_id_or_null, ...] развёрнутых групп
     label_studio_dir: Optional[str] = None  # Общая папка экспорта для Label Studio
     models_order: Optional[list] = None  # [model_id, ...] порядок моделей в списке
+    min_reliable_distance: Optional[float] = None
+    max_reliable_distance: Optional[float] = None
+    effective_distance_auto: Optional[bool] = None
+    effective_distance: Optional[float] = None
 
 
 @dataclass
@@ -114,6 +118,10 @@ class Config:
                 task_table_expanded_groups=ui_data.get("task_table_expanded_groups"),
                 label_studio_dir=ui_data.get("label_studio_dir"),
                 models_order=ui_data.get("models_order"),
+                min_reliable_distance=ui_data.get("min_reliable_distance"),
+                max_reliable_distance=ui_data.get("max_reliable_distance"),
+                effective_distance_auto=ui_data.get("effective_distance_auto"),
+                effective_distance=ui_data.get("effective_distance"),
             ),
         )
 

@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 
 from ...database import Repository, VideoFile, CTDFile, Model
-from ...core import get_config, save_config
+from ...core import get_calibration_defaults, get_config, save_config
 
 
 class NewTaskDialog(QDialog):
@@ -369,6 +369,7 @@ class NewTaskDialog(QDialog):
 
         # По умолчанию автопостобработка выключена
         self.check_auto_postprocess.setChecked(False)
+        self._populate_calibration_defaults()
         
         self._on_tracking_toggled(params.enable_tracking)
         self._update_depth_rate_state()
@@ -449,6 +450,17 @@ class NewTaskDialog(QDialog):
         
         # Параметры автопостобработки
         if self.check_auto_postprocess.isChecked():
+            effective_distance_auto = self.pp_chk_effective_distance_auto.isChecked()
+            try:
+                config = get_config()
+                config.ui.min_reliable_distance = self.pp_spin_min_reliable.value()
+                config.ui.max_reliable_distance = self.pp_spin_max_reliable.value()
+                config.ui.effective_distance_auto = effective_distance_auto
+                config.ui.effective_distance = self.pp_spin_effective_distance.value()
+                save_config()
+            except Exception:
+                pass
+
             postprocess_params = {
                 # Выбранные операции
                 "geometry": self.pp_chk_geometry.isChecked(),
@@ -461,10 +473,21 @@ class NewTaskDialog(QDialog):
                 # Параметры
                 "fov": self.pp_spin_fov.value(),
                 "min_reliable_distance": self.pp_spin_min_reliable.value(),
+                "max_reliable_distance": self.pp_spin_max_reliable.value(),
+                "effective_distance_auto": effective_distance_auto,
+                "detection_distance": (
+                    None if effective_distance_auto else self.pp_spin_effective_distance.value()
+                ),
                 "depth_bin": self.pp_spin_depth_bin.value(),
                 "ctd_columns": self.pp_edit_ctd_columns.text().strip() or "6",
                 "frame_step": self.pp_spin_frame_step.value(),
             }
+            try:
+                calib_path = get_config().ui.calibration_json
+                if calib_path:
+                    postprocess_params["calibration_json"] = calib_path
+            except Exception:
+                pass
             params["auto_postprocess_params"] = json.dumps(postprocess_params)
         
         return params
@@ -636,6 +659,30 @@ class NewTaskDialog(QDialog):
         self.pp_spin_min_reliable.setToolTip("Ближняя дистанция: граница обнаружения для объёма и минимум для оценки размеров")
         params_form.addRow("Ближняя дистанция:", self.pp_spin_min_reliable)
 
+        self.pp_spin_max_reliable = QDoubleSpinBox()
+        self.pp_spin_max_reliable.setRange(0.1, 20.0)
+        self.pp_spin_max_reliable.setValue(3.0)
+        self.pp_spin_max_reliable.setSingleStep(0.5)
+        self.pp_spin_max_reliable.setSuffix(" м")
+        self.pp_spin_max_reliable.setToolTip("Верхняя граница автооценки effective distance и надёжности размеров")
+        params_form.addRow("Дальняя надёжная дистанция:", self.pp_spin_max_reliable)
+
+        self.pp_chk_effective_distance_auto = QCheckBox("Рассчитать автоматически")
+        self.pp_chk_effective_distance_auto.setChecked(True)
+        self.pp_chk_effective_distance_auto.toggled.connect(
+            self._on_effective_distance_auto_toggled
+        )
+        params_form.addRow("Effective distance:", self.pp_chk_effective_distance_auto)
+
+        self.pp_spin_effective_distance = QDoubleSpinBox()
+        self.pp_spin_effective_distance.setRange(0.05, 20.0)
+        self.pp_spin_effective_distance.setValue(1.0)
+        self.pp_spin_effective_distance.setSingleStep(0.5)
+        self.pp_spin_effective_distance.setSuffix(" м")
+        self.pp_spin_effective_distance.setEnabled(False)
+        self.pp_spin_effective_distance.setToolTip("Ручная effective distance для площади основания эллипса цилиндра")
+        params_form.addRow("Ручная effective distance:", self.pp_spin_effective_distance)
+
         self.pp_spin_depth_bin = QDoubleSpinBox()
         self.pp_spin_depth_bin.setRange(0.5, 10.0)
         self.pp_spin_depth_bin.setValue(2.0)
@@ -647,6 +694,23 @@ class NewTaskDialog(QDialog):
         layout.addLayout(params_form)
         
         return widget
+
+    def _populate_calibration_defaults(self):
+        try:
+            path = get_config().ui.calibration_json
+        except Exception:
+            path = None
+        defaults = get_calibration_defaults(path)
+        self.pp_spin_min_reliable.setValue(defaults["min_reliable_distance"])
+        self.pp_spin_max_reliable.setValue(defaults["max_reliable_distance"])
+        auto = defaults.get("effective_distance_auto", True)
+        self.pp_chk_effective_distance_auto.setChecked(auto)
+        if defaults.get("effective_distance") is not None:
+            self.pp_spin_effective_distance.setValue(defaults["effective_distance"])
+        self._on_effective_distance_auto_toggled(auto)
+
+    def _on_effective_distance_auto_toggled(self, enabled: bool):
+        self.pp_spin_effective_distance.setEnabled(not enabled)
 
     def _on_auto_postprocess_toggled(self, enabled: bool):
         """Обработка переключения автопостобработки."""

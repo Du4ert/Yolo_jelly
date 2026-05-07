@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
+from ...core import get_calibration_defaults, get_config, save_config
 from ...database import Repository, Dive, VideoFile
 
 
@@ -94,6 +95,7 @@ class SizeWorker(QThread):
         min_size_change: float = 0.3,
         apply_tilt_correction: bool = True,
         min_reliable_distance: Optional[float] = None,
+        max_reliable_distance: Optional[float] = None,
     ):
         super().__init__()
         self.detections_csv = detections_csv
@@ -108,6 +110,7 @@ class SizeWorker(QThread):
         self.min_size_change = min_size_change
         self.apply_tilt_correction = apply_tilt_correction
         self.min_reliable_distance = min_reliable_distance
+        self.max_reliable_distance = max_reliable_distance
         self._processor = None
 
     def run(self):
@@ -128,6 +131,7 @@ class SizeWorker(QThread):
             min_size_change_ratio=self.min_size_change,
             apply_tilt_correction=self.apply_tilt_correction,
             min_reliable_distance=self.min_reliable_distance,
+            max_reliable_distance=self.max_reliable_distance,
         )
         self.finished.emit(result)
     
@@ -150,6 +154,8 @@ class VolumeWorker(QThread):
         fov_horizontal: float = 156.0,
         near_distance: float = 0.3,
         detection_distance: Optional[float] = None,
+        min_reliable_distance: Optional[float] = None,
+        max_reliable_distance: Optional[float] = None,
         depth_min: Optional[float] = None,
         depth_max: Optional[float] = None,
         total_duration: Optional[float] = None,
@@ -165,6 +171,8 @@ class VolumeWorker(QThread):
         self.fov_horizontal = fov_horizontal
         self.near_distance = near_distance
         self.detection_distance = detection_distance
+        self.min_reliable_distance = min_reliable_distance
+        self.max_reliable_distance = max_reliable_distance
         self.depth_min = depth_min
         self.depth_max = depth_max
         self.total_duration = total_duration
@@ -186,6 +194,8 @@ class VolumeWorker(QThread):
             fov=self.fov_horizontal,
             near_distance=self.near_distance,
             detection_distance=self.detection_distance,
+            min_reliable_distance=self.min_reliable_distance,
+            max_reliable_distance=self.max_reliable_distance,
             depth_min=self.depth_min,
             depth_max=self.depth_max,
             duration=self.total_duration,
@@ -259,6 +269,7 @@ class GeometryDialog(QDialog):
         self._worker = None
         
         self._setup_ui()
+        self._populate_calibration_defaults()
         self._load_data()
     
     def _setup_ui(self):
@@ -470,6 +481,13 @@ class GeometryDialog(QDialog):
         self.size_min_reliable.setSuffix(" м")
         params_layout.addRow("Ближняя дистанция:", self.size_min_reliable)
 
+        self.size_max_reliable = QDoubleSpinBox()
+        self.size_max_reliable.setRange(0.1, 20.0)
+        self.size_max_reliable.setValue(3.0)
+        self.size_max_reliable.setSingleStep(0.5)
+        self.size_max_reliable.setSuffix(" м")
+        params_layout.addRow("Дальняя надёжная дистанция:", self.size_max_reliable)
+
         layout.addWidget(params_group)
         
         # Группа: Выход
@@ -554,18 +572,31 @@ class GeometryDialog(QDialog):
         
         self.vol_near = QDoubleSpinBox()
         self.vol_near.setRange(0.1, 2.0)
-        self.vol_near.setValue(0.3)
+        self.vol_near.setValue(0.1)
         self.vol_near.setSingleStep(0.1)
         self.vol_near.setSuffix(" м")
-        camera_layout.addRow("Ближняя граница:", self.vol_near)
-        
+        camera_layout.addRow("Мин. надёжная дистанция:", self.vol_near)
+
+        self.vol_max_reliable = QDoubleSpinBox()
+        self.vol_max_reliable.setRange(0.1, 20.0)
+        self.vol_max_reliable.setValue(3.0)
+        self.vol_max_reliable.setSingleStep(0.5)
+        self.vol_max_reliable.setSuffix(" м")
+        camera_layout.addRow("Макс. надёжная дистанция:", self.vol_max_reliable)
+
+        self.vol_auto_eff_dist = QCheckBox("Рассчитать автоматически")
+        self.vol_auto_eff_dist.setChecked(True)
+        self.vol_auto_eff_dist.toggled.connect(self._on_volume_auto_distance_toggled)
+        camera_layout.addRow("Effective distance:", self.vol_auto_eff_dist)
+
         self.vol_det_dist = QDoubleSpinBox()
-        self.vol_det_dist.setRange(0.0, 10.0)
-        self.vol_det_dist.setValue(0.0)
+        self.vol_det_dist.setRange(0.05, 20.0)
+        self.vol_det_dist.setValue(1.0)
         self.vol_det_dist.setSingleStep(0.5)
         self.vol_det_dist.setSuffix(" м")
-        self.vol_det_dist.setSpecialValueText("Авто")
-        camera_layout.addRow("Дистанция обнаружения:", self.vol_det_dist)
+        self.vol_det_dist.setEnabled(False)
+        self.vol_det_dist.setToolTip("Ручная effective distance для площади основания эллипса цилиндра")
+        camera_layout.addRow("Ручная effective distance:", self.vol_det_dist)
         
         self.vol_fps = QDoubleSpinBox()
         self.vol_fps.setRange(1.0, 240.0)
@@ -594,6 +625,25 @@ class GeometryDialog(QDialog):
         layout.addWidget(output_group)
 
         layout.addStretch()
+
+    def _populate_calibration_defaults(self):
+        try:
+            path = get_config().ui.calibration_json
+        except Exception:
+            path = None
+        defaults = get_calibration_defaults(path)
+        self.size_min_reliable.setValue(defaults["min_reliable_distance"])
+        self.size_max_reliable.setValue(defaults["max_reliable_distance"])
+        self.vol_near.setValue(defaults["min_reliable_distance"])
+        self.vol_max_reliable.setValue(defaults["max_reliable_distance"])
+        auto = defaults.get("effective_distance_auto", True)
+        self.vol_auto_eff_dist.setChecked(auto)
+        if defaults.get("effective_distance") is not None:
+            self.vol_det_dist.setValue(defaults["effective_distance"])
+        self._on_volume_auto_distance_toggled(auto)
+
+    def _on_volume_auto_distance_toggled(self, enabled: bool):
+        self.vol_det_dist.setEnabled(not enabled)
     
     def _setup_render_tab(self):
         """Настройка вкладки рендеринга видео с размерами."""
@@ -857,6 +907,7 @@ class GeometryDialog(QDialog):
             min_r_squared=self.size_min_r2.value(),
             min_size_change=self.size_min_change.value(),
             min_reliable_distance=self.size_min_reliable.value(),
+            max_reliable_distance=self.size_max_reliable.value(),
         )
         self._worker.finished.connect(self._on_size_finished)
         self._worker.start()
@@ -882,9 +933,16 @@ class GeometryDialog(QDialog):
         if ctd_path and not os.path.exists(ctd_path):
             ctd_path = None
         
-        det_dist = self.vol_det_dist.value()
-        if det_dist == 0.0:
-            det_dist = None
+        det_dist = None if self.vol_auto_eff_dist.isChecked() else self.vol_det_dist.value()
+        try:
+            config = get_config()
+            config.ui.min_reliable_distance = self.vol_near.value()
+            config.ui.max_reliable_distance = self.vol_max_reliable.value()
+            config.ui.effective_distance_auto = self.vol_auto_eff_dist.isChecked()
+            config.ui.effective_distance = self.vol_det_dist.value()
+            save_config()
+        except Exception:
+            pass
         
         self._set_running(True)
         self.result_text.clear()
@@ -898,6 +956,8 @@ class GeometryDialog(QDialog):
             fov_horizontal=self.vol_fov.value(),
             near_distance=self.vol_near.value(),
             detection_distance=det_dist,
+            min_reliable_distance=self.vol_near.value(),
+            max_reliable_distance=self.vol_max_reliable.value(),
             fps=self.vol_fps.value(),
             frame_width=self.geom_width.value(),
             frame_height=self.geom_height.value(),

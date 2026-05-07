@@ -1979,6 +1979,7 @@ def calculate_surveyed_volume(
 
     d_eff — эмпирический P-перцентиль распределения distance_to_object_m
     (по умолчанию P90) с clamp'ом в диапазон надёжных дистанций калибровки.
+    Если detection_distance_m задан вручную, он используется напрямую.
 
     Параметр `near_distance_m` устарел: в цилиндрической модели он не используется,
     оставлен в сигнатуре для обратной совместимости вызовов.
@@ -2038,11 +2039,9 @@ def calculate_surveyed_volume(
         )
         d_eff_source = f"эмпирически (P{percentile:.0f})"
     else:
-        d_eff = float(np.clip(
-            detection_distance_m,
-            calibration.min_reliable_distance,
-            calibration.max_reliable_distance,
-        ))
+        if detection_distance_m <= 0:
+            raise ValueError("Ручная effective distance должна быть больше 0")
+        d_eff = float(detection_distance_m)
         d_eff_source = "явно задан"
 
     # --- Цилиндрическая модель: A_eff (эллипс) × H ---
@@ -2105,6 +2104,9 @@ def process_volume_estimation(
     fps: float = 60.0,
     frame_width: int = 3840,
     frame_height: int = 2160,
+    calibration_json: Optional[str] = None,
+    min_reliable_distance: Optional[float] = None,
+    max_reliable_distance: Optional[float] = None,
     percentile: float = 90.0,
     verbose: bool = True
 ) -> VolumeEstimate:
@@ -2114,9 +2116,16 @@ def process_volume_estimation(
         percentile: перцентиль для эффективной дистанции d_eff (по умолчанию P90).
         near_distance: устарел, не используется в цилиндрической модели.
     """
-    calibration = CameraCalibration()
+    if calibration_json and Path(calibration_json).exists():
+        calibration = CameraCalibration.from_json(calibration_json)
+    else:
+        calibration = CameraCalibration()
     calibration.frame_width = frame_width
     calibration.frame_height = frame_height
+    if min_reliable_distance is not None:
+        calibration.min_reliable_distance = min_reliable_distance
+    if max_reliable_distance is not None:
+        calibration.max_reliable_distance = max_reliable_distance
     
     detections_df = pd.read_csv(detections_csv)
     
@@ -2523,6 +2532,8 @@ def calibrate_coefficients(
     output_json: Optional[str] = None,
     frame_width: int = 3840,
     frame_height: int = 2160,
+    min_reliable_distance: Optional[float] = None,
+    max_reliable_distance: Optional[float] = None,
     apply_tilt_correction: bool = True,
     verbose: bool = True
 ) -> CameraCalibration:
@@ -2542,6 +2553,13 @@ def calibrate_coefficients(
 
     if not video_specs:
         raise ValueError("Нет видео для калибровки")
+    if min_reliable_distance is not None and min_reliable_distance <= 0:
+        raise ValueError("min_reliable_distance должен быть больше 0")
+    if max_reliable_distance is not None and max_reliable_distance <= 0:
+        raise ValueError("max_reliable_distance должен быть больше 0")
+    if (min_reliable_distance is not None and max_reliable_distance is not None
+            and max_reliable_distance <= min_reliable_distance):
+        raise ValueError("max_reliable_distance должен быть больше min_reliable_distance")
 
     # Объединяем данные из всех видео с namespace track IDs
     all_track_pairs = {}
@@ -2835,6 +2853,8 @@ def calibrate_coefficients(
         )
         A, B, C, D, k1, k2 = nm_result.x
 
+    default_calibration = CameraCalibration()
+
     # Создаём калибровку с оптимизированными коэффициентами
     calibration = CameraCalibration(
         frame_width=frame_width,
@@ -2845,6 +2865,16 @@ def calibrate_coefficients(
         pixel_calib_D=round(D, 4),
         distortion_k1=round(k1, 6),
         distortion_k2=round(k2, 6),
+        min_reliable_distance=(
+            min_reliable_distance
+            if min_reliable_distance is not None
+            else default_calibration.min_reliable_distance
+        ),
+        max_reliable_distance=(
+            max_reliable_distance
+            if max_reliable_distance is not None
+            else default_calibration.max_reliable_distance
+        ),
     )
 
     # Вспомогательная функция для отображения имени трека
@@ -2945,6 +2975,11 @@ def calibrate_coefficients(
             'distortion_k2': calibration.distortion_k2,
             'optical_center_x': calibration.optical_center_x,
             'optical_center_y': calibration.optical_center_y,
+            'frame_width': calibration.frame_width,
+            'frame_height': calibration.frame_height,
+            'min_reliable_distance': calibration.min_reliable_distance,
+            'max_reliable_distance': calibration.max_reliable_distance,
+            'parallax_ref_percentile': calibration.parallax_ref_percentile,
             'n_pairs_used': sum(len(all_track_pairs[t]) for t in available_tracks),
             'n_tracks_used': len(available_tracks),
             'n_videos_used': len(video_specs),
@@ -3008,6 +3043,10 @@ def main():
                        help='JSON с результатами')
     calib.add_argument('--width', type=int, default=3840)
     calib.add_argument('--height', type=int, default=2160)
+    calib.add_argument('--min-reliable-distance', type=float,
+                       help='Минимальная надёжная дистанция (м). Если не задано, используется дефолт CameraCalibration.')
+    calib.add_argument('--max-reliable-distance', type=float,
+                       help='Максимальная надёжная дистанция (м). Если не задано, используется дефолт CameraCalibration.')
     calib.add_argument('--apply-tilt-correction', action='store_true', default=True)
     calib.add_argument('--no-tilt-correction', dest='apply_tilt_correction', action='store_false')
 
@@ -3022,7 +3061,7 @@ def main():
                      help='Устарел: в цилиндрической модели параметр не используется. '
                           'Оставлен для обратной совместимости CLI.')
     vol.add_argument('--detection-distance', type=float,
-                     help='Ручное значение d_eff в метрах. Если не задано, '
+                     help='Ручное значение d_eff в метрах, используется напрямую. Если не задано, '
                           'оценивается эмпирически как P-перцентиль фактических дистанций.')
     vol.add_argument('--percentile', type=float, default=90.0,
                      help='Перцентиль (0–100) распределения distance_to_object_m для d_eff '
@@ -3070,6 +3109,8 @@ def main():
             video_specs,
             output_json=args.output,
             frame_width=args.width, frame_height=args.height,
+            min_reliable_distance=args.min_reliable_distance,
+            max_reliable_distance=args.max_reliable_distance,
             apply_tilt_correction=args.apply_tilt_correction
         )
     

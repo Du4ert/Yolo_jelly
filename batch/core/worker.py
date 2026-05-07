@@ -434,6 +434,7 @@ class Worker(QThread):
 
         calibration_json = params.get("calibration_json")
         min_reliable_distance = params.get("min_reliable_distance")
+        max_reliable_distance = params.get("max_reliable_distance")
 
         processor = SizeEstimationProcessor()
         result = processor.process(
@@ -446,6 +447,7 @@ class Worker(QThread):
             apply_tilt_correction=apply_tilt_correction,
             calibration_json=calibration_json,
             min_reliable_distance=min_reliable_distance,
+            max_reliable_distance=max_reliable_distance,
         )
         
         if not result.success:
@@ -504,6 +506,8 @@ class Worker(QThread):
                 ctd_csv = ctd_file.filepath
         
         processor = VolumeEstimationProcessor()
+        effective_distance_auto = params.get("effective_distance_auto", True)
+        detection_distance = None if effective_distance_auto else params.get("detection_distance")
         result = processor.process(
             detections_csv=input_csv,
             output_csv=volume_csv,
@@ -511,9 +515,13 @@ class Worker(QThread):
             ctd_csv=ctd_csv,
             fov=params.get("fov", 156.0),
             near_distance=params.get("min_reliable_distance", 0.1),
+            detection_distance=detection_distance,
             fps=video.fps or 60.0,
             frame_width=video.width or 1920,
             frame_height=video.height or 1080,
+            calibration_json=params.get("calibration_json"),
+            min_reliable_distance=params.get("min_reliable_distance"),
+            max_reliable_distance=params.get("max_reliable_distance"),
         )
         
         if not result.success:
@@ -637,6 +645,10 @@ class Worker(QThread):
             postprocess_params = {
                 'fov': current_params.get('fov', 156.0),
                 'near_distance': current_params.get('min_reliable_distance', 0.1),
+                'min_reliable_distance': current_params.get('min_reliable_distance', 0.1),
+                'max_reliable_distance': current_params.get('max_reliable_distance'),
+                'effective_distance_auto': current_params.get('effective_distance_auto', True),
+                'detection_distance': current_params.get('detection_distance'),
                 'depth_bin': current_params.get('depth_bin', 2.0),
             }
             processing_info['postprocess_params'] = postprocess_params
@@ -888,7 +900,6 @@ class Worker(QThread):
                 "volume": True,
                 "analysis": True,
                 "fov": 156.0,
-                "min_reliable_distance": 0.1,
                 "depth_bin": 2.0,
             }
         
@@ -900,11 +911,38 @@ class Worker(QThread):
         do_analysis = params.get("analysis", True)
         
         # Общие параметры для всех подзадач
+        defaults = None
+        try:
+            from .calibration_defaults import get_calibration_defaults
+            defaults = get_calibration_defaults(params.get("calibration_json"))
+        except Exception:
+            defaults = {}
+
         common_params = {
             "fov": params.get("fov", 156.0),
-            "min_reliable_distance": params.get("min_reliable_distance", 0.1),
+            "min_reliable_distance": params.get(
+                "min_reliable_distance", defaults.get("min_reliable_distance", 0.1)
+            ),
+            "max_reliable_distance": params.get(
+                "max_reliable_distance", defaults.get("max_reliable_distance", 3.0)
+            ),
+            "effective_distance_auto": params.get(
+                "effective_distance_auto", defaults.get("effective_distance_auto", True)
+            ),
+            "detection_distance": params.get(
+                "detection_distance", defaults.get("effective_distance")
+            ),
             "depth_bin": params.get("depth_bin", 2.0),
         }
+        if params.get("calibration_json"):
+            common_params["calibration_json"] = params.get("calibration_json")
+        try:
+            from .config import get_config
+            calib_path = get_config().ui.calibration_json
+            if "calibration_json" not in common_params and calib_path and os.path.exists(calib_path):
+                common_params["calibration_json"] = calib_path
+        except Exception:
+            pass
         
         position = 0
         

@@ -223,6 +223,7 @@ class SizeEstimationProcessor:
         apply_tilt_correction: bool = True,
         calibration_json: Optional[str] = None,
         min_reliable_distance: Optional[float] = None,
+        max_reliable_distance: Optional[float] = None,
     ) -> SizeEstimationResult:
         """
         Запускает оценку размеров.
@@ -268,6 +269,8 @@ class SizeEstimationProcessor:
 
             if min_reliable_distance is not None:
                 calibration.min_reliable_distance = min_reliable_distance
+            if max_reliable_distance is not None:
+                calibration.max_reliable_distance = max_reliable_distance
 
             # Обработка
             df, tracks_df = process_detections_with_size(
@@ -361,6 +364,9 @@ class VolumeEstimationProcessor:
         fps: float = 60.0,
         frame_width: int = 3840,
         frame_height: int = 2160,
+        calibration_json: Optional[str] = None,
+        min_reliable_distance: Optional[float] = None,
+        max_reliable_distance: Optional[float] = None,
     ) -> VolumeEstimationResult:
         """
         Запускает расчёт объёма.
@@ -407,6 +413,9 @@ class VolumeEstimationProcessor:
                 fps=fps,
                 frame_width=frame_width,
                 frame_height=frame_height,
+                calibration_json=calibration_json,
+                min_reliable_distance=min_reliable_distance,
+                max_reliable_distance=max_reliable_distance,
                 verbose=True
             )
             
