@@ -1400,6 +1400,7 @@ def _build_tracks_dataframe(all_estimates: List['TrackSizeEstimate']) -> pd.Data
             'last_frame': None,
             'last_x_center': None,
             'last_y_center': None,
+            'duration_s': None,
             'k_mean_pct_per_m': e.k_mean,
             'k_std_pct_per_m': e.k_std,
             'pixel_calibration': e.pixel_calibration,
@@ -1544,7 +1545,7 @@ def _add_track_frame_positions(
     tracks_df: pd.DataFrame,
     detections_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Добавляет координаты measurement/first/last кадров трека."""
+    """Добавляет координаты measurement/first/last кадров трека и длительность."""
     if tracks_df is None or tracks_df.empty:
         return tracks_df
     required = {'track_id', 'frame', 'x_center', 'y_center'}
@@ -1552,7 +1553,12 @@ def _add_track_frame_positions(
         return tracks_df
 
     tracks_df = tracks_df.copy()
-    detections = detections_df[['track_id', 'frame', 'x_center', 'y_center']].copy()
+    columns = ['track_id', 'frame', 'x_center', 'y_center']
+    has_timestamp = 'timestamp_s' in detections_df.columns
+    if has_timestamp:
+        columns.append('timestamp_s')
+
+    detections = detections_df[columns].copy()
     detections = detections[detections['track_id'].notna() & detections['frame'].notna()]
     if detections.empty:
         return tracks_df
@@ -1561,6 +1567,8 @@ def _add_track_frame_positions(
     detections['frame'] = pd.to_numeric(detections['frame'], errors='coerce')
     detections['x_center'] = pd.to_numeric(detections['x_center'], errors='coerce')
     detections['y_center'] = pd.to_numeric(detections['y_center'], errors='coerce')
+    if has_timestamp:
+        detections['timestamp_s'] = pd.to_numeric(detections['timestamp_s'], errors='coerce')
     detections = detections.dropna(subset=['track_id', 'frame'])
     if detections.empty:
         return tracks_df
@@ -1588,6 +1596,8 @@ def _add_track_frame_positions(
         tracks_df.at[idx, 'last_frame'] = int(last['frame'])
         tracks_df.at[idx, 'last_x_center'] = round(float(last['x_center']), 4) if pd.notna(last['x_center']) else None
         tracks_df.at[idx, 'last_y_center'] = round(float(last['y_center']), 4) if pd.notna(last['y_center']) else None
+        if has_timestamp and pd.notna(first.get('timestamp_s')) and pd.notna(last.get('timestamp_s')):
+            tracks_df.at[idx, 'duration_s'] = round(float(last['timestamp_s']) - float(first['timestamp_s']), 2)
 
         measurement_frame = row.get('measurement_frame')
         if pd.isna(measurement_frame):
