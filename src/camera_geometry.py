@@ -1382,7 +1382,7 @@ def _build_tracks_dataframe(all_estimates: List['TrackSizeEstimate']) -> pd.Data
         return pd.DataFrame()
     return pd.DataFrame([
         {
-            'track_id': e.track_id,
+            'track_id': int(e.track_id),
             'class_name': e.class_name,
             'real_size_mm': e.real_size_mm,
             'real_size_cm': e.real_size_cm,
