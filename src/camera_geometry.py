@@ -173,9 +173,9 @@ class TrackSizeEstimate:
     real_size_cm: float            # Финальный размер в сантиметрах
     distance_m: float              # Дистанция до объекта на финальный момент (м)
     object_depth_m: float          # Глубина объекта в воде (м)
-    first_frame: int               # Кадр финального измерения
-    first_size_pixels: float       # Размер в пикселях на финальном кадре
-    camera_depth_first: float      # Глубина камеры на финальном кадре (м)
+    measurement_frame: int         # Кадр финального измерения
+    measurement_size_pixels: float # Размер в пикселях на финальном кадре
+    camera_depth_measurement: float # Глубина камеры на финальном кадре (м)
     k_mean: float                  # Средний k по всем парам (%/м)
     k_std: float                   # Стд k (%/м)
     pixel_calibration: float       # Калибровка px/мм на финальный момент
@@ -846,9 +846,9 @@ def estimate_size_by_k_method(
                     real_size_cm=round(peak_size_mm / 10.0, 2),
                     distance_m=d_assumed,
                     object_depth_m=round(obj_d, 2) if pd.notna(obj_d) else None,
-                    first_frame=peak_frame,
-                    first_size_pixels=round(peak_px, 1),
-                    camera_depth_first=round(peak_depth, 2) if pd.notna(peak_depth) else None,
+                    measurement_frame=peak_frame,
+                    measurement_size_pixels=round(peak_px, 1),
+                    camera_depth_measurement=round(peak_depth, 2) if pd.notna(peak_depth) else None,
                     k_mean=round(np.mean(k_vals), 2),
                     k_std=round(np.std(k_vals), 2),
                     pixel_calibration=round(px_calib, 4),
@@ -972,9 +972,9 @@ def estimate_size_by_k_method(
         real_size_cm=round(size_cm, 2),
         distance_m=round(distance_final, 3),
         object_depth_m=round(object_depth_final, 2),  # единая фиксированная глубина
-        first_frame=final_frame,
-        first_size_pixels=round(final_size_pixels, 1),
-        camera_depth_first=round(camera_depth_final, 2),
+        measurement_frame=final_frame,
+        measurement_size_pixels=round(final_size_pixels, 1),
+        camera_depth_measurement=round(camera_depth_final, 2),
         k_mean=round(k_mean, 2),
         k_std=round(k_std, 2),
         pixel_calibration=round(pixel_calib, 4),
@@ -1037,9 +1037,9 @@ def estimate_size_fixed(
         real_size_cm=round(size_mm / 10.0, 2),
         distance_m=distance,
         object_depth_m=round(object_depth, 2) if pd.notna(object_depth) else None,
-        first_frame=last_frame,
-        first_size_pixels=round(last_size_pix, 1),
-        camera_depth_first=round(camera_depth_last, 2) if pd.notna(camera_depth_last) else None,
+        measurement_frame=last_frame,
+        measurement_size_pixels=round(last_size_pix, 1),
+        camera_depth_measurement=round(camera_depth_last, 2) if pd.notna(camera_depth_last) else None,
         k_mean=0.0,
         k_std=0.0,
         pixel_calibration=round(pixel_calib, 4),
@@ -1113,9 +1113,9 @@ def estimate_size_from_typical(
         real_size_cm=round(typical['mean'], 2),
         distance_m=round(distance, 3),
         object_depth_m=round(object_depth, 2) if pd.notna(object_depth) else None,
-        first_frame=max_frame,
-        first_size_pixels=round(max_size_pix, 1),
-        camera_depth_first=round(camera_depth_max, 2) if pd.notna(camera_depth_max) else None,
+        measurement_frame=max_frame,
+        measurement_size_pixels=round(max_size_pix, 1),
+        camera_depth_measurement=round(camera_depth_max, 2) if pd.notna(camera_depth_max) else None,
         k_mean=0.0,
         k_std=0.0,
         pixel_calibration=round(pixel_calib, 4),
@@ -1243,9 +1243,9 @@ def estimate_size_by_parallax(
         real_size_cm=round(size_mm / 10.0, 2),
         distance_m=round(d_obj, 3),
         object_depth_m=round(object_depth, 2) if pd.notna(object_depth) else None,
-        first_frame=max_frame,
-        first_size_pixels=round(max_size_pix, 1),
-        camera_depth_first=round(camera_depth, 2) if pd.notna(camera_depth) else None,
+        measurement_frame=max_frame,
+        measurement_size_pixels=round(max_size_pix, 1),
+        camera_depth_measurement=round(camera_depth, 2) if pd.notna(camera_depth) else None,
         k_mean=0.0,
         k_std=0.0,
         pixel_calibration=round(pixel_calib, 4),
@@ -1389,9 +1389,17 @@ def _build_tracks_dataframe(all_estimates: List['TrackSizeEstimate']) -> pd.Data
             'max_detection_distance_m': None,
             'distance_m': e.distance_m,
             'object_depth_m': e.object_depth_m,
-            'first_frame': e.first_frame,
-            'first_size_pixels': e.first_size_pixels,
-            'camera_depth_first_m': e.camera_depth_first,
+            'measurement_frame': e.measurement_frame,
+            'measurement_size_pixels': e.measurement_size_pixels,
+            'camera_depth_measurement_m': e.camera_depth_measurement,
+            'measurement_x_center': None,
+            'measurement_y_center': None,
+            'first_frame': None,
+            'first_x_center': None,
+            'first_y_center': None,
+            'last_frame': None,
+            'last_x_center': None,
+            'last_y_center': None,
             'k_mean_pct_per_m': e.k_mean,
             'k_std_pct_per_m': e.k_std,
             'pixel_calibration': e.pixel_calibration,
@@ -1529,6 +1537,70 @@ def _add_track_detection_distances(
     track_distances = valid.groupby('track_id')['distance_to_object_m'].quantile(0.95)
     tracks_df = tracks_df.copy()
     tracks_df['max_detection_distance_m'] = tracks_df['track_id'].map(track_distances).round(3)
+    return tracks_df
+
+
+def _add_track_frame_positions(
+    tracks_df: pd.DataFrame,
+    detections_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Добавляет координаты measurement/first/last кадров трека."""
+    if tracks_df is None or tracks_df.empty:
+        return tracks_df
+    required = {'track_id', 'frame', 'x_center', 'y_center'}
+    if detections_df is None or detections_df.empty or not required.issubset(detections_df.columns):
+        return tracks_df
+
+    tracks_df = tracks_df.copy()
+    detections = detections_df[['track_id', 'frame', 'x_center', 'y_center']].copy()
+    detections = detections[detections['track_id'].notna() & detections['frame'].notna()]
+    if detections.empty:
+        return tracks_df
+
+    detections['track_id'] = pd.to_numeric(detections['track_id'], errors='coerce')
+    detections['frame'] = pd.to_numeric(detections['frame'], errors='coerce')
+    detections['x_center'] = pd.to_numeric(detections['x_center'], errors='coerce')
+    detections['y_center'] = pd.to_numeric(detections['y_center'], errors='coerce')
+    detections = detections.dropna(subset=['track_id', 'frame'])
+    if detections.empty:
+        return tracks_df
+
+    grouped = {
+        track_id: group.sort_values('frame').reset_index(drop=True)
+        for track_id, group in detections.groupby('track_id')
+    }
+
+    for idx, row in tracks_df.iterrows():
+        track_id = row.get('track_id')
+        if pd.isna(track_id):
+            continue
+        group = grouped.get(float(track_id))
+        if group is None or group.empty:
+            group = grouped.get(int(track_id)) if float(track_id).is_integer() else None
+        if group is None or group.empty:
+            continue
+
+        first = group.iloc[0]
+        last = group.iloc[-1]
+        tracks_df.at[idx, 'first_frame'] = int(first['frame'])
+        tracks_df.at[idx, 'first_x_center'] = round(float(first['x_center']), 4) if pd.notna(first['x_center']) else None
+        tracks_df.at[idx, 'first_y_center'] = round(float(first['y_center']), 4) if pd.notna(first['y_center']) else None
+        tracks_df.at[idx, 'last_frame'] = int(last['frame'])
+        tracks_df.at[idx, 'last_x_center'] = round(float(last['x_center']), 4) if pd.notna(last['x_center']) else None
+        tracks_df.at[idx, 'last_y_center'] = round(float(last['y_center']), 4) if pd.notna(last['y_center']) else None
+
+        measurement_frame = row.get('measurement_frame')
+        if pd.isna(measurement_frame):
+            continue
+        frame_delta = (group['frame'] - float(measurement_frame)).abs()
+        measurement = group.loc[frame_delta.idxmin()]
+        tracks_df.at[idx, 'measurement_x_center'] = (
+            round(float(measurement['x_center']), 4) if pd.notna(measurement['x_center']) else None
+        )
+        tracks_df.at[idx, 'measurement_y_center'] = (
+            round(float(measurement['y_center']), 4) if pd.notna(measurement['y_center']) else None
+        )
+
     return tracks_df
 
 
@@ -1690,6 +1762,7 @@ def process_detections_with_size(
     size_map = {e.track_id: e for e in all_estimates}
     df = _assign_size_columns_to_detections(df, size_map, calibration)
     tracks_df = _add_track_detection_distances(tracks_df, df)
+    tracks_df = _add_track_frame_positions(tracks_df, df)
     
     # Сохранение
     if output_csv:
