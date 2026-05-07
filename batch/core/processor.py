@@ -26,6 +26,7 @@ ROOT_DIR = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(ROOT_DIR / "src"))
 
 from video_utils import ThreadedVideoCapture, NvencVideoWriter
+from tracking_utils import normalize_track_ids, patch_ultralytics_track_ids, rebuild_track_state
 
 
 @dataclass
@@ -134,6 +135,7 @@ class Processor:
         device: str = "auto",
         imgsz: int = 1280,
         half: bool = True,
+        max_track_gap: int = 60,
     ):
         self.video_path = video_path
         self.model_path = model_path
@@ -152,6 +154,7 @@ class Processor:
         self.export_ls_classes = export_ls_classes
         self.imgsz = imgsz
         self.half = half
+        self.max_track_gap = max_track_gap
 
         # Определение устройства
         if device == "auto":
@@ -206,6 +209,9 @@ class Processor:
         
         try:
             from ultralytics import YOLO
+
+            if self.enable_tracking:
+                patch_ultralytics_track_ids()
             
             # Загрузка модели (приоритет TensorRT engine если есть)
             engine_path = Path(self.model_path).with_suffix('.engine')
@@ -417,6 +423,15 @@ class Processor:
 
             # Постобработка треков
             df = pd.DataFrame(detections)
+            if self.enable_tracking and len(df) > 0:
+                dive_name = Path(self.output_dir).parent.name or Path(self.video_path).stem
+                uid_prefix = f"рейс_{dive_name}"
+                df = normalize_track_ids(
+                    df,
+                    max_track_gap=self.max_track_gap,
+                    uid_prefix=uid_prefix,
+                )
+                track_info, track_class_votes = rebuild_track_state(df, CLASS_NAMES)
             
             if self.enable_tracking and len(df) > 0 and len(track_info) > 0:
                 # Определяем доминирующий класс
@@ -459,9 +474,20 @@ class Processor:
                     duration = info['last_timestamp'] - info['first_timestamp']
                     frame_span = info['last_frame'] - info['first_frame'] + 1
                     track_detections = df[df['track_id'] == tid]
+                    source_track_id = None
+                    track_uid = None
+                    if len(track_detections) > 0:
+                        if 'source_track_id' in track_detections.columns:
+                            source_values = track_detections['source_track_id'].dropna()
+                            source_track_id = int(source_values.iloc[0]) if len(source_values) > 0 else None
+                        if 'track_uid' in track_detections.columns:
+                            uid_values = track_detections['track_uid'].dropna()
+                            track_uid = uid_values.iloc[0] if len(uid_values) > 0 else None
                     
                     stat = {
                         'track_id': tid,
+                        'source_track_id': source_track_id,
+                        'track_uid': track_uid,
                         'class_id': info['class_id'],
                         'class_name': info['class_name'],
                         'first_frame': info['first_frame'],
@@ -565,4 +591,5 @@ class ProcessorFactory:
             device=task_params.get("device", "auto"),
             imgsz=task_params.get("imgsz", 1280),
             half=task_params.get("half", True),
+            max_track_gap=task_params.get("max_track_gap", 60),
         )

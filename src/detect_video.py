@@ -14,6 +14,7 @@ import torch
 from ultralytics import YOLO
 
 from constants import CLASS_NAMES
+from tracking_utils import normalize_track_ids, patch_ultralytics_track_ids, rebuild_track_state
 from video_utils import ThreadedVideoCapture, NvencVideoWriter
 
 
@@ -128,6 +129,8 @@ def detect_on_video(
     device: str = "auto",
     imgsz: int = 1280,
     half: bool = True,
+    max_track_gap: int = 60,
+    track_uid_prefix: Optional[str] = None,
     export_ls_dir: Optional[str] = None,
     export_ls_interval: int = 15,
     export_ls_classes: Optional[set] = None,
@@ -154,6 +157,9 @@ def detect_on_video(
     Returns:
         DataFrame с детекциями
     """
+    if enable_tracking:
+        patch_ultralytics_track_ids()
+
     # Определение устройства
     if device == "auto":
         _device = 0 if torch.cuda.is_available() else "cpu"
@@ -472,6 +478,10 @@ def detect_on_video(
 
     # Создание DataFrame
     df = pd.DataFrame(detections)
+    if enable_tracking and len(df) > 0:
+        uid_prefix = track_uid_prefix or Path(video_path).stem
+        df = normalize_track_ids(df, max_track_gap=max_track_gap, uid_prefix=uid_prefix)
+        track_info, track_class_votes = rebuild_track_state(df, CLASS_NAMES)
     
     # Постобработка треков
     if enable_tracking and len(df) > 0:
@@ -545,9 +555,20 @@ def detect_on_video(
                 
                 # Подсчет детекций для этого трека
                 track_detections = df[df['track_id'] == track_id]
+                source_track_id = None
+                track_uid = None
+                if len(track_detections) > 0:
+                    if 'source_track_id' in track_detections.columns:
+                        source_values = track_detections['source_track_id'].dropna()
+                        source_track_id = int(source_values.iloc[0]) if len(source_values) > 0 else None
+                    if 'track_uid' in track_detections.columns:
+                        uid_values = track_detections['track_uid'].dropna()
+                        track_uid = uid_values.iloc[0] if len(uid_values) > 0 else None
                 
                 stat = {
                     'track_id': track_id,
+                    'source_track_id': source_track_id,
+                    'track_uid': track_uid,
                     'class_id': info['class_id'],
                     'class_name': info['class_name'],
                     'first_frame': info['first_frame'],
@@ -698,6 +719,17 @@ def main():
         help="Минимальная длина трека в кадрах (короче игнорируются, по умолчанию: 3)"
     )
     parser.add_argument(
+        "--max-track-gap",
+        type=int,
+        default=60,
+        help="Максимальный разрыв внутри трека в кадрах (по умолчанию: 60)"
+    )
+    parser.add_argument(
+        "--track-uid-prefix",
+        default=None,
+        help="Префикс для track_uid (по умолчанию: имя видео)"
+    )
+    parser.add_argument(
         "--no-dominant-class",
         action="store_true",
         help="Не присваивать доминирующий класс детекциям трека"
@@ -778,6 +810,8 @@ def main():
             show_trails=args.show_trails,
             trail_length=args.trail_length,
             min_track_length=args.min_track_length,
+            max_track_gap=args.max_track_gap,
+            track_uid_prefix=args.track_uid_prefix,
             use_dominant_class=not args.no_dominant_class,
             device=args.device,
             imgsz=args.imgsz,
