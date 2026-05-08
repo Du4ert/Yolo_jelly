@@ -17,15 +17,26 @@ from ..database.models import OutputType
 
 
 VOLUME_FIELD_MAPPING: dict[str, dict[str, Any]] = {
-    "depth_max_m": {"key": "depth_max_m", "default": 0.0, "parser": float},
-    "effective_distance_m": {"key": "effective_distance_m", "default": 0.0, "parser": float},
     "total_volume_m3": {"key": "total_volume_m3", "default": 0.0, "parser": float},
+    "effective_distance_m": {"key": "effective_distance_m", "default": 0.0, "parser": float},
+    "cylinder_height_m": {"key": "cylinder_height_m", "default": 0.0, "parser": float},
+    "depth_min_m": {"key": "depth_min_m", "default": 0.0, "parser": float},
+    "depth_max_m": {"key": "depth_max_m", "default": 0.0, "parser": float},
+    "depth_traversed_m": {"key": "depth_traversed_m", "default": 0.0, "parser": float},
+    "cross_section_area_m2": {"key": "cross_section_area_m2", "default": 0.0, "parser": float},
+    "fov_horizontal_deg": {"key": "fov_horizontal_deg", "default": 0.0, "parser": float},
+    "fov_vertical_deg": {"key": "fov_vertical_deg", "default": 0.0, "parser": float},
+    "duration_s": {"key": "duration_s", "default": 0.0, "parser": float},
+    "descent_rate_m_s": {"key": "descent_rate_m_s", "default": 0.0, "parser": float},
 }
 
 for name in CLASS_NAMES.values():
     key = name.replace(" ", "_")
     VOLUME_FIELD_MAPPING[f"count_{key}"] = {
         "key": f"count_{key}", "default": 0, "parser": lambda x: int(float(x)),
+    }
+    VOLUME_FIELD_MAPPING[f"density_{key}_per_m2"] = {
+        "key": f"density_{key}_per_m2", "default": 0.0, "parser": float,
     }
     VOLUME_FIELD_MAPPING[f"density_{key}_per_m3"] = {
         "key": f"density_{key}_per_m3", "default": 0.0, "parser": float,

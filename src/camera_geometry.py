@@ -2319,9 +2319,14 @@ def process_volume_estimation(
         }
         
         for class_name, count in result.counts_by_class.items():
-            output_data['parameter'].append(f'count_{class_name.replace(" ", "_")}')
+            class_key = class_name.replace(" ", "_")
+            density_per_m2 = count / result.cross_section_area_m2 if result.cross_section_area_m2 > 0 else 0
+
+            output_data['parameter'].append(f'count_{class_key}')
             output_data['value'].append(count)
-            output_data['parameter'].append(f'density_{class_name.replace(" ", "_")}_per_m3')
+            output_data['parameter'].append(f'density_{class_key}_per_m2')
+            output_data['value'].append(density_per_m2)
+            output_data['parameter'].append(f'density_{class_key}_per_m3')
             output_data['value'].append(result.density_by_class[class_name])
         
         output_df = pd.DataFrame(output_data)
