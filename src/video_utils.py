@@ -178,7 +178,7 @@ class NvencVideoWriter:
             result = subprocess.run(
                 [
                     "ffmpeg", "-hide_banner", "-loglevel", "error",
-                    "-f", "lavfi", "-i", "nullsrc=s=64x64:d=0.1",
+                    "-f", "lavfi", "-i", "nullsrc=s=256x256:d=0.1",
                     "-c:v", "h264_nvenc", "-f", "null", "-",
                 ],
                 capture_output=True, timeout=10,
