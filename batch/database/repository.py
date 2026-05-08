@@ -871,6 +871,163 @@ class Repository:
                 return True
             return False
 
+    def import_completed_task_outputs(
+        self,
+        video_id: int,
+        model_id: int,
+        ctd_id: Optional[int],
+        outputs_by_type: Dict[OutputType, List[str]],
+        completed_subtasks: List[SubTaskType],
+    ) -> tuple[Optional[Task], bool]:
+        """Создаёт или обновляет DONE-задачу по уже существующим файлам output.
+
+        Returns:
+            (task, created), где created=True если задача была создана.
+        """
+        now = datetime.now()
+
+        with self.get_session() as session:
+            video = session.get(VideoFile, video_id)
+            model = session.get(Model, model_id)
+            if not video or not model:
+                return None, False
+            if ctd_id and not session.get(CTDFile, ctd_id):
+                ctd_id = None
+
+            task = session.scalar(
+                select(Task)
+                .where(Task.video_id == video_id)
+                .where(Task.model_id == model_id)
+                .order_by(Task.id.desc())
+                .limit(1)
+            )
+            created = False
+
+            if task is None:
+                max_position = session.scalar(select(func.max(Task.position))) or 0
+                task = Task(
+                    video_id=video_id,
+                    model_id=model_id,
+                    ctd_id=ctd_id,
+                    status=TaskStatus.DONE,
+                    position=max_position + 1,
+                    progress_percent=100.0,
+                    completed_at=now,
+                )
+                session.add(task)
+                session.flush()
+                created = True
+            else:
+                task.ctd_id = ctd_id
+                task.status = TaskStatus.DONE
+                task.is_skipped = False
+                task.progress_percent = 100.0
+                task.error_message = None
+                task.completed_at = now
+
+            stats = self._extract_imported_detection_stats(
+                outputs_by_type.get(OutputType.CSV, [None])[0],
+                outputs_by_type.get(OutputType.TRACKS_CSV, [None])[0],
+            )
+            for key, value in stats.items():
+                setattr(task, key, value)
+
+            output_types = list(outputs_by_type.keys())
+            if output_types:
+                session.execute(
+                    delete(TaskOutput)
+                    .where(TaskOutput.task_id == task.id)
+                    .where(TaskOutput.output_type.in_(output_types))
+                )
+
+            for output_type, paths in outputs_by_type.items():
+                for filepath in paths:
+                    if not filepath:
+                        continue
+                    resolved = str(Path(filepath).resolve())
+                    session.add(TaskOutput(
+                        task_id=task.id,
+                        output_type=output_type,
+                        filepath=resolved,
+                        filename=os.path.basename(resolved),
+                        filesize_mb=(
+                            os.path.getsize(resolved) / (1024 * 1024)
+                            if os.path.exists(resolved) else None
+                        ),
+                    ))
+
+            order_index = {t: i for i, t in enumerate(CANONICAL_SUBTASK_ORDER)}
+            for st_type in completed_subtasks:
+                subtask = session.scalar(
+                    select(SubTask)
+                    .where(SubTask.parent_task_id == task.id)
+                    .where(SubTask.subtask_type == st_type)
+                    .where(SubTask.status != TaskStatus.RUNNING)
+                    .order_by(SubTask.id.desc())
+                    .limit(1)
+                )
+                if subtask is None:
+                    subtask = SubTask(
+                        parent_task_id=task.id,
+                        subtask_type=st_type,
+                        position=order_index.get(st_type, 999),
+                    )
+                    session.add(subtask)
+                subtask.status = TaskStatus.DONE
+                subtask.progress_percent = 100.0
+                subtask.error_message = None
+                subtask.result_text = "Импортировано"
+                subtask.completed_at = now
+
+            session.commit()
+            session.refresh(task)
+            return task, created
+
+    def _extract_imported_detection_stats(
+        self,
+        detections_csv: Optional[str],
+        tracks_csv: Optional[str],
+    ) -> Dict[str, Any]:
+        """Извлекает базовую статистику из импортируемых CSV, если возможно."""
+        stats: Dict[str, Any] = {}
+        if not detections_csv or not os.path.exists(detections_csv):
+            return stats
+
+        try:
+            import json
+            import pandas as pd
+
+            df = pd.read_csv(detections_csv)
+            stats["detections_count"] = int(len(df))
+
+            tracks_count = None
+            if tracks_csv and os.path.exists(tracks_csv):
+                try:
+                    tracks_df = pd.read_csv(tracks_csv)
+                    tracks_count = int(len(tracks_df))
+                except Exception:
+                    tracks_count = None
+            if tracks_count is None and "track_id" in df.columns:
+                tracks_count = int(df["track_id"].dropna().nunique())
+            stats["tracks_count"] = tracks_count or 0
+
+            if "class_name" in df.columns:
+                class_stats = {}
+                for class_name, group in df.groupby("class_name"):
+                    det_count = int(len(group))
+                    trk_count = 0
+                    if "track_id" in group.columns:
+                        trk_count = int(group["track_id"].dropna().nunique())
+                    class_stats[str(class_name)] = {
+                        "detections": det_count,
+                        "tracks": trk_count,
+                    }
+                stats["class_stats_json"] = json.dumps(class_stats, ensure_ascii=False)
+        except Exception:
+            pass
+
+        return stats
+
     # ========== TASK OUTPUT OPERATIONS ==========
 
     def add_task_output(

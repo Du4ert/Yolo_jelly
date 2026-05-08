@@ -212,6 +212,7 @@ class MainWindow(QMainWindow):
         self.dive_panel.add_to_queue_requested.connect(self._on_add_to_queue)
         self.dive_panel.quick_add_to_queue_requested.connect(self._on_quick_add_to_queue)
         self.dive_panel.batch_add_to_queue_requested.connect(self._on_batch_add_to_queue)
+        self.dive_panel.outputs_import_requested.connect(self._on_import_outputs)
         self.model_panel.model_selected.connect(self._on_model_selected)
 
     def _restore_state(self):
@@ -503,6 +504,61 @@ class MainWindow(QMainWindow):
 
         n = len(video_ctd_pairs)
         self.statusBar().showMessage(f"Добавлено задач: {n}", 3000)
+
+    def _on_import_outputs(self, imports: list):
+        """Импортирует найденные в папке output результаты как DONE-задачи."""
+        if not imports:
+            return
+
+        model_id = self.model_panel.get_selected_model_id()
+        if not model_id:
+            models = self.repo.get_all_models()
+            if not models:
+                QMessageBox.warning(
+                    self, "Нет моделей",
+                    "Сначала добавьте модель для привязки импортируемых результатов."
+                )
+                return
+            QMessageBox.warning(
+                self, "Модель не выбрана",
+                "Выберите модель в панели моделей, чтобы импортировать output."
+            )
+            return
+
+        created = 0
+        updated = 0
+        errors = []
+
+        for item in imports:
+            try:
+                task, was_created = self.repo.import_completed_task_outputs(
+                    video_id=item["video_id"],
+                    model_id=model_id,
+                    ctd_id=item.get("ctd_id"),
+                    outputs_by_type=item["outputs"],
+                    completed_subtasks=item.get("subtasks", []),
+                )
+                if task is None:
+                    errors.append(f"{item.get('video_name', '???')}: не удалось создать задачу")
+                elif was_created:
+                    created += 1
+                else:
+                    updated += 1
+            except Exception as e:
+                errors.append(f"{item.get('video_name', '???')}: {e}")
+
+        self.task_manager.queue_changed.emit()
+
+        if errors:
+            QMessageBox.warning(
+                self,
+                "Часть output не импортирована",
+                "\n".join(errors[:10]),
+            )
+
+        message = f"Импорт output: создано {created}, обновлено {updated}"
+        self.statusBar().showMessage(message, 5000)
+        QMessageBox.information(self, "Импорт завершён", message)
 
     # ========== События окна ==========
 

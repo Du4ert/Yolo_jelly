@@ -24,7 +24,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QBrush, QDropEvent, QKeyEvent
 
 
-from ...database import Repository, Catalog, Dive, VideoFile, CTDFile
+from ...database import Repository, Catalog, Dive, VideoFile, CTDFile, OutputType, SubTaskType
 from ...core import get_config, save_config
 from ..dialogs import AddDiveDialog, select_multiple_directories, EditDiveDialog, CatalogDialog
 
@@ -60,6 +60,7 @@ class DivePanel(QWidget):
     add_to_queue_requested = pyqtSignal(int, object)
     quick_add_to_queue_requested = pyqtSignal(int, object)
     batch_add_to_queue_requested = pyqtSignal(list)  # list of (video_id, ctd_id|None)
+    outputs_import_requested = pyqtSignal(list)  # list of импортируемых результатов из output/
 
     # Типы элементов в дереве
     TYPE_CATALOG = 0
@@ -762,10 +763,122 @@ class DivePanel(QWidget):
                     if '_detections' not in fp.name and '_tracks' not in fp.name:
                         if self.repo.add_ctd_file(dive_id, str(fp)):
                             ctd_added += 1
-        
+
+        imports = self._collect_output_imports(dive_id)
+
         if videos_added or ctd_added:
             self._load_data()
-            self._show_status(f"Добавлено: {videos_added} видео, {ctd_added} CTD")
+            msg = f"Добавлено: {videos_added} видео, {ctd_added} CTD"
+            if imports:
+                msg += f"; найдено output: {len(imports)}"
+            self._show_status(msg)
+
+        if imports:
+            self._confirm_import_outputs(imports)
+
+    def _collect_output_imports(self, dive_id: int) -> list:
+        """Ищет в output/ готовые результаты для видео погружения."""
+        dive = self.repo.get_dive(dive_id)
+        if not dive:
+            return []
+
+        output_dir = Path(dive.folder_path) / "output"
+        if not output_dir.exists() or not output_dir.is_dir():
+            return []
+
+        ctd_files = self.repo.get_ctd_by_dive(dive_id)
+        ctd_id = ctd_files[0].id if ctd_files else None
+        imports = []
+
+        for video in self.repo.get_videos_by_dive(dive_id):
+            base = Path(video.filename).stem
+            outputs: dict[OutputType, list[str]] = {}
+            completed_subtasks: list[SubTaskType] = []
+
+            def add_output(output_type: OutputType, path: Path) -> bool:
+                if not path.exists() or not path.is_file():
+                    return False
+                outputs.setdefault(output_type, []).append(str(path))
+                return True
+
+            detections_found = add_output(
+                OutputType.CSV, output_dir / f"{base}_detections.csv"
+            )
+            if not detections_found:
+                continue
+
+            add_output(OutputType.TRACKS_CSV, output_dir / f"{base}_tracks.csv")
+            add_output(OutputType.VIDEO, output_dir / f"{base}_detected.mp4")
+
+            if add_output(OutputType.GEOMETRY_CSV, output_dir / f"{base}_geometry.csv"):
+                completed_subtasks.append(SubTaskType.GEOMETRY)
+
+            size_found = add_output(
+                OutputType.SIZE_CSV, output_dir / f"{base}_detections_with_size.csv"
+            )
+            track_sizes_found = add_output(
+                OutputType.TRACK_SIZES_CSV, output_dir / f"{base}_track_sizes.csv"
+            )
+            if size_found or track_sizes_found:
+                completed_subtasks.append(SubTaskType.SIZE)
+
+            if add_output(OutputType.SIZE_VIDEO, output_dir / f"{base}_sized.mp4"):
+                completed_subtasks.append(SubTaskType.SIZE_VIDEO_RENDER)
+
+            if add_output(OutputType.VOLUME_CSV, output_dir / f"{base}_volume.csv"):
+                completed_subtasks.append(SubTaskType.VOLUME)
+
+            analysis_dir = output_dir / "analysis"
+            analysis_found = False
+            if analysis_dir.exists() and analysis_dir.is_dir():
+                for plot_name in (
+                    "vertical_distribution.png",
+                    "detection_timeline.png",
+                    "species_summary.png",
+                ):
+                    analysis_found = add_output(
+                        OutputType.ANALYSIS_PLOT, analysis_dir / plot_name
+                    ) or analysis_found
+                analysis_found = add_output(
+                    OutputType.ANALYSIS_REPORT, analysis_dir / "report.txt"
+                ) or analysis_found
+                for html_path in analysis_dir.glob("*.html"):
+                    analysis_found = add_output(
+                        OutputType.INTERACTIVE_PLOT, html_path
+                    ) or analysis_found
+            if analysis_found:
+                completed_subtasks.append(SubTaskType.ANALYSIS)
+
+            imports.append({
+                "video_id": video.id,
+                "ctd_id": ctd_id,
+                "video_name": video.filename,
+                "outputs": outputs,
+                "subtasks": completed_subtasks,
+            })
+
+        return imports
+
+    def _confirm_import_outputs(self, imports: list) -> None:
+        """Запрашивает подтверждение импорта найденных результатов output/."""
+        video_count = len(imports)
+        outputs_count = sum(
+            len(paths)
+            for item in imports
+            for paths in item["outputs"].values()
+        )
+        reply = QMessageBox.question(
+            self,
+            "Импортировать output?",
+            "В папке output найдены готовые результаты обработки.\n\n"
+            f"Видео: {video_count}\n"
+            f"Файлов результатов: {outputs_count}\n\n"
+            "Создать или обновить задачи со статусом DONE?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.outputs_import_requested.emit(imports)
 
     def _open_dive_folder(self, dive_id: int):
         """Открывает папку погружения."""
