@@ -21,6 +21,7 @@ from typing import Optional, Dict, Tuple, Any
 import time
 
 from constants import CLASS_COLORS_BGR
+from video_utils import NvencVideoWriter
 
 
 def load_size_data(detections_csv: str, size_csv: str) -> pd.DataFrame:
@@ -318,8 +319,7 @@ def render_size_video(
     # Создаём выходное видео
     output_path = Path(output_video)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(str(output_path), fourcc, fps, (frame_width, frame_height))
+    out = NvencVideoWriter(str(output_path), fps, frame_width, frame_height)
     
     # Группируем детекции по кадрам для быстрого доступа
     frame_detections = df.groupby('frame')
