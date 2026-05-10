@@ -20,7 +20,6 @@ from PyQt6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QPushButton,
-    QDialogButtonBox,
     QLabel,
     QSlider,
     QWidget,
@@ -372,25 +371,22 @@ class VerifyDialog(QDialog):
         layout.addWidget(splitter)
 
         # ── нижние кнопки ──
-        button_box = QDialogButtonBox()
-        self._btn_close = button_box.addButton(
-            "Закрыть", QDialogButtonBox.ButtonRole.RejectRole
-        )
-        self._btn_cancel = button_box.addButton(
-            "Отмена", QDialogButtonBox.ButtonRole.ResetRole
-        )
-        self._btn_save = button_box.addButton(
-            "Сохранить", QDialogButtonBox.ButtonRole.AcceptRole
-        )
-        self._btn_apply = button_box.addButton(
-            "Применить к данным", QDialogButtonBox.ButtonRole.ApplyRole
-        )
+        button_layout = QHBoxLayout()
+        button_layout.addStretch(1)
+        self._btn_close = QPushButton("Закрыть")
+        self._btn_cancel = QPushButton("Отменить")
+        self._btn_save = QPushButton("Сохранить")
+        self._btn_apply = QPushButton("Применить к данным")
+        button_layout.addWidget(self._btn_close)
+        button_layout.addWidget(self._btn_cancel)
+        button_layout.addWidget(self._btn_save)
+        button_layout.addWidget(self._btn_apply)
         self._btn_close.clicked.connect(self.reject)
         self._btn_cancel.clicked.connect(self._on_cancel_changes)
         self._btn_save.clicked.connect(self._on_save)
         self._btn_apply.clicked.connect(self._on_apply)
         self._set_modified(False)
-        layout.addWidget(button_box)
+        layout.addLayout(button_layout)
 
     def _setup_table(self):
         columns = [
