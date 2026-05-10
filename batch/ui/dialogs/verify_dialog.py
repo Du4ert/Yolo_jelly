@@ -104,11 +104,13 @@ class VerifyDialog(QDialog):
         self._sort_column = -1
         self._sort_reverse = False
         self._verified_backup = None
+        self._baseline_state: Dict[int, tuple] = {}
         self._closing = False
 
         self._resolve_paths()
         self._backup_verified()
         self._load_data()
+        self._baseline_state = self._snapshot_state()
         self._setup_ui()
         self._setup_video()
         self._setup_flash_timer()
@@ -150,10 +152,10 @@ class VerifyDialog(QDialog):
         if self._closing:
             return
         self._closing = True
-        self._restore_backup()
+        self._restore_backup(cleanup=True)
         super().reject()
 
-    def _restore_backup(self):
+    def _restore_backup(self, cleanup: bool):
         try:
             if self._verified_backup and os.path.exists(self._verified_backup):
                 if self._verified_csv:
@@ -166,7 +168,9 @@ class VerifyDialog(QDialog):
                 os.remove(self._verified_csv)
         except Exception:
             pass
-        self._cleanup_backup()
+
+        if cleanup:
+            self._cleanup_backup()
 
     def _cleanup_backup(self):
         if self._verified_backup and os.path.exists(self._verified_backup):
@@ -174,10 +178,26 @@ class VerifyDialog(QDialog):
                 os.unlink(self._verified_backup)
             except Exception:
                 pass
+        self._verified_backup = None
+
+    def _update_verified_backup(self):
+        self._cleanup_backup()
+        if self._verified_csv and os.path.exists(self._verified_csv):
+            fd, self._verified_backup = tempfile.mkstemp(
+                suffix=".csv", prefix="verify_backup_"
+            )
+            os.close(fd)
+            shutil.copy2(self._verified_csv, self._verified_backup)
 
     # ── data ─────────────────────────────────────────────────────────
 
     def _load_data(self):
+        self._tracks = []
+        self._track_detections.clear()
+        self._deleted_detections.clear()
+        self._confirmed_detections.clear()
+        self._selected_track = None
+
         if not self._tracks_csv or not os.path.exists(self._tracks_csv):
             return
 
@@ -353,18 +373,23 @@ class VerifyDialog(QDialog):
 
         # ── нижние кнопки ──
         button_box = QDialogButtonBox()
+        self._btn_close = button_box.addButton(
+            "Закрыть", QDialogButtonBox.ButtonRole.RejectRole
+        )
         self._btn_cancel = button_box.addButton(
-            "Отмена", QDialogButtonBox.ButtonRole.RejectRole
+            "Отмена", QDialogButtonBox.ButtonRole.ResetRole
+        )
+        self._btn_save = button_box.addButton(
+            "Сохранить", QDialogButtonBox.ButtonRole.AcceptRole
         )
         self._btn_apply = button_box.addButton(
             "Применить к данным", QDialogButtonBox.ButtonRole.ApplyRole
         )
-        self._btn_save = button_box.addButton(
-            "Сохранить и закрыть", QDialogButtonBox.ButtonRole.AcceptRole
-        )
-        self._btn_cancel.clicked.connect(self.reject)
+        self._btn_close.clicked.connect(self.reject)
+        self._btn_cancel.clicked.connect(self._on_cancel_changes)
+        self._btn_save.clicked.connect(self._on_save)
         self._btn_apply.clicked.connect(self._on_apply)
-        self._btn_save.clicked.connect(self.accept)
+        self._set_modified(False)
         layout.addWidget(button_box)
 
     def _setup_table(self):
@@ -414,6 +439,56 @@ class VerifyDialog(QDialog):
         self._table.resizeColumnsToContents()
 
         self._update_task_status_label()
+
+    def _set_modified(self, modified: bool):
+        self._modified = modified
+        for button in (self._btn_cancel, self._btn_save, self._btn_apply):
+            button.setEnabled(modified)
+
+    def _snapshot_state(self) -> Dict[int, tuple]:
+        return {
+            t.track_id: (bool(t.deleted), t.new_class_id, bool(t.confirmed))
+            for t in self._tracks
+        }
+
+    def _update_modified_from_baseline(self):
+        self._set_modified(self._snapshot_state() != self._baseline_state)
+
+    def _clear_visual_marks(self):
+        if not self._scene:
+            self._delete_crosses.clear()
+            self._confirm_marks.clear()
+            return
+
+        for marks in (self._delete_crosses, self._confirm_marks):
+            for line1, line2 in marks.values():
+                self._scene.removeItem(line1)
+                self._scene.removeItem(line2)
+            marks.clear()
+
+        if self._highlight_rect:
+            self._highlight_rect.setVisible(False)
+        self._highlight_active = False
+
+    def _reload_verified_state(self):
+        self._clear_visual_marks()
+        self._load_data()
+        self._rebuild_table()
+        self._baseline_state = self._snapshot_state()
+        self._set_modified(False)
+
+        if self._tracks:
+            self._table.selectRow(0)
+            self._on_track_selected(0)
+        else:
+            self._btn_delete.setEnabled(False)
+            self._btn_confirm.setEnabled(False)
+            self._class_combo.setEnabled(False)
+            self._track_info_label.setText("")
+
+        if self._player:
+            self._update_delete_crosses(self._player.position())
+            self._update_confirm_marks(self._player.position())
 
     def _set_track_row(self, row: int, track: TrackInfo):
         depth_str = ""
@@ -974,7 +1049,7 @@ class VerifyDialog(QDialog):
             return
 
         self._selected_track.deleted = not self._selected_track.deleted
-        self._modified = True
+        self._update_modified_from_baseline()
 
         self._btn_delete.setText(
             "↩ Восстановить трек"
@@ -1006,12 +1081,6 @@ class VerifyDialog(QDialog):
         self._table.resizeColumnsToContents()
         self._update_task_status_label()
 
-        if self._tracks_csv:
-            try:
-                save_verified(self._tracks, self._tracks_csv)
-            except Exception:
-                pass
-
         if self._player:
             self._update_delete_crosses(self._player.position())
 
@@ -1027,18 +1096,12 @@ class VerifyDialog(QDialog):
             self._selected_track.new_class_id = None
         else:
             self._selected_track.new_class_id = new_cid
-        self._modified = True
+        self._update_modified_from_baseline()
 
         row = self._table.currentRow()
         self._set_track_row(row, self._selected_track)
         self._table.resizeColumnsToContents()
         self._update_task_status_label()
-
-        if self._tracks_csv:
-            try:
-                save_verified(self._tracks, self._tracks_csv)
-            except Exception:
-                pass
 
     # ── confirm / apply / sort ────────────────────────────────────────
 
@@ -1047,7 +1110,7 @@ class VerifyDialog(QDialog):
             return
 
         self._selected_track.confirmed = not self._selected_track.confirmed
-        self._modified = True
+        self._update_modified_from_baseline()
 
         tid = self._selected_track.track_id
         if self._selected_track.confirmed:
@@ -1071,17 +1134,33 @@ class VerifyDialog(QDialog):
         self._table.resizeColumnsToContents()
         self._update_task_status_label()
 
-        if self._tracks_csv:
-            try:
-                save_verified(self._tracks, self._tracks_csv)
-            except Exception:
-                pass
-
         if self._player:
             self._update_confirm_marks(self._player.position())
 
         if self._selected_track.confirmed:
             self._select_next_unconfirmed()
+
+    def _on_cancel_changes(self):
+        self._restore_backup(cleanup=False)
+        self._reload_verified_state()
+
+    def _on_save(self):
+        if not self._tracks_csv:
+            return
+
+        try:
+            save_verified(self._tracks, self._tracks_csv)
+            self._update_verified_backup()
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Ошибка сохранения",
+                f"Не удалось сохранить состояние проверки:\n{e}",
+            )
+            return
+
+        self._baseline_state = self._snapshot_state()
+        self._set_modified(False)
 
     def _on_apply(self):
         modified_tracks = [t for t in self._tracks if t.is_modified]
@@ -1116,10 +1195,8 @@ class VerifyDialog(QDialog):
             )
             return
 
-        self._load_data()
-        self._rebuild_table()
-        self._modified = False
-        self._cleanup_backup()
+        self._update_verified_backup()
+        self._reload_verified_state()
 
         QMessageBox.information(
             self,
@@ -1129,10 +1206,6 @@ class VerifyDialog(QDialog):
             f"Удалено: {result.deleted_count}\n"
             f"Изменён класс: {result.changed_class_count}",
         )
-
-        if self._tracks:
-            self._table.selectRow(0)
-            self._on_track_selected(0)
 
     def _on_sort(self, column: int):
         if column == self._sort_column:
@@ -1233,21 +1306,7 @@ class VerifyDialog(QDialog):
     # ── close ─────────────────────────────────────────────────────────
 
     def accept(self):
-        if self._closing:
-            return
-        if self._modified and self._tracks_csv:
-            try:
-                save_verified(self._tracks, self._tracks_csv)
-            except Exception as e:
-                QMessageBox.critical(
-                    self,
-                    "Ошибка сохранения",
-                    f"Не удалось сохранить состояние проверки:\n{e}",
-                )
-                return
-        self._closing = True
-        self._cleanup_backup()
-        super().accept()
+        self._on_save()
 
 
 def _format_ms(ms: int) -> str:
