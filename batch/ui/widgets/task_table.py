@@ -198,11 +198,8 @@ class TaskTable(QWidget):
             ordered_groups.append((None, task_groups[None]))
 
         for catalog_id, task_list in ordered_groups:
-            group_item = self._create_group_item(catalog_id, len(task_list))
+            group_item = self._create_group_item(catalog_id, task_list)
             self.tree.addTopLevelItem(group_item)
-            self.tree.setFirstColumnSpanned(
-                self.tree.topLevelItemCount() - 1, QModelIndex(), True
-            )
             if catalog_id in expanded_groups:
                 group_item.setExpanded(True)
 
@@ -271,24 +268,54 @@ class TaskTable(QWidget):
             return None
         return dive.catalog_id
 
-    def _create_group_item(self, catalog_id: Optional[int], task_count: int) -> QTreeWidgetItem:
+    def _create_group_item(self, catalog_id: Optional[int], tasks: list[Task]) -> QTreeWidgetItem:
         """Создаёт элемент группы (экспедиции)."""
         item = QTreeWidgetItem()
+        task_count = len(tasks)
         if catalog_id is None:
-            item.setText(0, f"📂 Без экспедиции  ({task_count} задач)")
-            item.setForeground(0, QBrush(QColor(128, 128, 128)))
+            item.setText(1, f"📂 Без экспедиции  ({task_count} задач)")
+            item.setForeground(1, QBrush(QColor(128, 128, 128)))
         else:
             catalog = self.repo.get_catalog(catalog_id)
             name = catalog.name if catalog else f"#{catalog_id}"
-            item.setText(0, f"🗂 {name}  ({task_count} задач)")
+            item.setText(1, f"🗂 {name}  ({task_count} задач)")
             if catalog and catalog.color:
-                item.setForeground(0, QBrush(QColor(catalog.color)))
+                item.setForeground(1, QBrush(QColor(catalog.color)))
         item.setData(0, Qt.ItemDataRole.UserRole, catalog_id)
         item.setData(0, Qt.ItemDataRole.UserRole + 1, "group")
+
+        verif_status = self._get_group_verification_status(tasks)
+        if verif_status == "Подтверждено":
+            item.setText(5, "✓ Подтверждено")
+            item.setForeground(5, QBrush(QColor(0, 180, 0)))
+        elif verif_status == "В работе":
+            item.setText(5, "⏳ В работе")
+            item.setForeground(5, QBrush(QColor(180, 160, 0)))
+        item.setTextAlignment(5, Qt.AlignmentFlag.AlignCenter)
+
         font = item.font(0)
         font.setBold(True)
-        item.setFont(0, font)
+        for col in range(self.tree.columnCount()):
+            item.setFont(col, font)
         return item
+
+    def _get_group_verification_status(self, tasks: list[Task]) -> str:
+        """Возвращает агрегированный статус проверки задач группы."""
+        statuses = []
+        for task in tasks:
+            if task.status != TaskStatus.DONE or not task.enable_tracking or not task.tracks_csv_path:
+                continue
+            try:
+                status = get_task_verification_status(task.tracks_csv_path)
+            except Exception:
+                status = ""
+            statuses.append(status)
+
+        if not any(statuses):
+            return ""
+        if all(status == "Подтверждено" for status in statuses):
+            return "Подтверждено"
+        return "В работе"
 
     def _create_task_item(self, task: Task) -> QTreeWidgetItem:
         """Создаёт элемент дерева для задачи."""
