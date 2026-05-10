@@ -98,6 +98,8 @@ class VerifyDialog(QDialog):
         self._video_item = None
         self._highlight_rect = None
         self._fitting = False
+        self._fit_pending = False
+        self._last_fit_state = None
         self._track_play_active = False
         self._highlight_active = False
         self._sort_column = -1
@@ -530,6 +532,9 @@ class VerifyDialog(QDialog):
         self._graphics_view.setScene(self._scene)
 
         self._video_item = QGraphicsVideoItem()
+        self._video_item.nativeSizeChanged.connect(
+            lambda *_: self._schedule_fit_video()
+        )
         self._scene.addItem(self._video_item)
 
         self._player = QMediaPlayer()
@@ -560,6 +565,8 @@ class VerifyDialog(QDialog):
         self._btn_fwd.setEnabled(True)
         self._time_slider.setEnabled(True)
 
+        self._schedule_fit_video()
+
     def _setup_flash_timer(self):
         self._flash_timer = QTimer(self)
         self._flash_timer.timeout.connect(self._flash_tick)
@@ -579,14 +586,37 @@ class VerifyDialog(QDialog):
             and obj is self._graphics_view
             and event.type() == QEvent.Type.Resize
         ):
-            self._fit_video()
+            self._schedule_fit_video()
         return super().eventFilter(obj, event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._schedule_fit_video()
+
+    def _schedule_fit_video(self):
+        if self._fit_pending:
+            return
+        self._fit_pending = True
+        QTimer.singleShot(0, self._run_scheduled_fit_video)
+
+    def _run_scheduled_fit_video(self):
+        self._fit_pending = False
+        self._fit_video()
 
     def _fit_video(self):
         if self._fitting or not self._video_item:
             return
         ns = self._video_item.nativeSize()
         if not ns.isValid():
+            return
+        viewport_size = self._graphics_view.viewport().size()
+        fit_state = (
+            int(ns.width()),
+            int(ns.height()),
+            viewport_size.width(),
+            viewport_size.height(),
+        )
+        if fit_state == self._last_fit_state:
             return
         self._fitting = True
         try:
@@ -595,6 +625,7 @@ class VerifyDialog(QDialog):
             self._graphics_view.fitInView(
                 self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio
             )
+            self._last_fit_state = fit_state
         finally:
             self._fitting = False
 
@@ -603,7 +634,7 @@ class VerifyDialog(QDialog):
     def _on_duration_changed(self, ms: int):
         self._time_slider.setRange(0, ms)
         self._update_time_label()
-        self._fit_video()
+        self._schedule_fit_video()
 
     def _on_position_changed(self, ms: int):
         if not self._seeking:
