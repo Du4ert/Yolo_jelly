@@ -267,7 +267,9 @@ def generate_report(
             post_params = processing_info.get('postprocess_params', {})
             if post_params:
                 f.write("\nПараметры постобработки:\n")
-                f.write(f"  FOV камеры: {post_params.get('fov', 'N/A')}°\n")
+                fov_h = post_params.get('fov_horizontal', post_params.get('fov', 'N/A'))
+                fov_v = post_params.get('fov_vertical', 'N/A')
+                f.write(f"  FOV камеры: горизонтальный {fov_h}°, вертикальный {fov_v}°\n")
                 f.write(f"  Ближняя дистанция: {post_params.get('near_distance', post_params.get('min_reliable_distance', 'N/A'))} м\n")
                 f.write(f"  Бин глубины: {post_params.get('depth_bin', 'N/A')} м\n")
             

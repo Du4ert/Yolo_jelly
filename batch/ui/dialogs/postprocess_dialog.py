@@ -212,9 +212,15 @@ class PostProcessDialog(QDialog):
 
         self.spin_fov = QDoubleSpinBox()
         self.spin_fov.setRange(60, 180)
-        self.spin_fov.setValue(156.0)
+        self.spin_fov.setValue(95.0)
         self.spin_fov.setSuffix("°")
-        params_layout.addRow("FOV камеры:", self.spin_fov)
+        params_layout.addRow("Горизонтальный FOV:", self.spin_fov)
+
+        self.spin_fov_vertical = QDoubleSpinBox()
+        self.spin_fov_vertical.setRange(30, 180)
+        self.spin_fov_vertical.setValue(55.0)
+        self.spin_fov_vertical.setSuffix("°")
+        params_layout.addRow("Вертикальный FOV:", self.spin_fov_vertical)
 
         self.spin_min_reliable = QDoubleSpinBox()
         self.spin_min_reliable.setRange(0.05, 2.0)
@@ -729,7 +735,8 @@ class PostProcessDialog(QDialog):
             pass
 
         params = {
-            "fov": self.spin_fov.value(),
+            "fov_horizontal": self.spin_fov.value(),
+            "fov_vertical": self.spin_fov_vertical.value(),
             "min_reliable_distance": self.spin_min_reliable.value(),
             "max_reliable_distance": self.spin_max_reliable.value(),
             "effective_distance_auto": effective_distance_auto,

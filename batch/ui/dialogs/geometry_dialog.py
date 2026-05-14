@@ -151,7 +151,8 @@ class VolumeWorker(QThread):
         output_csv: str,
         tracks_csv: Optional[str] = None,
         ctd_csv: Optional[str] = None,
-        fov_horizontal: float = 156.0,
+        fov_horizontal: float = 95.0,
+        fov_vertical: float = 55.0,
         near_distance: float = 0.3,
         detection_distance: Optional[float] = None,
         min_reliable_distance: Optional[float] = None,
@@ -169,6 +170,7 @@ class VolumeWorker(QThread):
         self.tracks_csv = tracks_csv
         self.ctd_csv = ctd_csv
         self.fov_horizontal = fov_horizontal
+        self.fov_vertical = fov_vertical
         self.near_distance = near_distance
         self.detection_distance = detection_distance
         self.min_reliable_distance = min_reliable_distance
@@ -191,7 +193,8 @@ class VolumeWorker(QThread):
             output_csv=self.output_csv,
             tracks_csv=self.tracks_csv,
             ctd_csv=self.ctd_csv,
-            fov=self.fov_horizontal,
+            fov_horizontal=self.fov_horizontal,
+            fov_vertical=self.fov_vertical,
             near_distance=self.near_distance,
             detection_distance=self.detection_distance,
             min_reliable_distance=self.min_reliable_distance,
@@ -565,10 +568,17 @@ class GeometryDialog(QDialog):
         
         self.vol_fov = QDoubleSpinBox()
         self.vol_fov.setRange(50.0, 180.0)
-        self.vol_fov.setValue(156.0)
+        self.vol_fov.setValue(95.0)
         self.vol_fov.setSingleStep(5.0)
         self.vol_fov.setSuffix("°")
         camera_layout.addRow("Горизонтальный FOV:", self.vol_fov)
+
+        self.vol_fov_vertical = QDoubleSpinBox()
+        self.vol_fov_vertical.setRange(30.0, 180.0)
+        self.vol_fov_vertical.setValue(55.0)
+        self.vol_fov_vertical.setSingleStep(5.0)
+        self.vol_fov_vertical.setSuffix("°")
+        camera_layout.addRow("Вертикальный FOV:", self.vol_fov_vertical)
         
         self.vol_near = QDoubleSpinBox()
         self.vol_near.setRange(0.1, 2.0)
@@ -954,6 +964,7 @@ class GeometryDialog(QDialog):
             tracks_csv=tracks_path if tracks_path else None,
             ctd_csv=ctd_path if ctd_path else None,
             fov_horizontal=self.vol_fov.value(),
+            fov_vertical=self.vol_fov_vertical.value(),
             near_distance=self.vol_near.value(),
             detection_distance=det_dist,
             min_reliable_distance=self.vol_near.value(),

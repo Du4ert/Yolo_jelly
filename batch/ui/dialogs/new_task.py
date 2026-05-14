@@ -471,7 +471,8 @@ class NewTaskDialog(QDialog):
                 "volume": self.pp_chk_volume.isChecked(),
                 "analysis": self.pp_chk_analysis.isChecked(),
                 # Параметры
-                "fov": self.pp_spin_fov.value(),
+                "fov_horizontal": self.pp_spin_fov.value(),
+                "fov_vertical": self.pp_spin_fov_vertical.value(),
                 "min_reliable_distance": self.pp_spin_min_reliable.value(),
                 "max_reliable_distance": self.pp_spin_max_reliable.value(),
                 "effective_distance_auto": effective_distance_auto,
@@ -646,10 +647,17 @@ class NewTaskDialog(QDialog):
         
         self.pp_spin_fov = QDoubleSpinBox()
         self.pp_spin_fov.setRange(60, 180)
-        self.pp_spin_fov.setValue(156.0)
+        self.pp_spin_fov.setValue(95.0)
         self.pp_spin_fov.setSuffix("°")
-        self.pp_spin_fov.setToolTip("Горизонтальный угол обзора камеры (GoPro 12 Wide 4K ~156°)")
-        params_form.addRow("FOV камеры:", self.pp_spin_fov)
+        self.pp_spin_fov.setToolTip("Горизонтальный угол обзора камеры")
+        params_form.addRow("Горизонтальный FOV:", self.pp_spin_fov)
+
+        self.pp_spin_fov_vertical = QDoubleSpinBox()
+        self.pp_spin_fov_vertical.setRange(30, 180)
+        self.pp_spin_fov_vertical.setValue(55.0)
+        self.pp_spin_fov_vertical.setSuffix("°")
+        self.pp_spin_fov_vertical.setToolTip("Вертикальный угол обзора камеры")
+        params_form.addRow("Вертикальный FOV:", self.pp_spin_fov_vertical)
         
         self.pp_spin_min_reliable = QDoubleSpinBox()
         self.pp_spin_min_reliable.setRange(0.05, 2.0)

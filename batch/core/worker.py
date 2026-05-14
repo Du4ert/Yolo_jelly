@@ -508,12 +508,15 @@ class Worker(QThread):
         processor = VolumeEstimationProcessor()
         effective_distance_auto = params.get("effective_distance_auto", True)
         detection_distance = None if effective_distance_auto else params.get("detection_distance")
+        fov_horizontal = params.get("fov_horizontal", params.get("fov", 95.0))
+        fov_vertical = params.get("fov_vertical", 55.0)
         result = processor.process(
             detections_csv=input_csv,
             output_csv=volume_csv,
             tracks_csv=track_sizes_csv,  # Передаём статистику размеров, а не треки детекции
             ctd_csv=ctd_csv,
-            fov=params.get("fov", 156.0),
+            fov_horizontal=fov_horizontal,
+            fov_vertical=fov_vertical,
             near_distance=params.get("min_reliable_distance", 0.1),
             detection_distance=detection_distance,
             fps=video.fps or 60.0,
@@ -643,7 +646,8 @@ class Worker(QThread):
             
             # Параметры постобработки
             postprocess_params = {
-                'fov': current_params.get('fov', 156.0),
+                'fov_horizontal': current_params.get('fov_horizontal', current_params.get('fov', 95.0)),
+                'fov_vertical': current_params.get('fov_vertical', 55.0),
                 'near_distance': current_params.get('min_reliable_distance', 0.1),
                 'min_reliable_distance': current_params.get('min_reliable_distance', 0.1),
                 'max_reliable_distance': current_params.get('max_reliable_distance'),
@@ -899,7 +903,8 @@ class Worker(QThread):
                 "video_use_geometry": True,
                 "volume": True,
                 "analysis": True,
-                "fov": 156.0,
+                "fov_horizontal": 95.0,
+                "fov_vertical": 55.0,
                 "depth_bin": 2.0,
             }
         
@@ -919,7 +924,8 @@ class Worker(QThread):
             defaults = {}
 
         common_params = {
-            "fov": params.get("fov", 156.0),
+            "fov_horizontal": params.get("fov_horizontal", params.get("fov", 95.0)),
+            "fov_vertical": params.get("fov_vertical", 55.0),
             "min_reliable_distance": params.get(
                 "min_reliable_distance", defaults.get("min_reliable_distance", 0.1)
             ),

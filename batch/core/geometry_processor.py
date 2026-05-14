@@ -355,7 +355,8 @@ class VolumeEstimationProcessor:
         output_csv: str,
         tracks_csv: Optional[str] = None,
         ctd_csv: Optional[str] = None,
-        fov: float = 156.0,
+        fov_horizontal: float = 95.0,
+        fov_vertical: float = 55.0,
         near_distance: float = 0.3,
         detection_distance: Optional[float] = None,
         depth_min: Optional[float] = None,
@@ -376,7 +377,8 @@ class VolumeEstimationProcessor:
             output_csv: Путь к выходному CSV.
             tracks_csv: Путь к CSV со статистикой треков (опционально).
             ctd_csv: Путь к CSV с данными CTD (опционально).
-            fov: Горизонтальный угол обзора камеры (градусы).
+            fov_horizontal: Горизонтальный угол обзора камеры (градусы).
+            fov_vertical: Вертикальный угол обзора камеры (градусы).
             near_distance: Ближняя граница обнаружения (метры).
             detection_distance: Дистанция обнаружения (метры), None = авто.
             depth_min: Минимальная глубина (метры).
@@ -404,7 +406,8 @@ class VolumeEstimationProcessor:
                 tracks_csv=tracks_csv,
                 ctd_csv=ctd_csv,
                 output_csv=output_csv,
-                fov_horizontal=fov,
+                fov_horizontal=fov_horizontal,
+                fov_vertical=fov_vertical,
                 near_distance=near_distance,
                 detection_distance=detection_distance,
                 depth_min=depth_min,

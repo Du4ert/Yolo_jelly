@@ -2094,7 +2094,8 @@ def calculate_surveyed_volume(
     tracks_df: Optional[pd.DataFrame] = None,
     ctd_df: Optional[pd.DataFrame] = None,
     calibration: CameraCalibration = None,
-    fov_horizontal_deg: float = 156.0,
+    fov_horizontal_deg: float = 95.0,
+    fov_vertical_deg: float = 55.0,
     near_distance_m: float = 0.3,
     detection_distance_m: Optional[float] = None,
     depth_range: Optional[Tuple[float, float]] = None,
@@ -2121,8 +2122,7 @@ def calculate_surveyed_volume(
         calibration = CameraCalibration()
 
     fov_h_deg = fov_horizontal_deg
-    aspect_ratio = calibration.frame_width / calibration.frame_height
-    fov_v_deg = fov_h_deg / aspect_ratio
+    fov_v_deg = fov_vertical_deg
 
     fov_h_rad = np.radians(fov_h_deg)
     fov_v_rad = np.radians(fov_v_deg)
@@ -2228,7 +2228,8 @@ def process_volume_estimation(
     tracks_csv: Optional[str] = None,
     ctd_csv: Optional[str] = None,
     output_csv: Optional[str] = None,
-    fov_horizontal: float = 156.0,
+    fov_horizontal: float = 95.0,
+    fov_vertical: float = 55.0,
     near_distance: float = 0.3,
     detection_distance: Optional[float] = None,
     depth_min: Optional[float] = None,
@@ -2289,6 +2290,7 @@ def process_volume_estimation(
         ctd_df=ctd_df,
         calibration=calibration,
         fov_horizontal_deg=fov_horizontal,
+        fov_vertical_deg=fov_vertical,
         near_distance_m=near_distance,
         detection_distance_m=detection_distance,
         depth_range=depth_range,
@@ -3194,7 +3196,12 @@ def main():
     vol.add_argument('--tracks', '-t')
     vol.add_argument('--ctd', '-c')
     vol.add_argument('--output', '-o')
-    vol.add_argument('--fov', type=float, default=156.0)
+    vol.add_argument('--fov', type=float,
+                     help='Устаревший алиас для --fov-horizontal.')
+    vol.add_argument('--fov-horizontal', type=float, default=95.0,
+                     help='Горизонтальный угол обзора камеры в градусах.')
+    vol.add_argument('--fov-vertical', type=float, default=55.0,
+                     help='Вертикальный угол обзора камеры в градусах.')
     vol.add_argument('--near-distance', type=float, default=0.1,
                      help='Устарел: в цилиндрической модели параметр не используется. '
                           'Оставлен для обратной совместимости CLI.')
@@ -3259,7 +3266,8 @@ def main():
             tracks_csv=args.tracks,
             ctd_csv=args.ctd,
             output_csv=output,
-            fov_horizontal=args.fov,
+            fov_horizontal=args.fov if args.fov is not None else args.fov_horizontal,
+            fov_vertical=args.fov_vertical,
             near_distance=args.near_distance,
             detection_distance=args.detection_distance,
             depth_min=args.depth_min,
