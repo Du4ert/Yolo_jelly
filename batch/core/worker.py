@@ -575,14 +575,14 @@ class Worker(QThread):
             if ctd_file:
                 ctd_path = ctd_file.filepath
 
-        # Колонки CTD (0-based индексы), по умолчанию колонка 6
-        ctd_columns_raw = params.get("ctd_columns", "6")
+        # Колонки CTD (0-based индексы), по умолчанию 6, 11, 12
+        ctd_columns_raw = params.get("ctd_columns", "6,11,12")
         if isinstance(ctd_columns_raw, list):
             ctd_columns = [int(x) for x in ctd_columns_raw]
         elif isinstance(ctd_columns_raw, str) and ctd_columns_raw.strip():
             ctd_columns = [int(x.strip()) for x in ctd_columns_raw.split(',') if x.strip().isdigit()]
         else:
-            ctd_columns = [6]
+            ctd_columns = [6, 11, 12]
 
         processor = AnalyzeProcessor()
         result = processor.process(
@@ -1015,7 +1015,7 @@ class Worker(QThread):
         # Анализ
         if do_analysis:
             analysis_params = common_params.copy()
-            analysis_params["ctd_columns"] = params.get("ctd_columns", "6")
+            analysis_params["ctd_columns"] = params.get("ctd_columns", "6,11,12")
             self.repo.create_subtask(
                 parent_task_id=task_id,
                 subtask_type=SubTaskType.ANALYSIS,

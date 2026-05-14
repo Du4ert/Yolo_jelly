@@ -194,7 +194,7 @@ class PostProcessDialog(QDialog):
         ctd_row = QHBoxLayout()
         ctd_row.setContentsMargins(40, 0, 0, 0)
         ctd_row.addWidget(QLabel("Колонки CTD:"))
-        self.edit_ctd_columns = QLineEdit("6")
+        self.edit_ctd_columns = QLineEdit("6,11,12")
         self.edit_ctd_columns.setMaximumWidth(120)
         self.edit_ctd_columns.setToolTip(
             "Колонки CTD для интерактивного графика (через запятую).\n"
@@ -744,7 +744,7 @@ class PostProcessDialog(QDialog):
                 None if effective_distance_auto else self.spin_effective_distance.value()
             ),
             "depth_bin": self.spin_depth_bin.value(),
-            "ctd_columns": self.edit_ctd_columns.text().strip() or "6",
+            "ctd_columns": self.edit_ctd_columns.text().strip() or "6,11,12",
         }
         try:
             calib_path = get_config().ui.calibration_json

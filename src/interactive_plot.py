@@ -512,12 +512,7 @@ def create_interactive_depth_plot(
                 f"{density_max * 0.5:.2f}",
                 f"{density_max:.2f}",
             ],
-            showspikes=True,
-            spikemode='across',
-            spikesnap='cursor',
-            spikedash='dot',
-            spikecolor='rgba(0,0,0,0.45)',
-            spikethickness=1,
+            showspikes=False,
             range=[-density_max * 0.62, density_max * 0.62],
             row=1,
             col=current_col,
@@ -554,12 +549,7 @@ def create_interactive_depth_plot(
             title_text='',
             showline=False,
             ticks='',
-            showspikes=True,
-            spikemode='across',
-            spikesnap='cursor',
-            spikedash='dot',
-            spikecolor='rgba(0,0,0,0.45)',
-            spikethickness=1,
+            showspikes=False,
             row=1,
             col=col,
         )
@@ -600,6 +590,52 @@ def create_interactive_depth_plot(
     # === Экспорт ===
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    hoverline_post_script = """
+    var plot = document.getElementById('{plot_id}');
+    var horizontalHoverLine = {
+        type: 'line',
+        xref: 'paper',
+        x0: 0,
+        x1: 1,
+        yref: 'y',
+        y0: 0,
+        y1: 0,
+        line: {
+            color: 'rgba(0,0,0,0.45)',
+            width: 1,
+            dash: 'dot'
+        },
+        layer: 'above'
+    };
+    plot.on('plotly_hover', function(eventData) {
+        if (!eventData.points || !eventData.points.length) {
+            return;
+        }
+        if (!eventData.points[0].data || eventData.points[0].data.legendgroup !== 'ctd') {
+            Plotly.relayout(plot, {shapes: []});
+            return;
+        }
+        var yValue = eventData.points[0].y;
+        var sourceEvent = eventData.event || (window.event || null);
+        var yAxis = plot._fullLayout && plot._fullLayout.yaxis;
+        if (sourceEvent && yAxis && typeof yAxis.p2d === 'function') {
+            var bounds = plot.getBoundingClientRect();
+            var pixelY = sourceEvent.clientY - bounds.top - yAxis._offset;
+            if (Number.isFinite(pixelY)) {
+                yValue = yAxis.p2d(pixelY);
+            }
+        }
+        if (yValue === undefined || !Number.isFinite(yValue)) {
+            return;
+        }
+        horizontalHoverLine.y0 = yValue;
+        horizontalHoverLine.y1 = yValue;
+        Plotly.relayout(plot, {shapes: [horizontalHoverLine]});
+    });
+    plot.on('plotly_unhover', function() {
+        Plotly.relayout(plot, {shapes: []});
+    });
+    """
     
     if export_format == "html":
         fig.write_html(
@@ -614,7 +650,8 @@ def create_interactive_depth_plot(
                     'filename': output_path.stem,
                     'scale': 2
                 }
-            }
+            },
+            post_script=hoverline_post_script,
         )
         print(f"Интерактивный график: {output_path.with_suffix('.html')}")
         
@@ -642,7 +679,12 @@ def create_interactive_depth_plot(
     # Всегда сохраняем HTML
     if export_format != "html":
         html_path = output_path.with_suffix('.html')
-        fig.write_html(str(html_path), include_plotlyjs=True, full_html=True)
+        fig.write_html(
+            str(html_path),
+            include_plotlyjs=True,
+            full_html=True,
+            post_script=hoverline_post_script,
+        )
         print(f"+ интерактивный HTML: {html_path}")
 
 
@@ -665,7 +707,7 @@ def main():
 
   # С CTD данными
   python interactive_plot.py -t detections_track_sizes.csv \\
-      --ctd ctd.csv --ctd-columns 6,7 -o output/plot
+      --ctd ctd.csv --ctd-columns 6,11,12 -o output/plot
 
   # Экспорт в SVG/PDF
   python interactive_plot.py -t detections_track_sizes.csv -f svg -o output/plot
@@ -693,7 +735,7 @@ def main():
     parser.add_argument("--title", default="Распределение желетелых по глубине", help="Заголовок")
     parser.add_argument("--format", "-f", choices=["html", "svg", "pdf", "png"], default="html")
     parser.add_argument("--ctd", help="CSV с данными CTD")
-    parser.add_argument("--ctd-columns", type=str, default="", help="Колонки CTD (0-based): 5,6,7")
+    parser.add_argument("--ctd-columns", type=str, default="6,11,12", help="Колонки CTD (0-based): 6,11,12")
     parser.add_argument("--cross-section-area", type=float, default=None, help="Площадь сечения наблюдения, м²")
     parser.add_argument("--list-ctd-columns", action="store_true", help="Показать колонки CTD")
     
