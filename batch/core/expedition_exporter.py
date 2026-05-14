@@ -35,6 +35,12 @@ for name in CLASS_NAMES.values():
     VOLUME_FIELD_MAPPING[f"count_{key}"] = {
         "key": f"count_{key}", "default": 0, "parser": lambda x: int(float(x)),
     }
+    VOLUME_FIELD_MAPPING[f"median_size_{key}_cm"] = {
+        "key": f"median_size_{key}_cm", "default": 0.0, "parser": float,
+    }
+    VOLUME_FIELD_MAPPING[f"std_size_{key}_cm"] = {
+        "key": f"std_size_{key}_cm", "default": 0.0, "parser": float,
+    }
     VOLUME_FIELD_MAPPING[f"density_{key}_per_m2"] = {
         "key": f"density_{key}_per_m2", "default": 0.0, "parser": float,
     }

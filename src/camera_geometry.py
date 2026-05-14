@@ -2223,6 +2223,38 @@ def calculate_surveyed_volume(
     )
 
 
+def _calculate_size_stats_by_class(tracks_df: Optional[pd.DataFrame]) -> Dict[str, Tuple[float, float]]:
+    """Возвращает медиану и стандартное отклонение размера по видам в сантиметрах."""
+    if (tracks_df is None or tracks_df.empty
+            or 'class_name' not in tracks_df.columns
+            or 'real_size_cm' not in tracks_df.columns):
+        return {}
+
+    df = tracks_df[['class_name', 'real_size_cm']].copy()
+    df['real_size_cm'] = pd.to_numeric(df['real_size_cm'], errors='coerce')
+    df = df[df['class_name'].notna() & df['real_size_cm'].notna()]
+    if df.empty:
+        return {}
+
+    stats: Dict[str, Tuple[float, float]] = {}
+    for class_name, group in df.groupby('class_name'):
+        sizes = group['real_size_cm']
+        median_size = float(sizes.median())
+        deviations = (sizes - median_size).abs()
+        mad = float(deviations.median())
+        if mad > 0:
+            threshold = 3 * mad * 1.4826
+            sizes_for_std = sizes[deviations <= threshold]
+        else:
+            sizes_for_std = sizes
+
+        std_size = float(sizes_for_std.std()) if len(sizes_for_std) > 1 else 0.0
+        if np.isnan(std_size):
+            std_size = 0.0
+        stats[str(class_name)] = (round(median_size, 2), round(std_size, 2))
+    return stats
+
+
 def process_volume_estimation(
     detections_csv: str,
     tracks_csv: Optional[str] = None,
@@ -2301,6 +2333,7 @@ def process_volume_estimation(
     )
     
     if output_csv:
+        size_stats_by_class = _calculate_size_stats_by_class(tracks_df)
         output_data = {
             'parameter': [
                 'total_volume_m3',
@@ -2323,9 +2356,14 @@ def process_volume_estimation(
         for class_name, count in result.counts_by_class.items():
             class_key = class_name.replace(" ", "_")
             density_per_m2 = count / result.cross_section_area_m2 if result.cross_section_area_m2 > 0 else 0
+            median_size_cm, std_size_cm = size_stats_by_class.get(class_name, (0.0, 0.0))
 
             output_data['parameter'].append(f'count_{class_key}')
             output_data['value'].append(count)
+            output_data['parameter'].append(f'median_size_{class_key}_cm')
+            output_data['value'].append(median_size_cm)
+            output_data['parameter'].append(f'std_size_{class_key}_cm')
+            output_data['value'].append(std_size_cm)
             output_data['parameter'].append(f'density_{class_key}_per_m2')
             output_data['value'].append(density_per_m2)
             output_data['parameter'].append(f'density_{class_key}_per_m3')
