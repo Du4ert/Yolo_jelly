@@ -1,8 +1,8 @@
 """
 Интерактивная визуализация распределения желетелых по глубине.
 
-Строит векторный интерактивный график с возможностью фильтрации по видам
-и отображением CTD параметров. Все данные на одном холсте с общей осью глубины.
+Строит векторный интерактивный график с панелью CTD и отдельными KDE-панелями
+по каждому виду. Все панели используют общую ось глубины.
 
 Использует Plotly для интерактивности и экспорта в векторные форматы (SVG, PDF).
 """
@@ -16,11 +16,12 @@ from typing import Optional, List
 
 try:
     import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
     PLOTLY_AVAILABLE = True
 except ImportError:
     PLOTLY_AVAILABLE = False
 
-from constants import SPECIES_COLORS, SPECIES_NAMES_RU
+from constants import CLASS_NAMES, SPECIES_COLORS
 
 # Цвета для CTD параметров
 CTD_COLORS = ['#e377c2', '#17becf', '#bcbd22', '#7f7f7f', '#8c564b']
@@ -41,9 +42,76 @@ def load_ctd_data(ctd_path: str) -> pd.DataFrame:
 def find_depth_column(df: pd.DataFrame) -> Optional[str]:
     """Находит колонку с глубиной в DataFrame."""
     for col in df.columns:
-        if 'depth' in col.lower():
+        col_lower = str(col).lower()
+        if 'depth' in col_lower or 'глуб' in col_lower:
             return col
     return None
+
+
+def to_numeric_series(values: pd.Series) -> pd.Series:
+    """Преобразует числа с точкой или запятой в float."""
+    if pd.api.types.is_numeric_dtype(values):
+        return pd.to_numeric(values, errors='coerce')
+    cleaned = values.astype(str).str.strip().str.replace(',', '.', regex=False)
+    return pd.to_numeric(cleaned, errors='coerce')
+
+
+def calculate_kde(depths: np.ndarray, depth_grid: np.ndarray) -> np.ndarray:
+    """Считает простую Gaussian KDE без дополнительных зависимостей."""
+    depths = np.asarray(depths, dtype=float)
+    depths = depths[np.isfinite(depths)]
+
+    if len(depths) < 2:
+        return np.zeros_like(depth_grid, dtype=float)
+
+    std = np.std(depths, ddof=1)
+    bandwidth = 1.06 * std * (len(depths) ** (-1 / 5)) if std > 0 else 0.5
+    bandwidth = max(float(bandwidth), 0.25)
+
+    diff = (depth_grid[:, None] - depths[None, :]) / bandwidth
+    kde = np.exp(-0.5 * diff ** 2).sum(axis=1)
+    kde /= len(depths) * bandwidth * np.sqrt(2 * np.pi)
+    return kde
+
+
+def interpolate_density(depths: np.ndarray, depth_grid: np.ndarray, density: np.ndarray) -> np.ndarray:
+    """Возвращает значение KDE в глубинах отдельных экземпляров."""
+    if len(depth_grid) == 0 or len(density) == 0 or np.nanmax(density) <= 0:
+        return np.zeros_like(depths, dtype=float)
+    return np.interp(depths, depth_grid, density, left=0, right=0)
+
+
+def normalize_marker_sizes(values: pd.Series) -> pd.Series:
+    """Нормализует реальные размеры организмов в размеры маркеров Plotly."""
+    values = pd.to_numeric(values, errors='coerce')
+    valid = values.dropna()
+    if len(valid) == 0:
+        return pd.Series(10, index=values.index)
+
+    min_size = valid.min()
+    max_size = valid.max()
+    if max_size > min_size:
+        return 6 + 20 * (values.fillna(min_size) - min_size) / (max_size - min_size)
+    return pd.Series(12, index=values.index)
+
+
+def hex_to_rgba(color: str, alpha: float) -> str:
+    """Преобразует #RRGGBB в rgba() для заливки Plotly."""
+    if not isinstance(color, str) or not color.startswith('#') or len(color) != 7:
+        return f"rgba(128,128,128,{alpha})"
+    r = int(color[1:3], 16)
+    g = int(color[3:5], 16)
+    b = int(color[5:7], 16)
+    return f"rgba({r},{g},{b},{alpha})"
+
+
+def axis_ticks(min_value: float, max_value: float, count: int = 5) -> List[float]:
+    """Возвращает крайние и промежуточные подписи оси."""
+    if not np.isfinite(min_value) or not np.isfinite(max_value):
+        return []
+    if max_value <= min_value:
+        return [float(min_value)]
+    return [float(x) for x in np.linspace(min_value, max_value, count)]
 
 
 def create_interactive_depth_plot(
@@ -52,18 +120,17 @@ def create_interactive_depth_plot(
     ctd_path: Optional[str] = None,
     ctd_columns: Optional[List[int]] = None,
     depth_bin: float = 1.0,
+    cross_section_area_m2: Optional[float] = None,
     title: str = "Распределение желетелых по глубине",
     export_format: str = "html"
 ):
     """
     Создаёт интерактивный векторный график распределения желетелых по глубине.
     
-    Все данные на ОДНОМ холсте с совмещёнными осями X:
-    - Ось Y — глубина (общая для всех данных)
-    - Основная ось X — количество особей
-    - Точки организмов — размер пропорционален размеру организма (отдельная фильтрация)
-    - Линии количества по глубине для каждого вида (отдельная фильтрация)
-    - CTD параметры — дополнительные оси X сверху
+    Раскладка слева направо:
+    - CTD параметры в реальных значениях X (если передан CTD файл)
+    - KDE-панель для каждого вида из CLASS_NAMES
+    - Точки организмов поверх KDE, размер маркера пропорционален real_size_cm
     
     Args:
         track_sizes_path: путь к CSV с данными треков
@@ -71,6 +138,7 @@ def create_interactive_depth_plot(
         ctd_path: путь к CSV с данными CTD (опционально)
         ctd_columns: номера колонок CTD для отображения (0-based)
         depth_bin: шаг биннинга для расчёта средних (м)
+        cross_section_area_m2: площадь сечения наблюдения для нормировки KDE (м²)
         title: заголовок графика
         export_format: формат экспорта (html, svg, pdf, png)
     """
@@ -94,6 +162,9 @@ def create_interactive_depth_plot(
         print(f"Ошибка: отсутствуют необходимые колонки: {missing}")
         return
     
+    df['object_depth_m'] = to_numeric_series(df['object_depth_m'])
+    df['real_size_cm'] = to_numeric_series(df['real_size_cm'])
+
     # Фильтруем записи с глубиной
     df_depth = df[df['object_depth_m'].notna()].copy()
     
@@ -102,12 +173,14 @@ def create_interactive_depth_plot(
         return
     
     # Определяем диапазон глубин
-    depth_max = df_depth['object_depth_m'].max()
+    depth_min = float(df_depth['object_depth_m'].min())
+    depth_max = float(df_depth['object_depth_m'].max())
     
     # Загружаем CTD данные
     ctd_df = None
     ctd_col_names = []
     ctd_depth_col = None
+    ctd_depth_values = pd.Series(dtype=float)
     
     if ctd_path and ctd_columns:
         try:
@@ -121,197 +194,376 @@ def create_interactive_depth_plot(
                         ctd_col_names.append(all_cols[idx])
                 
                 if ctd_col_names:
-                    ctd_depth_max = ctd_df[ctd_depth_col].max()
-                    if ctd_depth_max > depth_max:
-                        depth_max = ctd_depth_max
-                    print(f"CTD колонки: {ctd_col_names}")
+                    ctd_df[ctd_depth_col] = to_numeric_series(ctd_df[ctd_depth_col])
+                    ctd_depth_values = ctd_df[ctd_depth_col].dropna()
+                    if len(ctd_depth_values) > 0:
+                        depth_max = float(ctd_depth_values.max())
+                        depth_min = float(ctd_depth_values.min())
+                        print(f"CTD колонки: {ctd_col_names}")
+                    else:
+                        ctd_col_names = []
         except Exception as e:
             print(f"Предупреждение: не удалось загрузить CTD: {e}")
             ctd_df = None
-    
-    # Создаём фигуру
-    fig = go.Figure()
-    
-    # Виды в данных
-    species_list = sorted(df_depth['class_name'].unique())
-    
-    # Нормализация размеров маркеров
-    size_min = df_depth['real_size_cm'].min()
-    size_max = df_depth['real_size_cm'].max()
-    
-    if size_max > size_min:
-        df_depth['marker_size'] = 8 + 25 * (df_depth['real_size_cm'] - size_min) / (size_max - size_min)
-    else:
-        df_depth['marker_size'] = 15
-    
-    # === Вычисляем количество по глубине ===
-    depth_bins = np.arange(0, depth_max + depth_bin, depth_bin)
-    bin_centers = depth_bins[:-1] + depth_bin / 2
-    
-    # Находим максимальное количество для нормализации
-    all_counts = []
-    species_counts = {}
+    species_list = [CLASS_NAMES[i] for i in sorted(CLASS_NAMES)]
+    has_ctd_panel = ctd_df is not None and bool(ctd_col_names) and ctd_depth_col is not None
+    panel_titles = (["CTD"] if has_ctd_panel else []) + species_list
+    n_panels = len(panel_titles)
+    col_widths = ([1.8] if has_ctd_panel else []) + [1.0] * len(species_list)
+
+    fig = make_subplots(
+        rows=1,
+        cols=n_panels,
+        shared_yaxes=True,
+        horizontal_spacing=0.025,
+        column_widths=col_widths,
+    )
+
+    depth_max = max(depth_max, depth_min + depth_bin)
+    grid_step = max((depth_max - depth_min) / 400, 0.05)
+    depth_grid = np.arange(depth_min, depth_max + grid_step, grid_step)
+    df_depth['marker_size'] = normalize_marker_sizes(df_depth['real_size_cm'])
+    area_m2 = float(cross_section_area_m2) if cross_section_area_m2 and cross_section_area_m2 > 0 else None
+    kde_axis_title = "экз./м²/м глубины" if area_m2 else "экз./м глубины"
+
+    species_density = {}
     for species in species_list:
-        sp_df = df_depth[df_depth['class_name'] == species]
-        counts, _ = np.histogram(sp_df['object_depth_m'], bins=depth_bins)
-        species_counts[species] = counts
-        all_counts.extend(counts)
-    max_count = max(all_counts) if all_counts else 1
-    
-    # === 1. Линии количества по глубине (группа "Численность") ===
-    first_count_trace = True
-    for species in species_list:
-        color = SPECIES_COLORS.get(species, 'gray')
-        species_ru = SPECIES_NAMES_RU.get(species, species)
-        counts = species_counts[species]
-        
-        hover_text = [
-            f"<b>{species}</b><br>"
-            f"Глубина: {d:.1f}–{d+depth_bin:.1f} м<br>"
-            f"Количество: {c}"
-            for d, c in zip(depth_bins[:-1], counts)
-        ]
-        
-        fig.add_trace(go.Scatter(
-            x=counts,
-            y=bin_centers,
-            mode='lines+markers',
-            name=f"{species_ru}",
-            legendgroup="counts",
-            legendgrouptitle_text="Численность (N)" if first_count_trace else None,
-            line=dict(color=color, width=2),
-            marker=dict(size=6, color=color),
-            hovertemplate="%{text}<extra></extra>",
-            text=hover_text
-        ))
-        first_count_trace = False
-    
-    # === 2. Scatter plot организмов (группа "Размеры") ===
-    np.random.seed(42)
-    first_size_trace = True
-    
-    for species in species_list:
-        sp_df = df_depth[df_depth['class_name'] == species]
-        color = SPECIES_COLORS.get(species, 'gray')
-        species_ru = SPECIES_NAMES_RU.get(species, species)
-        
-        # X — небольшой jitter около количества в бине
-        x_vals = []
-        for depth in sp_df['object_depth_m']:
-            bin_idx = int(depth // depth_bin)
-            if bin_idx >= len(species_counts[species]):
-                bin_idx = len(species_counts[species]) - 1
-            base_x = species_counts[species][bin_idx] if bin_idx >= 0 else 0
-            jitter = np.random.uniform(-0.3, 0.3) * max_count * 0.1
-            x_vals.append(base_x + jitter)
-        
-        hover_text = [
-            f"<b>{species}</b><br>"
-            f"Глубина: {depth:.1f} м<br>"
-            f"Размер: {size:.1f} см<br>"
-            f"Track ID: {tid}"
-            for depth, size, tid in zip(sp_df['object_depth_m'], sp_df['real_size_cm'], sp_df['track_id'])
-        ]
-        
-        fig.add_trace(go.Scatter(
-            x=x_vals,
-            y=sp_df['object_depth_m'],
-            mode='markers',
-            name=f"{species_ru}",
-            legendgroup="sizes",
-            legendgrouptitle_text=f"Размеры ({size_min:.1f}–{size_max:.1f} см)" if first_size_trace else None,
-            marker=dict(
-                size=sp_df['marker_size'],
-                color=color,
-                opacity=0.6,
-                line=dict(width=0.5, color='black')
-            ),
-            hovertemplate="%{text}<extra></extra>",
-            text=hover_text
-        ))
-        first_size_trace = False
-    
-    # === 3. CTD параметры (группа "CTD") ===
-    n_ctd = len(ctd_col_names) if ctd_df is not None else 0
-    ctd_axes_info = []
-    
-    if ctd_df is not None and ctd_col_names:
-        first_ctd_trace = True
-        for i, col_name in enumerate(ctd_col_names):
-            ctd_plot_df = ctd_df[[ctd_depth_col, col_name]].dropna()
-            
-            if len(ctd_plot_df) > 0:
-                # Прореживаем если много точек
-                if len(ctd_plot_df) > 2000:
-                    step = len(ctd_plot_df) // 2000
-                    ctd_plot_df = ctd_plot_df.iloc[::step]
-                
-                values = ctd_plot_df[col_name].values
-                depths = ctd_plot_df[ctd_depth_col].values
-                
-                # Нормализуем CTD значения в диапазон основной оси X
-                v_min, v_max = values.min(), values.max()
-                x_normalized = (values - v_min) / (v_max - v_min) * max_count if v_max > v_min else np.full_like(values, max_count / 2)
-                
-                ctd_axes_info.append({
-                    'name': col_name,
-                    'min': v_min,
-                    'max': v_max,
-                    'color': CTD_COLORS[i % len(CTD_COLORS)]
-                })
-                
-                hover_text = [
-                    f"<b>{col_name}</b><br>"
-                    f"Глубина: {d:.2f} м<br>"
-                    f"Значение: {v:.3f}"
-                    for d, v in zip(depths, values)
-                ]
-                
-                fig.add_trace(go.Scatter(
-                    x=x_normalized,
-                    y=depths,
-                    mode='lines',
-                    name=f"{col_name}",
-                    legendgroup="ctd",
-                    legendgrouptitle_text="CTD параметры" if first_ctd_trace else None,
-                    line=dict(color=CTD_COLORS[i % len(CTD_COLORS)], width=2, dash='dash'),
-                    hovertemplate="%{text}<extra></extra>",
-                    text=hover_text
-                ))
-                first_ctd_trace = False
-    
-    # === Аннотации для шкал ===
-    annotations = []
-    
-    # Подсказка по фильтрации
-    annotations.append(dict(
+        sp_depths = df_depth.loc[df_depth['class_name'] == species, 'object_depth_m'].values
+        if len(sp_depths) >= 2:
+            density = calculate_kde(sp_depths, depth_grid) * len(sp_depths)
+            if area_m2:
+                density = density / area_m2
+        else:
+            density = np.zeros_like(depth_grid)
+        species_density[species] = density
+
+    annotations = [dict(
         x=0,
         y=-0.12,
         xref='paper',
         yref='paper',
-        text="💡 Клик по легенде — скрыть/показать. Двойной клик — показать только выбранное.",
+        text="Клик по легенде — скрыть/показать. Размер точек соответствует размеру экземпляров.",
         showarrow=False,
         font=dict(size=10, color='gray'),
         align='left'
-    ))
-    
-    # Шкалы CTD параметров вверху
-    for i, info in enumerate(ctd_axes_info):
+    )]
+
+    def add_panel_label(col: int, text: str, color: str = 'black') -> None:
+        axis_suffix = '' if col == 1 else str(col)
         annotations.append(dict(
-            x=0,
-            y=1.0,
-            xref='paper',
+            x=0.5,
+            y=0.925,
+            xref=f"x{axis_suffix} domain",
             yref='paper',
-            text=f"<span style='color:{info['color']}'><b>{info['name']}</b>: {info['min']:.2f} — {info['max']:.2f}</span>",
+            text=f"<b>{text}</b>",
             showarrow=False,
-            font=dict(size=10),
-            align='left',
-            yshift=15 + i * 18
+            font=dict(size=12, color=color),
+            bgcolor='rgba(255,255,255,0.72)',
+            borderpad=2,
         ))
-    
-    # === Настройка layout ===
-    top_margin = 80 + n_ctd * 20
-    
+
+    for col, panel_title in enumerate(panel_titles, start=1):
+        label_color = 'black'
+        if not (has_ctd_panel and col == 1):
+            species_idx = col - (2 if has_ctd_panel else 1)
+            if 0 <= species_idx < len(species_list):
+                label_color = SPECIES_COLORS.get(species_list[species_idx], 'black')
+        add_panel_label(col, panel_title, label_color)
+
+    current_col = 1
+    plot_domain_bottom = 0.0
+    ctd_trace_count = 0
+    if has_ctd_panel:
+        first_ctd_trace = True
+        ctd_axis_configs = []
+        for i, col_name in enumerate(ctd_col_names):
+            ctd_plot_df = ctd_df[[ctd_depth_col, col_name]].copy()
+            ctd_plot_df[ctd_depth_col] = to_numeric_series(ctd_plot_df[ctd_depth_col])
+            ctd_plot_df[col_name] = to_numeric_series(ctd_plot_df[col_name])
+            ctd_plot_df = ctd_plot_df.dropna()
+
+            if len(ctd_plot_df) > 2000:
+                step = max(len(ctd_plot_df) // 2000, 1)
+                ctd_plot_df = ctd_plot_df.iloc[::step]
+
+            if len(ctd_plot_df) == 0:
+                continue
+
+            values = ctd_plot_df[col_name].values
+            depths = ctd_plot_df[ctd_depth_col].values
+            value_min = float(np.nanmin(values))
+            value_max = float(np.nanmax(values))
+            if value_max > value_min:
+                pad = (value_max - value_min) * 0.03
+                axis_range = [value_min - pad, value_max + pad]
+                tickvals = axis_ticks(value_min, value_max, 5)
+            else:
+                pad = abs(value_max) * 0.05 if value_max else 1.0
+                axis_range = [value_min - pad, value_max + pad]
+                tickvals = [value_min]
+            axis_num = None if i == 0 else n_panels + i
+            trace_axis = None if axis_num is None else f"x{axis_num}"
+            hover_text = [
+                f"<b>{col_name}</b><br>Глубина: {d:.2f} м<br>Значение: {v:.3f}"
+                for d, v in zip(depths, values)
+            ]
+
+            trace = go.Scatter(
+                x=values,
+                y=depths,
+                mode='lines',
+                name=col_name,
+                legendgroup="ctd",
+                legendgrouptitle_text="CTD" if first_ctd_trace else None,
+                line=dict(color=CTD_COLORS[i % len(CTD_COLORS)], width=2),
+                hovertemplate="%{text}<extra></extra>",
+                text=hover_text,
+                showlegend=True,
+            )
+            if trace_axis:
+                trace.update(xaxis=trace_axis, yaxis='y')
+                fig.add_trace(trace)
+            else:
+                fig.add_trace(trace, row=1, col=current_col)
+
+            ctd_axis_configs.append({
+                'axis_num': axis_num,
+                'col_name': col_name,
+                'color': CTD_COLORS[i % len(CTD_COLORS)],
+                'range': axis_range,
+                'tickvals': tickvals,
+                'ticktext': [f"{v:.2g}" for v in tickvals],
+            })
+            first_ctd_trace = False
+            ctd_trace_count += 1
+
+        if ctd_trace_count == 0:
+            annotations.append(dict(
+                x=0.5,
+                y=0.5,
+                xref='x domain',
+                yref='y domain',
+                text="нет CTD данных",
+                showarrow=False,
+                font=dict(size=12, color='gray')
+            ))
+
+        axis_gap = 0.065
+        plot_domain_bottom = min(0.28, axis_gap * ctd_trace_count)
+        ctd_domain = fig.layout.xaxis.domain
+        for axis_idx, axis_config in enumerate(ctd_axis_configs):
+            axis_position = max(plot_domain_bottom - axis_gap * (axis_idx + 1), 0.0)
+            axis_layout = dict(
+                title=dict(text=""),
+                showgrid=axis_idx == 0,
+                gridcolor='lightgray',
+                showline=True,
+                linecolor=axis_config['color'],
+                linewidth=1,
+                ticks='outside',
+                tickfont=dict(color=axis_config['color']),
+                range=axis_config['range'],
+                tickmode='array',
+                tickvals=axis_config['tickvals'],
+                ticktext=axis_config['ticktext'],
+                showspikes=True,
+                spikemode='across',
+                spikesnap='cursor',
+                spikedash='dot',
+                spikecolor='rgba(0,0,0,0.45)',
+                spikethickness=1,
+                anchor='free',
+                side='bottom',
+                position=axis_position,
+            )
+            annotations.append(dict(
+                x=0,
+                y=axis_position,
+                xref='paper',
+                yref='paper',
+                text=axis_config['col_name'],
+                showarrow=False,
+                xanchor='right',
+                yanchor='middle',
+                font=dict(size=9, color=axis_config['color']),
+                xshift=-6,
+            ))
+            if axis_config['axis_num'] is None:
+                fig.update_xaxes(axis_layout, row=1, col=current_col)
+            else:
+                axis_layout.update(domain=ctd_domain, overlaying='x')
+                fig.update_layout({f"xaxis{axis_config['axis_num']}": axis_layout})
+        current_col += 1
+
+    np.random.seed(42)
+    for species in species_list:
+        color = SPECIES_COLORS.get(species, 'gray')
+        sp_df = df_depth[df_depth['class_name'] == species].copy()
+        depths = pd.to_numeric(sp_df['object_depth_m'], errors='coerce').dropna().values
+        density = species_density[species]
+        density_max = float(np.nanmax(density)) if len(density) > 0 and np.nanmax(density) > 0 else 1.0
+
+        if len(depths) >= 2:
+            x_fill = np.concatenate([density / 2, -density[::-1] / 2])
+            y_fill = np.concatenate([depth_grid, depth_grid[::-1]])
+            fig.add_trace(go.Scatter(
+                x=x_fill,
+                y=y_fill,
+                mode='lines',
+                name=f"KDE {species}",
+                legendgroup=species,
+                line=dict(color=color, width=1.5),
+                fill='toself',
+                fillcolor=hex_to_rgba(color, 0.38),
+                hoverinfo='skip',
+                showlegend=False,
+            ), row=1, col=current_col)
+            point_density = interpolate_density(sp_df['object_depth_m'].values, depth_grid, density)
+        elif len(depths) == 1:
+            fig.add_trace(go.Scatter(
+                x=[-density_max * 0.18, density_max * 0.18],
+                y=[depths[0], depths[0]],
+                mode='lines',
+                name=f"Отметка {species}",
+                legendgroup=species,
+                line=dict(color=color, width=2, dash='dot'),
+                hovertemplate=f"{species}<br>Глубина: {depths[0]:.2f} м<extra></extra>",
+                showlegend=False,
+            ), row=1, col=current_col)
+            point_density = np.full(len(sp_df), density_max * 0.28)
+        else:
+            fig.add_trace(go.Scatter(
+                x=[0],
+                y=[(depth_min + depth_max) / 2],
+                mode='markers',
+                marker=dict(size=0, opacity=0),
+                hoverinfo='skip',
+                showlegend=False,
+            ), row=1, col=current_col)
+            annotations.append(dict(
+                x=0.5,
+                y=0.5,
+                xref=f"x{current_col if current_col > 1 else ''} domain",
+                yref='paper',
+                text="нет данных",
+                showarrow=False,
+                font=dict(size=12, color='gray')
+            ))
+            point_density = np.array([])
+
+        if len(sp_df) > 0:
+            point_density = np.asarray(point_density, dtype=float)
+            min_width = density_max * 0.04
+            point_width = np.maximum(point_density, min_width)
+            x_vals = np.random.uniform(-point_width / 2, point_width / 2, len(sp_df))
+            size_values = pd.to_numeric(sp_df['real_size_cm'], errors='coerce').dropna()
+            if len(size_values) > 0:
+                size_label = f"{species}: {size_values.min():.1f}-{size_values.max():.1f} см"
+            else:
+                size_label = f"{species}: размер н/д"
+            hover_text = [
+                f"<b>{species}</b><br>Глубина: {depth:.2f} м<br>Размер: {size:.1f} см<br>Track ID: {tid}"
+                for depth, size, tid in zip(
+                    sp_df['object_depth_m'],
+                    sp_df['real_size_cm'],
+                    sp_df['track_id'] if 'track_id' in sp_df.columns else [''] * len(sp_df)
+                )
+            ]
+            fig.add_trace(go.Scatter(
+                x=x_vals,
+                y=sp_df['object_depth_m'],
+                mode='markers',
+                name=size_label,
+                legendgroup=species,
+                marker=dict(
+                    size=sp_df['marker_size'],
+                    color=color,
+                    opacity=0.62,
+                    line=dict(width=0.6, color='black')
+                ),
+                hovertemplate="%{text}<extra></extra>",
+                text=hover_text,
+                showlegend=True,
+            ), row=1, col=current_col)
+
+        fig.update_xaxes(
+            title_text=kde_axis_title,
+            showgrid=True,
+            gridcolor='lightgray',
+            zeroline=True,
+            zerolinecolor='gray',
+            showline=True,
+            linecolor='black',
+            linewidth=1,
+            ticks='outside',
+            showticklabels=True,
+            tickmode='array',
+            tickvals=[
+                -density_max * 0.5,
+                -density_max * 0.25,
+                0,
+                density_max * 0.25,
+                density_max * 0.5,
+            ],
+            ticktext=[
+                f"{density_max:.2f}",
+                f"{density_max * 0.5:.2f}",
+                "0",
+                f"{density_max * 0.5:.2f}",
+                f"{density_max:.2f}",
+            ],
+            showspikes=True,
+            spikemode='across',
+            spikesnap='cursor',
+            spikedash='dot',
+            spikecolor='rgba(0,0,0,0.45)',
+            spikethickness=1,
+            range=[-density_max * 0.62, density_max * 0.62],
+            row=1,
+            col=current_col,
+        )
+        current_col += 1
+
+    fig.update_yaxes(
+        range=[depth_max, depth_min],
+        domain=[plot_domain_bottom, 0.87],
+        title_text='Глубина, м',
+        showgrid=True,
+        gridcolor='lightgray',
+        showline=True,
+        linecolor='black',
+        ticks='outside',
+        tickmode='array',
+        tickvals=axis_ticks(depth_min, depth_max, 6),
+        showspikes=True,
+        spikemode='across',
+        spikesnap='cursor',
+        spikedash='dot',
+        spikecolor='rgba(0,0,0,0.45)',
+        spikethickness=1,
+        row=1,
+        col=1,
+    )
+    for col in range(2, n_panels + 1):
+        fig.update_yaxes(
+            range=[depth_max, depth_min],
+            domain=[plot_domain_bottom, 0.87],
+            showgrid=True,
+            gridcolor='lightgray',
+            showticklabels=False,
+            title_text='',
+            showline=False,
+            ticks='',
+            showspikes=True,
+            spikemode='across',
+            spikesnap='cursor',
+            spikedash='dot',
+            spikecolor='rgba(0,0,0,0.45)',
+            spikethickness=1,
+            row=1,
+            col=col,
+        )
+
     fig.update_layout(
         title=dict(
             text=f"<b>{title}</b>",
@@ -319,44 +571,28 @@ def create_interactive_depth_plot(
             xanchor='center',
             font=dict(size=16),
             yref='paper',
-            y=0.98
-        ),
-        xaxis=dict(
-            title='Количество особей',
-            title_font=dict(size=12),
-            tickfont=dict(size=11),
-            gridcolor='lightgray',
-            gridwidth=0.5,
-            zeroline=True,
-            zerolinecolor='gray',
-            zerolinewidth=1,
-            range=[0, max_count * 1.1]
-        ),
-        yaxis=dict(
-            autorange='reversed',
-            title='Глубина, м',
-            title_font=dict(size=14),
-            tickfont=dict(size=12),
-            gridcolor='lightgray',
-            gridwidth=0.5
+            y=0.995
         ),
         height=900,
-        width=800,
-        margin=dict(t=top_margin, b=100, l=80, r=180),
+        width=max(1250, 260 * n_panels),
+        margin=dict(t=160, b=130 + 18 * max(ctd_trace_count - 1, 0), l=90, r=240),
+        showlegend=True,
         legend=dict(
-            title=dict(text="<b>Фильтры</b>", font=dict(size=12)),
+            title=dict(text="<b>CTD и размеры</b>", font=dict(size=12)),
             yanchor="top",
-            y=0.99,
+            y=1.0,
             xanchor="left",
-            x=1.02,
+            x=1.01,
             bgcolor="rgba(255,255,255,0.95)",
             bordercolor="black",
             borderwidth=1,
             font=dict(size=10),
-            groupclick="toggleitem",  # Клик переключает отдельный элемент
-            tracegroupgap=10  # Отступ между группами
+                groupclick="toggleitem",
+                tracegroupgap=8,
         ),
         hovermode='closest',
+        spikedistance=-1,
+        hoverdistance=80,
         annotations=annotations,
         plot_bgcolor='white'
     )
@@ -458,6 +694,7 @@ def main():
     parser.add_argument("--format", "-f", choices=["html", "svg", "pdf", "png"], default="html")
     parser.add_argument("--ctd", help="CSV с данными CTD")
     parser.add_argument("--ctd-columns", type=str, default="", help="Колонки CTD (0-based): 5,6,7")
+    parser.add_argument("--cross-section-area", type=float, default=None, help="Площадь сечения наблюдения, м²")
     parser.add_argument("--list-ctd-columns", action="store_true", help="Показать колонки CTD")
     
     args = parser.parse_args()
@@ -489,6 +726,7 @@ def main():
             ctd_path=args.ctd,
             ctd_columns=parse_ctd_columns(args.ctd_columns) or None,
             depth_bin=args.depth_bin,
+            cross_section_area_m2=args.cross_section_area,
             title=args.title,
             export_format=args.format
         )

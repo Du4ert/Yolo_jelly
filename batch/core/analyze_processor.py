@@ -72,6 +72,7 @@ class AnalyzeProcessor:
         track_sizes_path: Optional[str] = None,
         ctd_path: Optional[str] = None,
         ctd_columns: Optional[List[int]] = None,
+        cross_section_area_m2: Optional[float] = None,
     ) -> AnalyzeResult:
         """
         Запускает анализ данных.
@@ -200,6 +201,7 @@ class AnalyzeProcessor:
                         ctd_path=ctd_path,
                         ctd_columns=ctd_columns,
                         depth_bin=depth_bin,
+                        cross_section_area_m2=cross_section_area_m2,
                     )
                     html_path = Path(ip_path).with_suffix('.html')
                     if html_path.exists():

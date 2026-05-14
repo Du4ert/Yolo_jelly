@@ -552,13 +552,18 @@ class Worker(QThread):
                 import pandas as pd
                 vol_df = pd.read_csv(volume_csv)
                 density = {}
+                cross_section_area_m2 = None
                 for _, row in vol_df.iterrows():
                     param = str(row['parameter'])
+                    if param == 'cross_section_area_m2':
+                        cross_section_area_m2 = float(row['value'])
                     if param.startswith('density_') and param.endswith('_per_m3'):
                         species_key = param[len('density_'):-len('_per_m3')].replace('_', ' ')
                         density[species_key] = float(row['value'])
                 if density:
                     processing_info['volume_density'] = density
+                if cross_section_area_m2 and cross_section_area_m2 > 0:
+                    processing_info['cross_section_area_m2'] = cross_section_area_m2
             except Exception as e:
                 print(f"Не удалось прочитать данные объёма: {e}")
 
@@ -590,6 +595,7 @@ class Worker(QThread):
             track_sizes_path=track_sizes_csv if track_sizes_csv and os.path.exists(track_sizes_csv) else None,
             ctd_path=ctd_path,
             ctd_columns=ctd_columns if ctd_path else None,
+            cross_section_area_m2=processing_info.get('cross_section_area_m2'),
         )
 
         if not result.success:
