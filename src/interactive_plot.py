@@ -707,7 +707,7 @@ def main():
 
   # С CTD данными
   python interactive_plot.py -t detections_track_sizes.csv \\
-      --ctd ctd.csv --ctd-columns 6,11,12 -o output/plot
+      --ctd ctd.csv --ctd-columns 6,11,12,16 -o output/plot
 
   # Экспорт в SVG/PDF
   python interactive_plot.py -t detections_track_sizes.csv -f svg -o output/plot
@@ -735,7 +735,7 @@ def main():
     parser.add_argument("--title", default="Распределение желетелых по глубине", help="Заголовок")
     parser.add_argument("--format", "-f", choices=["html", "svg", "pdf", "png"], default="html")
     parser.add_argument("--ctd", help="CSV с данными CTD")
-    parser.add_argument("--ctd-columns", type=str, default="6,11,12", help="Колонки CTD (0-based): 6,11,12")
+    parser.add_argument("--ctd-columns", type=str, default="6,11,12,16", help="Колонки CTD (0-based): 6,11,12,16")
     parser.add_argument("--cross-section-area", type=float, default=None, help="Площадь сечения наблюдения, м²")
     parser.add_argument("--list-ctd-columns", action="store_true", help="Показать колонки CTD")
     

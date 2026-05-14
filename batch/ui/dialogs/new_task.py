@@ -480,7 +480,7 @@ class NewTaskDialog(QDialog):
                     None if effective_distance_auto else self.pp_spin_effective_distance.value()
                 ),
                 "depth_bin": self.pp_spin_depth_bin.value(),
-                "ctd_columns": self.pp_edit_ctd_columns.text().strip() or "6,11,12",
+                "ctd_columns": self.pp_edit_ctd_columns.text().strip() or "6,11,12,16",
                 "frame_step": self.pp_spin_frame_step.value(),
             }
             try:
@@ -625,11 +625,11 @@ class NewTaskDialog(QDialog):
         ctd_col_indent_layout = QHBoxLayout(ctd_col_indent)
         ctd_col_indent_layout.setContentsMargins(20, 0, 0, 0)
         ctd_col_label = QLabel("Колонки CTD:")
-        self.pp_edit_ctd_columns = QLineEdit("6,11,12")
+        self.pp_edit_ctd_columns = QLineEdit("6,11,12,16")
         self.pp_edit_ctd_columns.setMaximumWidth(120)
         self.pp_edit_ctd_columns.setToolTip(
             "Колонки CTD для интерактивного графика (0-based индексы), через запятую.\n"
-            "Например: 6 или 6,11,12\n"
+            "Например: 6 или 6,11,12,16\n"
             "Используется только если к задаче привязан CTD-файл."
         )
         ctd_col_indent_layout.addWidget(ctd_col_label)
