@@ -16,6 +16,13 @@ from constants import CLASS_NAMES
 from ..database.models import OutputType
 
 
+def parse_optional_float(value: str) -> float | str:
+    value = value.strip() if isinstance(value, str) else value
+    if value in (None, ""):
+        return ""
+    return float(value)
+
+
 VOLUME_FIELD_MAPPING: dict[str, dict[str, Any]] = {
     "total_volume_m3": {"key": "total_volume_m3", "default": 0.0, "parser": float},
     "effective_distance_m": {"key": "effective_distance_m", "default": 0.0, "parser": float},
@@ -36,10 +43,10 @@ for name in CLASS_NAMES.values():
         "key": f"count_{key}", "default": 0, "parser": lambda x: int(float(x)),
     }
     VOLUME_FIELD_MAPPING[f"median_size_{key}_cm"] = {
-        "key": f"median_size_{key}_cm", "default": 0.0, "parser": float,
+        "key": f"median_size_{key}_cm", "default": "", "parser": parse_optional_float,
     }
     VOLUME_FIELD_MAPPING[f"std_size_{key}_cm"] = {
-        "key": f"std_size_{key}_cm", "default": 0.0, "parser": float,
+        "key": f"std_size_{key}_cm", "default": "", "parser": parse_optional_float,
     }
     VOLUME_FIELD_MAPPING[f"density_{key}_per_m2"] = {
         "key": f"density_{key}_per_m2", "default": 0.0, "parser": float,

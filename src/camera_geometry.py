@@ -2397,7 +2397,7 @@ def process_volume_estimation(
         for class_name, count in result.counts_by_class.items():
             class_key = class_name.replace(" ", "_")
             density_per_m2 = count / result.cross_section_area_m2 if result.cross_section_area_m2 > 0 else 0
-            median_size_cm, std_size_cm = size_stats_by_class.get(class_name, (0.0, 0.0))
+            median_size_cm, std_size_cm = size_stats_by_class.get(class_name, ("", ""))
 
             output_data['parameter'].append(f'count_{class_key}')
             output_data['value'].append(count)
