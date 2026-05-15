@@ -354,6 +354,7 @@ class VolumeEstimationProcessor:
         detections_csv: str,
         output_csv: str,
         tracks_csv: Optional[str] = None,
+        count_tracks_csv: Optional[str] = None,
         ctd_csv: Optional[str] = None,
         fov_horizontal: float = 95.0,
         fov_vertical: float = 55.0,
@@ -376,6 +377,7 @@ class VolumeEstimationProcessor:
             detections_csv: Путь к CSV с детекциями.
             output_csv: Путь к выходному CSV.
             tracks_csv: Путь к CSV со статистикой треков (опционально).
+            count_tracks_csv: Путь к CSV с полным списком треков для подсчёта count_*.
             ctd_csv: Путь к CSV с данными CTD (опционально).
             fov_horizontal: Горизонтальный угол обзора камеры (градусы).
             fov_vertical: Вертикальный угол обзора камеры (градусы).
@@ -404,6 +406,7 @@ class VolumeEstimationProcessor:
             result = process_volume_estimation(
                 detections_csv=detections_csv,
                 tracks_csv=tracks_csv,
+                count_tracks_csv=count_tracks_csv,
                 ctd_csv=ctd_csv,
                 output_csv=output_csv,
                 fov_horizontal=fov_horizontal,

@@ -2092,6 +2092,7 @@ def estimate_effective_distance(
 def calculate_surveyed_volume(
     detections_df: pd.DataFrame,
     tracks_df: Optional[pd.DataFrame] = None,
+    count_tracks_df: Optional[pd.DataFrame] = None,
     ctd_df: Optional[pd.DataFrame] = None,
     calibration: CameraCalibration = None,
     fov_horizontal_deg: float = 95.0,
@@ -2192,18 +2193,15 @@ def calculate_surveyed_volume(
         print(f"Высота цилиндра H:    {H:.2f} м ({depth_traversed:.2f} + {d_eff:.2f})")
         print(f"ИТОГО объём:          {V_total:.2f} м³")
 
-    counts_by_class = {}
-    density_by_class = {}
-
-    for class_name in detections_df['class_name'].unique():
-        class_df = detections_df[detections_df['class_name'] == class_name]
-        n_tracks = class_df['track_id'].nunique()
-
-        if n_tracks == 0 or class_df['track_id'].isna().all():
-            n_tracks = len(class_df)
-
-        counts_by_class[class_name] = n_tracks
-        density_by_class[class_name] = n_tracks / V_total if V_total > 0 else 0
+    counts_by_class = _calculate_counts_by_class(
+        detections_df=detections_df,
+        count_tracks_df=count_tracks_df,
+        tracks_df=tracks_df,
+    )
+    density_by_class = {
+        class_name: count / V_total if V_total > 0 else 0
+        for class_name, count in counts_by_class.items()
+    }
 
     d_eff_rounded = round(d_eff, 2)
     return VolumeEstimate(
@@ -2221,6 +2219,43 @@ def calculate_surveyed_volume(
         density_by_class=density_by_class,
         counts_by_class=counts_by_class
     )
+
+
+def _calculate_counts_by_class(
+    detections_df: pd.DataFrame,
+    count_tracks_df: Optional[pd.DataFrame] = None,
+    tracks_df: Optional[pd.DataFrame] = None,
+) -> Dict[str, int]:
+    """Считает организмы по таблице треков; detections_df используется только как fallback."""
+    for source_df in (count_tracks_df, tracks_df):
+        if source_df is None or source_df.empty or 'class_name' not in source_df.columns:
+            continue
+
+        df = source_df[source_df['class_name'].notna()].copy()
+        if df.empty:
+            continue
+
+        if 'track_id' in df.columns:
+            df = df[df['track_id'].notna()]
+            if df.empty:
+                continue
+            counts = df.groupby('class_name')['track_id'].nunique()
+        else:
+            counts = df.groupby('class_name').size()
+
+        return {str(class_name): int(count) for class_name, count in counts.items()}
+
+    counts_by_class = {}
+    for class_name in detections_df['class_name'].dropna().unique():
+        class_df = detections_df[detections_df['class_name'] == class_name]
+        n_tracks = class_df['track_id'].nunique() if 'track_id' in class_df.columns else 0
+
+        if n_tracks == 0 or 'track_id' not in class_df.columns or class_df['track_id'].isna().all():
+            n_tracks = len(class_df)
+
+        counts_by_class[str(class_name)] = int(n_tracks)
+
+    return counts_by_class
 
 
 def _calculate_size_stats_by_class(tracks_df: Optional[pd.DataFrame]) -> Dict[str, Tuple[float, float]]:
@@ -2258,6 +2293,7 @@ def _calculate_size_stats_by_class(tracks_df: Optional[pd.DataFrame]) -> Dict[st
 def process_volume_estimation(
     detections_csv: str,
     tracks_csv: Optional[str] = None,
+    count_tracks_csv: Optional[str] = None,
     ctd_csv: Optional[str] = None,
     output_csv: Optional[str] = None,
     fov_horizontal: float = 95.0,
@@ -2298,6 +2334,10 @@ def process_volume_estimation(
     tracks_df = None
     if tracks_csv and Path(tracks_csv).exists():
         tracks_df = pd.read_csv(tracks_csv)
+
+    count_tracks_df = None
+    if count_tracks_csv and Path(count_tracks_csv).exists():
+        count_tracks_df = pd.read_csv(count_tracks_csv)
     
     ctd_df = None
     if ctd_csv and Path(ctd_csv).exists():
@@ -2319,6 +2359,7 @@ def process_volume_estimation(
     result = calculate_surveyed_volume(
         detections_df=detections_df,
         tracks_df=tracks_df,
+        count_tracks_df=count_tracks_df,
         ctd_df=ctd_df,
         calibration=calibration,
         fov_horizontal_deg=fov_horizontal,

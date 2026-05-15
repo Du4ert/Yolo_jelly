@@ -319,9 +319,19 @@ class Worker(QThread):
                     except Exception:
                         pass
 
-            # Аналогичный fallback для _detections_with_size.csv и _track_sizes.csv,
+            # Аналогичный fallback для _tracks.csv, _detections_with_size.csv и _track_sizes.csv,
             # чтобы SIZE_VIDEO_RENDER / VOLUME / ANALYSIS могли их найти,
             # даже если в БД записи нет.
+            if not tracks_csv:
+                candidate = output_dir / f"{base_name}_tracks.csv"
+                if candidate.exists():
+                    tracks_csv = str(candidate)
+                    try:
+                        self.repo.add_task_output(
+                            parent_task.id, OutputType.TRACKS_CSV, tracks_csv
+                        )
+                    except Exception:
+                        pass
             if not size_csv:
                 candidate = output_dir / f"{base_name}_detections_with_size.csv"
                 if candidate.exists():
@@ -361,7 +371,7 @@ class Worker(QThread):
                 )
             elif subtask.subtask_type == SubTaskType.VOLUME:
                 result_value, result_text = self._run_volume(
-                    detections_csv, track_sizes_csv, size_csv, geometry_csv, parent_task, output_dir, base_name, video, params
+                    detections_csv, tracks_csv, track_sizes_csv, size_csv, geometry_csv, parent_task, output_dir, base_name, video, params
                 )
             elif subtask.subtask_type == SubTaskType.ANALYSIS:
                 result_value, result_text = self._run_analysis(
@@ -477,13 +487,14 @@ class Worker(QThread):
         
         return float(result.total_tracks), result_text
 
-    def _run_volume(self, detections_csv: str, track_sizes_csv: Optional[str], size_csv: Optional[str],
+    def _run_volume(self, detections_csv: str, tracks_csv: Optional[str], track_sizes_csv: Optional[str], size_csv: Optional[str],
                     geometry_csv: Optional[str], parent_task, output_dir: Path, base_name: str, video, params: dict):
         """
         Выполняет подзадачу объёма.
         
         Args:
             detections_csv: CSV с детекциями
+            tracks_csv: CSV с полным списком треков из детекции
             track_sizes_csv: CSV со статистикой размеров (из size estimation, содержит колонку 'method')
             size_csv: CSV с детекциями + размерами
             geometry_csv: CSV с данными геометрии (наклон камеры)
@@ -513,7 +524,8 @@ class Worker(QThread):
         result = processor.process(
             detections_csv=input_csv,
             output_csv=volume_csv,
-            tracks_csv=track_sizes_csv,  # Передаём статистику размеров, а не треки детекции
+            tracks_csv=track_sizes_csv,  # Для дистанций и размеров используем статистику размеров
+            count_tracks_csv=tracks_csv,  # Для count_* используем полный список треков
             ctd_csv=ctd_csv,
             fov_horizontal=fov_horizontal,
             fov_vertical=fov_vertical,
