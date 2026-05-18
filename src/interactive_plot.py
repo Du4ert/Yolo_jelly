@@ -12,7 +12,7 @@ import sys
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 try:
     import plotly.graph_objects as go
@@ -114,6 +114,50 @@ def axis_ticks(min_value: float, max_value: float, count: int = 5) -> List[float
     return [float(x) for x in np.linspace(min_value, max_value, count)]
 
 
+def calculate_thermocline_depth(
+    ctd_df: pd.DataFrame,
+    depth_col: str,
+    temp_col: str,
+    threshold_c_per_m: float,
+    mode: str = "threshold",
+    min_depth_m: float = 2.0,
+) -> Optional[Tuple[float, float]]:
+    """Возвращает глубину и величину максимального градиента выше порога."""
+    if mode == "off" or (mode == "threshold" and threshold_c_per_m <= 0):
+        return None
+
+    profile = ctd_df[[depth_col, temp_col]].copy()
+    profile[depth_col] = to_numeric_series(profile[depth_col])
+    profile[temp_col] = to_numeric_series(profile[temp_col])
+    profile = profile.dropna().sort_values(depth_col)
+    if min_depth_m > 0:
+        profile = profile[profile[depth_col] >= min_depth_m]
+
+    depths = profile[depth_col].to_numpy(dtype=float)
+    temps = profile[temp_col].to_numpy(dtype=float)
+    if len(depths) < 2:
+        return None
+
+    delta_depth = np.diff(depths)
+    delta_temp = np.diff(temps)
+    valid = delta_depth > 0
+    if not np.any(valid):
+        return None
+
+    gradients = delta_temp[valid] / delta_depth[valid]
+    gradient_abs = np.abs(gradients)
+    segment_depths = (depths[:-1][valid] + depths[1:][valid]) / 2
+    if mode == "maximum":
+        candidates = np.arange(len(gradient_abs))
+    else:
+        candidates = np.where(gradient_abs > threshold_c_per_m)[0]
+    if len(candidates) == 0:
+        return None
+
+    strongest = candidates[np.argmax(gradient_abs[candidates])]
+    return float(segment_depths[strongest]), float(gradient_abs[strongest])
+
+
 def create_interactive_depth_plot(
     track_sizes_path: str,
     output_path: str,
@@ -121,6 +165,8 @@ def create_interactive_depth_plot(
     ctd_columns: Optional[List[int]] = None,
     depth_bin: float = 1.0,
     cross_section_area_m2: Optional[float] = None,
+    thermocline_threshold: float = 0.2,
+    thermocline_mode: str = "threshold",
     title: str = "Распределение желетелых по глубине",
     export_format: str = "html"
 ):
@@ -139,6 +185,8 @@ def create_interactive_depth_plot(
         ctd_columns: номера колонок CTD для отображения (0-based)
         depth_bin: шаг биннинга для расчёта средних (м)
         cross_section_area_m2: площадь сечения наблюдения для нормировки KDE (м²)
+        thermocline_threshold: порог величины температурного градиента для термоклина (°C/м)
+        thermocline_mode: режим термоклина (threshold, maximum, off)
         title: заголовок графика
         export_format: формат экспорта (html, svg, pdf, png)
     """
@@ -181,6 +229,9 @@ def create_interactive_depth_plot(
     ctd_col_names = []
     ctd_depth_col = None
     ctd_depth_values = pd.Series(dtype=float)
+    ctd_temperature_col = None
+    thermocline_depth = None
+    thermocline_gradient = None
     
     if ctd_path and ctd_columns:
         try:
@@ -192,6 +243,8 @@ def create_interactive_depth_plot(
                 for idx in ctd_columns:
                     if 0 <= idx < len(all_cols):
                         ctd_col_names.append(all_cols[idx])
+                        if idx == 6:
+                            ctd_temperature_col = all_cols[idx]
                 
                 if ctd_col_names:
                     ctd_df[ctd_depth_col] = to_numeric_series(ctd_df[ctd_depth_col])
@@ -200,6 +253,21 @@ def create_interactive_depth_plot(
                         depth_max = float(ctd_depth_values.max())
                         depth_min = float(ctd_depth_values.min())
                         print(f"CTD колонки: {ctd_col_names}")
+                        if ctd_temperature_col:
+                            thermocline = calculate_thermocline_depth(
+                                ctd_df,
+                                ctd_depth_col,
+                                ctd_temperature_col,
+                                thermocline_threshold,
+                                thermocline_mode,
+                            )
+                            if thermocline is not None:
+                                thermocline_depth, thermocline_gradient = thermocline
+                            if thermocline_depth is not None:
+                                print(
+                                    f"Термоклин: {thermocline_depth:.2f} м, "
+                                    f"градиент {thermocline_gradient:.3f} °C/м"
+                                )
                     else:
                         ctd_col_names = []
         except Exception as e:
@@ -273,6 +341,9 @@ def create_interactive_depth_plot(
     current_col = 1
     plot_domain_bottom = 0.0
     ctd_trace_count = 0
+    thermocline_trace_indices = []
+    temperature_trace_index = None
+    thermocline_color = 'rgba(0,0,0,0.65)'
     if has_ctd_panel:
         first_ctd_trace = True
         ctd_axis_configs = []
@@ -319,12 +390,16 @@ def create_interactive_depth_plot(
                 hovertemplate="%{text}<extra></extra>",
                 text=hover_text,
                 showlegend=True,
+                meta=dict(role='temperature_ctd') if col_name == ctd_temperature_col else None,
             )
             if trace_axis:
                 trace.update(xaxis=trace_axis, yaxis='y')
                 fig.add_trace(trace)
             else:
                 fig.add_trace(trace, row=1, col=current_col)
+            if col_name == ctd_temperature_col:
+                temperature_trace_index = len(fig.data) - 1
+                thermocline_color = CTD_COLORS[i % len(CTD_COLORS)]
 
             ctd_axis_configs.append({
                 'axis_num': axis_num,
@@ -336,6 +411,25 @@ def create_interactive_depth_plot(
             })
             first_ctd_trace = False
             ctd_trace_count += 1
+
+        if thermocline_depth is not None and ctd_axis_configs:
+            fig.add_trace(go.Scatter(
+                x=ctd_axis_configs[0]['range'],
+                y=[thermocline_depth, thermocline_depth],
+                mode='lines',
+                name=f"Термоклин {thermocline_depth:.2f} м",
+                legendgroup="thermocline",
+                line=dict(color=thermocline_color, width=1.5, dash='dash'),
+                hovertemplate=(
+                    f"Термоклин<br>Глубина: {thermocline_depth:.2f} м<br>"
+                    f"Градиент: {thermocline_gradient:.3f} °C/м<br>"
+                    f"Режим: {'максимальный' if thermocline_mode == 'maximum' else 'порог'}<br>"
+                    f"Порог: {thermocline_threshold:.2f} °C/м<extra></extra>"
+                ),
+                showlegend=False,
+                meta=dict(role='thermocline'),
+            ), row=1, col=current_col)
+            thermocline_trace_indices.append(len(fig.data) - 1)
 
         if ctd_trace_count == 0:
             annotations.append(dict(
@@ -486,6 +580,25 @@ def create_interactive_depth_plot(
                 showlegend=True,
             ), row=1, col=current_col)
 
+        if thermocline_depth is not None:
+            fig.add_trace(go.Scatter(
+                x=[-density_max * 0.62, density_max * 0.62],
+                y=[thermocline_depth, thermocline_depth],
+                mode='lines',
+                name=f"Термоклин {thermocline_depth:.2f} м",
+                legendgroup="thermocline",
+                line=dict(color=thermocline_color, width=1.5, dash='dash'),
+                hovertemplate=(
+                    f"Термоклин<br>Глубина: {thermocline_depth:.2f} м<br>"
+                    f"Градиент: {thermocline_gradient:.3f} °C/м<br>"
+                    f"Режим: {'максимальный' if thermocline_mode == 'maximum' else 'порог'}<br>"
+                    f"Порог: {thermocline_threshold:.2f} °C/м<extra></extra>"
+                ),
+                showlegend=False,
+                meta=dict(role='thermocline'),
+            ), row=1, col=current_col)
+            thermocline_trace_indices.append(len(fig.data) - 1)
+
         fig.update_xaxes(
             title_text=kde_axis_title,
             showgrid=True,
@@ -592,6 +705,8 @@ def create_interactive_depth_plot(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     hoverline_post_script = """
     var plot = document.getElementById('{plot_id}');
+    var temperatureTraceIndex = __TEMPERATURE_TRACE_INDEX__;
+    var thermoclineTraceIndices = __THERMOCLINE_TRACE_INDICES__;
     var horizontalHoverLine = {
         type: 'line',
         xref: 'paper',
@@ -635,7 +750,32 @@ def create_interactive_depth_plot(
     plot.on('plotly_unhover', function() {
         Plotly.relayout(plot, {shapes: []});
     });
+    function syncThermoclineVisibility() {
+        if (temperatureTraceIndex === null || thermoclineTraceIndices.length === 0) {
+            return;
+        }
+        var tempTrace = plot.data[temperatureTraceIndex];
+        var visible = !(tempTrace && (tempTrace.visible === false || tempTrace.visible === 'legendonly'));
+        thermoclineTraceIndices.forEach(function(traceIndex) {
+            var trace = plot.data[traceIndex];
+            if (!trace) {
+                return;
+            }
+            var targetVisible = visible ? true : 'legendonly';
+            if (trace.visible !== targetVisible) {
+                Plotly.restyle(plot, {visible: targetVisible}, [traceIndex]);
+            }
+        });
+    }
+    plot.on('plotly_restyle', function() {
+        window.setTimeout(syncThermoclineVisibility, 0);
+    });
+    syncThermoclineVisibility();
     """
+    hoverline_post_script = hoverline_post_script.replace(
+        "__TEMPERATURE_TRACE_INDEX__",
+        "null" if temperature_trace_index is None else str(temperature_trace_index),
+    ).replace("__THERMOCLINE_TRACE_INDICES__", str(thermocline_trace_indices))
     
     if export_format == "html":
         fig.write_html(
@@ -737,6 +877,8 @@ def main():
     parser.add_argument("--ctd", help="CSV с данными CTD")
     parser.add_argument("--ctd-columns", type=str, default="6,11,12,16", help="Колонки CTD (0-based): 6,11,12,16")
     parser.add_argument("--cross-section-area", type=float, default=None, help="Площадь сечения наблюдения, м²")
+    parser.add_argument("--thermocline-threshold", type=float, default=0.2, help="Порог термоклина, °C/м")
+    parser.add_argument("--thermocline-mode", choices=["threshold", "maximum", "off"], default="threshold", help="Режим термоклина")
     parser.add_argument("--list-ctd-columns", action="store_true", help="Показать колонки CTD")
     
     args = parser.parse_args()
@@ -769,6 +911,8 @@ def main():
             ctd_columns=parse_ctd_columns(args.ctd_columns) or None,
             depth_bin=args.depth_bin,
             cross_section_area_m2=args.cross_section_area,
+            thermocline_threshold=args.thermocline_threshold,
+            thermocline_mode=args.thermocline_mode,
             title=args.title,
             export_format=args.format
         )

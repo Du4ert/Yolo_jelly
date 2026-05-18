@@ -608,6 +608,8 @@ class Worker(QThread):
             ctd_path=ctd_path,
             ctd_columns=ctd_columns if ctd_path else None,
             cross_section_area_m2=processing_info.get('cross_section_area_m2'),
+            thermocline_threshold=params.get("thermocline_threshold", 0.2),
+            thermocline_mode=params.get("thermocline_mode", "threshold"),
         )
 
         if not result.success:
@@ -672,6 +674,8 @@ class Worker(QThread):
                 'effective_distance_auto': current_params.get('effective_distance_auto', True),
                 'detection_distance': current_params.get('detection_distance'),
                 'depth_bin': current_params.get('depth_bin', 2.0),
+                'thermocline_threshold': current_params.get('thermocline_threshold', 0.2),
+                'thermocline_mode': current_params.get('thermocline_mode', 'threshold'),
             }
             processing_info['postprocess_params'] = postprocess_params
             
@@ -957,6 +961,8 @@ class Worker(QThread):
                 "detection_distance", defaults.get("effective_distance")
             ),
             "depth_bin": params.get("depth_bin", 2.0),
+            "thermocline_threshold": params.get("thermocline_threshold", 0.2),
+            "thermocline_mode": params.get("thermocline_mode", "threshold"),
         }
         if params.get("calibration_json"):
             common_params["calibration_json"] = params.get("calibration_json")

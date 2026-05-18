@@ -481,6 +481,8 @@ class NewTaskDialog(QDialog):
                 ),
                 "depth_bin": self.pp_spin_depth_bin.value(),
                 "ctd_columns": self.pp_edit_ctd_columns.text().strip() or "6,11,12,16",
+                "thermocline_threshold": self.pp_spin_thermocline_threshold.value(),
+                "thermocline_mode": self.pp_combo_thermocline_mode.currentData(),
                 "frame_step": self.pp_spin_frame_step.value(),
             }
             try:
@@ -637,6 +639,41 @@ class NewTaskDialog(QDialog):
         ctd_col_indent_layout.addStretch()
         layout.addWidget(ctd_col_indent)
 
+        thermocline_indent = QWidget()
+        thermocline_indent_layout = QHBoxLayout(thermocline_indent)
+        thermocline_indent_layout.setContentsMargins(20, 0, 0, 0)
+        thermocline_indent_layout.addWidget(QLabel("Термоклин:"))
+        self.pp_combo_thermocline_mode = QComboBox()
+        self.pp_combo_thermocline_mode.addItem("Порог", "threshold")
+        self.pp_combo_thermocline_mode.addItem("Максимальный", "maximum")
+        self.pp_combo_thermocline_mode.addItem("Отключить", "off")
+        self.pp_combo_thermocline_mode.setMaximumWidth(120)
+        self.pp_combo_thermocline_mode.setToolTip(
+            "Порог — максимум градиента выше порога.\n"
+            "Максимальный — максимум градиента без порога.\n"
+            "Отключить — не строить линию термоклина."
+        )
+        self.pp_combo_thermocline_mode.currentIndexChanged.connect(
+            self._on_thermocline_mode_changed
+        )
+        thermocline_indent_layout.addWidget(self.pp_combo_thermocline_mode)
+        thermocline_label = QLabel("Порог термоклина:")
+        self.pp_spin_thermocline_threshold = QDoubleSpinBox()
+        self.pp_spin_thermocline_threshold.setRange(0.01, 5.0)
+        self.pp_spin_thermocline_threshold.setValue(0.2)
+        self.pp_spin_thermocline_threshold.setSingleStep(0.05)
+        self.pp_spin_thermocline_threshold.setDecimals(2)
+        self.pp_spin_thermocline_threshold.setSuffix(" °C/м")
+        self.pp_spin_thermocline_threshold.setMaximumWidth(110)
+        self.pp_spin_thermocline_threshold.setToolTip(
+            "Термоклин строится по CTD-колонке 6, если она включена в список колонок."
+        )
+        thermocline_indent_layout.addWidget(thermocline_label)
+        thermocline_indent_layout.addWidget(self.pp_spin_thermocline_threshold)
+        thermocline_indent_layout.addStretch()
+        layout.addWidget(thermocline_indent)
+        self._on_thermocline_mode_changed()
+
         # === Параметры ===
         params_label = QLabel("Параметры:")
         params_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
@@ -719,6 +756,10 @@ class NewTaskDialog(QDialog):
 
     def _on_effective_distance_auto_toggled(self, enabled: bool):
         self.pp_spin_effective_distance.setEnabled(not enabled)
+
+    def _on_thermocline_mode_changed(self, *args):
+        mode = self.pp_combo_thermocline_mode.currentData()
+        self.pp_spin_thermocline_threshold.setEnabled(mode == "threshold")
 
     def _on_auto_postprocess_toggled(self, enabled: bool):
         """Обработка переключения автопостобработки."""

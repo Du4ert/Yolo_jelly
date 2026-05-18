@@ -73,6 +73,8 @@ class AnalyzeProcessor:
         ctd_path: Optional[str] = None,
         ctd_columns: Optional[List[int]] = None,
         cross_section_area_m2: Optional[float] = None,
+        thermocline_threshold: float = 0.2,
+        thermocline_mode: str = "threshold",
     ) -> AnalyzeResult:
         """
         Запускает анализ данных.
@@ -202,6 +204,8 @@ class AnalyzeProcessor:
                         ctd_columns=ctd_columns,
                         depth_bin=depth_bin,
                         cross_section_area_m2=cross_section_area_m2,
+                        thermocline_threshold=thermocline_threshold,
+                        thermocline_mode=thermocline_mode,
                     )
                     html_path = Path(ip_path).with_suffix('.html')
                     if html_path.exists():

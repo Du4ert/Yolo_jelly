@@ -204,6 +204,39 @@ class PostProcessDialog(QDialog):
         ctd_row.addStretch()
         ops_layout.addLayout(ctd_row)
 
+        thermocline_row = QHBoxLayout()
+        thermocline_row.setContentsMargins(40, 0, 0, 0)
+        thermocline_row.addWidget(QLabel("Термоклин:"))
+        self.combo_thermocline_mode = QComboBox()
+        self.combo_thermocline_mode.addItem("Порог", "threshold")
+        self.combo_thermocline_mode.addItem("Максимальный", "maximum")
+        self.combo_thermocline_mode.addItem("Отключить", "off")
+        self.combo_thermocline_mode.setMaximumWidth(120)
+        self.combo_thermocline_mode.setToolTip(
+            "Порог — максимум градиента выше порога.\n"
+            "Максимальный — максимум градиента без порога.\n"
+            "Отключить — не строить линию термоклина."
+        )
+        self.combo_thermocline_mode.currentIndexChanged.connect(
+            self._on_thermocline_mode_changed
+        )
+        thermocline_row.addWidget(self.combo_thermocline_mode)
+        thermocline_row.addWidget(QLabel("Порог термоклина:"))
+        self.spin_thermocline_threshold = QDoubleSpinBox()
+        self.spin_thermocline_threshold.setRange(0.01, 5.0)
+        self.spin_thermocline_threshold.setValue(0.2)
+        self.spin_thermocline_threshold.setSingleStep(0.05)
+        self.spin_thermocline_threshold.setDecimals(2)
+        self.spin_thermocline_threshold.setSuffix(" °C/м")
+        self.spin_thermocline_threshold.setMaximumWidth(110)
+        self.spin_thermocline_threshold.setToolTip(
+            "Термоклин строится по CTD-колонке 6, если она включена в список колонок."
+        )
+        thermocline_row.addWidget(self.spin_thermocline_threshold)
+        thermocline_row.addStretch()
+        ops_layout.addLayout(thermocline_row)
+        self._on_thermocline_mode_changed()
+
         layout.addWidget(ops_group)
 
         # === Общие параметры ===
@@ -633,6 +666,10 @@ class PostProcessDialog(QDialog):
     def _on_effective_distance_auto_toggled(self, enabled: bool):
         self.spin_effective_distance.setEnabled(not enabled)
 
+    def _on_thermocline_mode_changed(self, *args):
+        mode = self.combo_thermocline_mode.currentData()
+        self.spin_thermocline_threshold.setEnabled(mode == "threshold")
+
     def _has_output_for_task(self, task_id: int, st_type: SubTaskType) -> bool:
         output_types = SUBTASK_OUTPUT_TYPES.get(st_type, [])
         if not output_types:
@@ -745,6 +782,8 @@ class PostProcessDialog(QDialog):
             ),
             "depth_bin": self.spin_depth_bin.value(),
             "ctd_columns": self.edit_ctd_columns.text().strip() or "6,11,12,16",
+            "thermocline_threshold": self.spin_thermocline_threshold.value(),
+            "thermocline_mode": self.combo_thermocline_mode.currentData(),
         }
         try:
             calib_path = get_config().ui.calibration_json
