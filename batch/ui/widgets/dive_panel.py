@@ -106,6 +106,18 @@ class DivePanel(QWidget):
         # Кнопки
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(4)
+
+        self.btn_move_catalog_up = QPushButton("▲")
+        self.btn_move_catalog_up.setFixedWidth(30)
+        self.btn_move_catalog_up.setToolTip("Переместить экспедицию вверх")
+        self.btn_move_catalog_up.clicked.connect(lambda: self._move_selected_catalog(-1))
+        btn_layout.addWidget(self.btn_move_catalog_up)
+
+        self.btn_move_catalog_down = QPushButton("▼")
+        self.btn_move_catalog_down.setFixedWidth(30)
+        self.btn_move_catalog_down.setToolTip("Переместить экспедицию вниз")
+        self.btn_move_catalog_down.clicked.connect(lambda: self._move_selected_catalog(1))
+        btn_layout.addWidget(self.btn_move_catalog_down)
         
         self.btn_add_catalog = QPushButton("+ Экспедиция")
         self.btn_add_catalog.setToolTip("Создать новую экспедицию")
@@ -612,6 +624,40 @@ class DivePanel(QWidget):
                 self._load_data()
         except ValueError as e:
             QMessageBox.warning(self, "Ошибка", str(e))
+
+    def _move_catalog(self, catalog_id: int, direction: int):
+        """Перемещает экспедицию вверх/вниз в списке."""
+        if self.repo.move_catalog(catalog_id, direction):
+            self._load_data()
+            self._restore_catalog_selection(catalog_id)
+
+    def _move_selected_catalog(self, direction: int):
+        """Перемещает выбранную экспедицию вверх/вниз."""
+        items = self.tree.selectedItems()
+        if not items:
+            return
+
+        item = items[0]
+        if self._get_item_type(item) != self.TYPE_CATALOG:
+            return
+
+        catalog_id = self._get_item_id(item)
+        if catalog_id:
+            self._move_catalog(catalog_id, direction)
+
+    def _restore_catalog_selection(self, catalog_id: int):
+        """Восстанавливает выделение экспедиции после перестройки дерева."""
+        for i in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(i)
+            if (
+                item
+                and self._get_item_type(item) == self.TYPE_CATALOG
+                and self._get_item_id(item) == catalog_id
+            ):
+                self.tree.setCurrentItem(item)
+                self.tree.scrollToItem(item)
+                self.tree.setFocus()
+                return
 
     def _delete_catalog(self, catalog_id: int):
         """Удаляет каталог."""

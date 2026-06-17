@@ -126,6 +126,26 @@ class Repository:
             stmt = select(Catalog).order_by(Catalog.position)
             return list(session.scalars(stmt))
 
+    def move_catalog(self, catalog_id: int, direction: int) -> bool:
+        """Перемещает каталог вверх (direction=-1) или вниз (+1)."""
+        with self.get_session() as session:
+            stmt = select(Catalog).order_by(Catalog.position)
+            catalogs = list(session.scalars(stmt))
+
+            idx = next((i for i, c in enumerate(catalogs) if c.id == catalog_id), None)
+            if idx is None:
+                return False
+
+            swap_idx = idx + direction
+            if swap_idx < 0 or swap_idx >= len(catalogs):
+                return False
+
+            catalog = catalogs[idx]
+            neighbor = catalogs[swap_idx]
+            catalog.position, neighbor.position = neighbor.position, catalog.position
+            session.commit()
+            return True
+
     def update_catalog(self, catalog_id: int, **kwargs) -> Optional[Catalog]:
         """Обновляет каталог."""
         with self.get_session() as session:

@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QInputDialog,
     QGroupBox,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QModelIndex
+from PyQt6.QtCore import Qt, pyqtSignal
 
 from ...database import Repository, Model
 from ...core import get_config, save_config
@@ -66,14 +66,23 @@ class ModelPanel(QWidget):
         self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self._on_context_menu)
         self.list.itemSelectionChanged.connect(self._on_selection_changed)
-        self.list.setDragDropMode(self.list.DragDropMode.InternalMove)
-        self.list.setDefaultDropAction(Qt.DropAction.MoveAction)
-        self.list.model().rowsMoved.connect(self._on_order_changed)
         group_layout.addWidget(self.list)
         
         # Кнопки
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(4)
+
+        self.btn_move_up = QPushButton("▲")
+        self.btn_move_up.setFixedWidth(30)
+        self.btn_move_up.setToolTip("Переместить модель вверх")
+        self.btn_move_up.clicked.connect(lambda: self._move_selected_model(-1))
+        btn_layout.addWidget(self.btn_move_up)
+
+        self.btn_move_down = QPushButton("▼")
+        self.btn_move_down.setFixedWidth(30)
+        self.btn_move_down.setToolTip("Переместить модель вниз")
+        self.btn_move_down.clicked.connect(lambda: self._move_selected_model(1))
+        btn_layout.addWidget(self.btn_move_down)
         
         self.btn_add = QPushButton("+ Добавить модель")
         self.btn_add.clicked.connect(self.add_model)
@@ -90,10 +99,8 @@ class ModelPanel(QWidget):
         models = self.repo.get_all_models()
         config = get_config()
 
-        # Сортируем по сохранённому порядку
-        if config.ui.models_order:
-            order = config.ui.models_order
-            models.sort(key=lambda m: order.index(m.id) if m.id in order else len(order))
+        order = self._get_model_order(models)
+        models.sort(key=lambda m: order.index(m.id))
 
         for model in models:
             item = self._create_model_item(model)
@@ -107,13 +114,16 @@ class ModelPanel(QWidget):
         if not self.list.selectedItems() and self.list.count() > 0:
             self.list.item(0).setSelected(True)
 
-    def _on_order_changed(self, _parent: QModelIndex, _start: int, _end: int,
-                          _dest: QModelIndex, _row: int):
-        """Сохраняет новый порядок моделей после drag-and-drop."""
-        order = [
-            self.list.item(i).data(Qt.ItemDataRole.UserRole)
-            for i in range(self.list.count())
-        ]
+    def _get_model_order(self, models: list[Model]) -> list[int]:
+        """Возвращает сохранённый порядок моделей с учётом новых/удалённых записей."""
+        model_ids = [m.id for m in models]
+        saved_order = get_config().ui.models_order or []
+        order = [model_id for model_id in saved_order if model_id in model_ids]
+        order.extend(model_id for model_id in model_ids if model_id not in order)
+        return order
+
+    def _save_model_order(self, order: list[int]):
+        """Сохраняет порядок моделей в конфиг."""
         config = get_config()
         config.ui.models_order = order
         save_config()
@@ -199,6 +209,30 @@ class ModelPanel(QWidget):
         if ok and name:
             self.repo.update_model(model_id, name=name)
             self._load_data()
+
+    def _move_model(self, model_id: int, direction: int):
+        """Перемещает модель вверх/вниз в списке."""
+        models = self.repo.get_all_models()
+        order = self._get_model_order(models)
+        try:
+            idx = order.index(model_id)
+        except ValueError:
+            return
+
+        swap_idx = idx + direction
+        if swap_idx < 0 or swap_idx >= len(order):
+            return
+
+        order[idx], order[swap_idx] = order[swap_idx], order[idx]
+        self._save_model_order(order)
+        self._load_data()
+        self.select_model(model_id)
+
+    def _move_selected_model(self, direction: int):
+        """Перемещает выбранную модель вверх/вниз."""
+        model_id = self.get_selected_model_id()
+        if model_id:
+            self._move_model(model_id, direction)
 
     def _delete_model(self, model_id: int):
         """Удаляет модель."""
