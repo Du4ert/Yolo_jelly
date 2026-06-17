@@ -440,8 +440,18 @@ class VerifyDialog(QDialog):
 
     def _set_modified(self, modified: bool):
         self._modified = modified
-        for button in (self._btn_cancel, self._btn_save, self._btn_apply):
+        for button in (self._btn_cancel, self._btn_save):
             button.setEnabled(modified)
+        self._update_apply_button()
+
+    def _has_pending_data_changes(self) -> bool:
+        return any(
+            t.deleted or (t.new_class_id is not None and t.new_class_id != t.class_id)
+            for t in self._tracks
+        )
+
+    def _update_apply_button(self):
+        self._btn_apply.setEnabled(self._has_pending_data_changes())
 
     def _snapshot_state(self) -> Dict[int, tuple]:
         return {
@@ -1190,8 +1200,7 @@ class VerifyDialog(QDialog):
         self._set_modified(False)
 
     def _on_apply(self):
-        modified_tracks = [t for t in self._tracks if t.is_modified]
-        if not modified_tracks:
+        if not self._has_pending_data_changes():
             QMessageBox.information(self, "Применить", "Нет изменений для применения.")
             return
 
