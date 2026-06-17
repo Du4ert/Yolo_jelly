@@ -210,6 +210,9 @@ class VerifyDialog(QDialog):
                 t.deleted = verified[t.track_id]["deleted"]
                 t.new_class_id = verified[t.track_id]["new_class_id"]
                 t.confirmed = verified[t.track_id].get("confirmed", False)
+                t.merged_into_track_id = verified[t.track_id].get("merged_into_track_id")
+
+        self._refresh_merged_track_stats()
 
         if self._detections_csv:
             for t in self._tracks:
@@ -265,6 +268,11 @@ class VerifyDialog(QDialog):
         self._btn_confirm.setEnabled(False)
         self._btn_confirm.clicked.connect(self._on_confirm)
         btn_layout.addWidget(self._btn_confirm)
+
+        self._btn_merge = QPushButton("Объединить")
+        self._btn_merge.setEnabled(False)
+        self._btn_merge.clicked.connect(self._on_merge_tracks)
+        btn_layout.addWidget(self._btn_merge)
 
         self._class_combo = QComboBox()
         self._class_combo.setEnabled(False)
@@ -408,7 +416,7 @@ class VerifyDialog(QDialog):
             QAbstractItemView.SelectionBehavior.SelectRows
         )
         self._table.setSelectionMode(
-            QAbstractItemView.SelectionMode.SingleSelection
+            QAbstractItemView.SelectionMode.ExtendedSelection
         )
         self._table.setEditTriggers(
             QAbstractItemView.EditTrigger.NoEditTriggers
@@ -417,6 +425,7 @@ class VerifyDialog(QDialog):
         self._table.horizontalHeader().setStretchLastSection(True)
 
         self._table.cellClicked.connect(self._on_track_selected)
+        self._table.itemSelectionChanged.connect(self._on_selection_changed)
         self._table.horizontalHeader().sectionClicked.connect(self._on_sort)
 
         palette = self._table.palette()
@@ -446,7 +455,9 @@ class VerifyDialog(QDialog):
 
     def _has_pending_data_changes(self) -> bool:
         return any(
-            t.deleted or (t.new_class_id is not None and t.new_class_id != t.class_id)
+            t.deleted
+            or t.merged_into_track_id is not None
+            or (t.new_class_id is not None and t.new_class_id != t.class_id)
             for t in self._tracks
         )
 
@@ -455,12 +466,72 @@ class VerifyDialog(QDialog):
 
     def _snapshot_state(self) -> Dict[int, tuple]:
         return {
-            t.track_id: (bool(t.deleted), t.new_class_id, bool(t.confirmed))
+            t.track_id: (
+                bool(t.deleted),
+                t.new_class_id,
+                bool(t.confirmed),
+                t.merged_into_track_id,
+            )
             for t in self._tracks
         }
 
     def _update_modified_from_baseline(self):
         self._set_modified(self._snapshot_state() != self._baseline_state)
+
+    def _selected_tracks(self) -> List[TrackInfo]:
+        rows = sorted({idx.row() for idx in self._table.selectionModel().selectedRows()})
+        return [self._tracks[row] for row in rows if 0 <= row < len(self._tracks)]
+
+    def _can_merge_selected_tracks(self) -> bool:
+        selected = self._selected_tracks()
+        if len(selected) < 2:
+            return False
+        if any(t.deleted or t.merged_into_track_id is not None for t in selected):
+            return False
+        class_ids = {t.effective_class_id for t in selected}
+        return len(class_ids) == 1
+
+    def _update_merge_button(self):
+        if not hasattr(self, "_btn_merge"):
+            return
+        self._btn_merge.setEnabled(self._can_merge_selected_tracks())
+
+    def _on_selection_changed(self):
+        self._update_merge_button()
+
+    def _refresh_merged_track_stats(self):
+        for target_id in sorted(
+            {t.merged_into_track_id for t in self._tracks if t.merged_into_track_id is not None}
+        ):
+            target = next((t for t in self._tracks if t.track_id == target_id), None)
+            if target is None:
+                continue
+            merged_tracks = [
+                t for t in self._tracks
+                if t.track_id == target_id or t.merged_into_track_id == target_id
+            ]
+            self._apply_merged_stats(target, merged_tracks)
+
+    def _apply_merged_stats(self, target: TrackInfo, tracks: List[TrackInfo]):
+        first = min(tracks, key=lambda t: t.first_frame)
+        last = max(tracks, key=lambda t: t.last_frame)
+        detections_count = sum(t.detections_count for t in tracks)
+        if detections_count:
+            target.avg_confidence = round(
+                sum(t.avg_confidence * t.detections_count for t in tracks) / detections_count,
+                3,
+            )
+        target.first_frame = min(t.first_frame for t in tracks)
+        target.last_frame = max(t.last_frame for t in tracks)
+        target.frame_span = target.last_frame - target.first_frame + 1
+        target.first_timestamp_s = min(t.first_timestamp_s for t in tracks)
+        target.last_timestamp_s = max(t.last_timestamp_s for t in tracks)
+        target.duration_s = round(target.last_timestamp_s - target.first_timestamp_s, 2)
+        target.first_depth_m = first.first_depth_m
+        target.last_depth_m = last.last_depth_m
+        if target.first_depth_m is not None and target.last_depth_m is not None:
+            target.depth_change_m = round(target.last_depth_m - target.first_depth_m, 2)
+        target.detections_count = detections_count
 
     def _clear_visual_marks(self):
         if not self._scene:
@@ -526,6 +597,8 @@ class VerifyDialog(QDialog):
                 f = item.font()
                 f.setStrikeOut(True)
                 item.setFont(f)
+            elif track.merged_into_track_id is not None:
+                item.setForeground(QBrush(QColor(120, 120, 200)))
             elif track.confirmed:
                 item.setBackground(QBrush(QColor(60, 180, 60)))
             elif track.new_class_id is not None:
@@ -988,13 +1061,15 @@ class VerifyDialog(QDialog):
             if self._selected_track.deleted
             else "🗑 Удалить трек"
         )
-        self._btn_confirm.setEnabled(not self._selected_track.deleted)
+        is_merged_source = self._selected_track.merged_into_track_id is not None
+        self._btn_delete.setEnabled(not is_merged_source)
+        self._btn_confirm.setEnabled(not self._selected_track.deleted and not is_merged_source)
         self._btn_confirm.setText(
             "✘ Отменить подтверждение"
             if self._selected_track.confirmed
             else "✔ Подтвердить"
         )
-        self._class_combo.setEnabled(True)
+        self._class_combo.setEnabled(not is_merged_source)
         self._class_combo.blockSignals(True)
         cid = self._selected_track.effective_class_id
         idx = self._class_combo.findData(cid)
@@ -1082,7 +1157,7 @@ class VerifyDialog(QDialog):
                     return
 
     def _toggle_delete(self):
-        if not self._selected_track:
+        if not self._selected_track or self._selected_track.merged_into_track_id is not None:
             return
 
         self._selected_track.deleted = not self._selected_track.deleted
@@ -1125,7 +1200,7 @@ class VerifyDialog(QDialog):
             self._select_next_unconfirmed()
 
     def _on_class_changed(self, index: int):
-        if not self._selected_track:
+        if not self._selected_track or self._selected_track.merged_into_track_id is not None:
             return
 
         new_cid = self._class_combo.currentData()
@@ -1140,10 +1215,52 @@ class VerifyDialog(QDialog):
         self._table.resizeColumnsToContents()
         self._update_task_status_label()
 
+    def _on_merge_tracks(self):
+        selected = self._selected_tracks()
+        if len(selected) < 2:
+            return
+        if not self._can_merge_selected_tracks():
+            QMessageBox.warning(
+                self,
+                "Объединить",
+                "Выберите два или более не удалённых трека одного класса.",
+            )
+            return
+
+        target = min(selected, key=lambda t: (t.first_frame, t.track_id))
+        for track in selected:
+            if track.track_id == target.track_id:
+                continue
+            track.merged_into_track_id = target.track_id
+            track.new_class_id = None
+            track.confirmed = False
+            track.deleted = False
+            self._deleted_detections.pop(track.track_id, None)
+            self._confirmed_detections.pop(track.track_id, None)
+
+        target.confirmed = False
+        self._apply_merged_stats(target, selected)
+        self._update_modified_from_baseline()
+        self._rebuild_table()
+
+        for row, track in enumerate(self._tracks):
+            if track.track_id == target.track_id:
+                self._table.selectRow(row)
+                self._on_track_selected(row)
+                break
+
+        if self._player:
+            self._update_delete_crosses(self._player.position())
+            self._update_confirm_marks(self._player.position())
+
     # ── confirm / apply / sort ────────────────────────────────────────
 
     def _on_confirm(self):
-        if not self._selected_track or self._selected_track.deleted:
+        if (
+            not self._selected_track
+            or self._selected_track.deleted
+            or self._selected_track.merged_into_track_id is not None
+        ):
             return
 
         self._selected_track.confirmed = not self._selected_track.confirmed
@@ -1204,7 +1321,10 @@ class VerifyDialog(QDialog):
             QMessageBox.information(self, "Применить", "Нет изменений для применения.")
             return
 
-        destructive = [t for t in self._tracks if t.deleted or t.new_class_id is not None]
+        destructive = [
+            t for t in self._tracks
+            if t.deleted or t.new_class_id is not None or t.merged_into_track_id is not None
+        ]
         if destructive:
             reply = QMessageBox.question(
                 self,
@@ -1240,7 +1360,8 @@ class VerifyDialog(QDialog):
             f"Изменения применены.\n"
             f"Всего треков: {result.total_tracks}\n"
             f"Удалено: {result.deleted_count}\n"
-            f"Изменён класс: {result.changed_class_count}",
+            f"Изменён класс: {result.changed_class_count}\n"
+            f"Объединено: {result.merged_count}",
         )
 
     def _on_sort(self, column: int):
@@ -1300,7 +1421,7 @@ class VerifyDialog(QDialog):
         for offset in range(1, n):
             idx = (current_row + offset) % n
             t = self._tracks[idx]
-            if not t.confirmed and not t.deleted:
+            if not t.confirmed and not t.deleted and t.merged_into_track_id is None:
                 self._table.selectRow(idx)
                 self._on_track_selected(idx)
                 return
@@ -1309,7 +1430,10 @@ class VerifyDialog(QDialog):
         if not self._tracks:
             return ""
 
-        resolved = sum(1 for t in self._tracks if t.confirmed or t.deleted)
+        resolved = sum(
+            1 for t in self._tracks
+            if t.confirmed or t.deleted or t.merged_into_track_id is not None
+        )
         if resolved == 0:
             return ""
         if resolved == len(self._tracks):

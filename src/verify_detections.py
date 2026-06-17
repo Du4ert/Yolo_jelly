@@ -39,6 +39,7 @@ class TrackInfo:
     deleted: bool = False
     new_class_id: Optional[int] = None
     confirmed: bool = False
+    merged_into_track_id: Optional[int] = None
 
     @property
     def effective_class_id(self) -> int:
@@ -53,12 +54,19 @@ class TrackInfo:
 
     @property
     def is_modified(self) -> bool:
-        return self.deleted or self.new_class_id is not None or self.confirmed
+        return (
+            self.deleted
+            or self.new_class_id is not None
+            or self.confirmed
+            or self.merged_into_track_id is not None
+        )
 
     @property
     def status_text(self) -> str:
         if self.deleted:
             return "Удалён"
+        if self.merged_into_track_id is not None:
+            return f"Объединён → {self.merged_into_track_id}"
         if self.confirmed:
             return "Подтверждён"
         if self.new_class_id is not None:
@@ -73,6 +81,7 @@ class VerificationResult:
     total_tracks: int
     deleted_count: int
     changed_class_count: int
+    merged_count: int
     verified_csv_path: str
 
 
@@ -108,7 +117,8 @@ def load_verified(verified_csv_path: str) -> Dict[int, dict]:
     """Загружает сохранённое состояние проверки из _verified.csv.
 
     Returns:
-        Словарь {track_id: {'deleted': bool, 'new_class_id': int | None, 'confirmed': bool}}
+        Словарь {track_id: {'deleted': bool, 'new_class_id': int | None,
+        'confirmed': bool, 'merged_into_track_id': int | None}}
     """
     if not os.path.exists(verified_csv_path):
         return {}
@@ -121,6 +131,7 @@ def load_verified(verified_csv_path: str) -> Dict[int, dict]:
             "deleted": bool(row["deleted"]),
             "new_class_id": _safe_int(row, "new_class_id"),
             "confirmed": bool(row["confirmed"]) if "confirmed" in row else False,
+            "merged_into_track_id": _safe_int(row, "merged_into_track_id"),
         }
     return state
 
@@ -147,6 +158,7 @@ def save_verified(
                 "deleted": t.deleted,
                 "new_class_id": t.new_class_id,
                 "confirmed": t.confirmed,
+                "merged_into_track_id": t.merged_into_track_id,
                 "verified_at": now,
             }
         )
@@ -179,19 +191,22 @@ def get_task_verification_status(tracks_csv_path: str) -> str:
         tid = int(row["track_id"])
         is_deleted = bool(row["deleted"])
         is_confirmed = bool(row.get("confirmed", False))
+        is_merged = pd.notna(row.get("merged_into_track_id"))
 
-        if not is_deleted and not is_confirmed:
+        if not is_deleted and not is_confirmed and not is_merged:
             all_resolved = False
             has_pending = True
 
-        if is_deleted and tid in track_ids_csv:
+        if (is_deleted or is_merged) and tid in track_ids_csv:
             all_resolved = False
 
     if not has_pending and all_resolved:
         return "Подтверждено"
 
     resolved_any = any(
-        bool(row["deleted"]) or bool(row.get("confirmed", False))
+        bool(row["deleted"])
+        or bool(row.get("confirmed", False))
+        or pd.notna(row.get("merged_into_track_id"))
         for _, row in verified_df.iterrows()
     )
     if resolved_any:
@@ -256,14 +271,25 @@ def apply_changes(
 ) -> VerificationResult:
     """Применяет изменения: обновляет CSV и записывает _verified.csv."""
     deleted_ids = set(t.track_id for t in tracks if t.deleted)
+    merge_map = {
+        t.track_id: t.merged_into_track_id
+        for t in tracks
+        if not t.deleted and t.merged_into_track_id is not None
+    }
+    target_class_map = {
+        t.track_id: t.effective_class_id
+        for t in tracks
+        if t.track_id in set(merge_map.values())
+    }
     changed_map = {
         t.track_id: t.new_class_id
         for t in tracks
-        if not t.deleted and t.new_class_id is not None
+        if not t.deleted and t.merged_into_track_id is None and t.new_class_id is not None
     }
 
     deleted_count = len(deleted_ids)
     changed_count = len(changed_map)
+    merged_count = len(merge_map)
 
     # 1. Обновляем _detections.csv
     if os.path.exists(detections_csv_path):
@@ -275,12 +301,20 @@ def apply_changes(
         remaining_ids = set(t.track_id for t in tracks if not t.deleted)
         det_df = det_df[det_df["track_id"].isin(remaining_ids)]
 
+        for source_id, target_id in merge_map.items():
+            det_df.loc[det_df["track_id"] == source_id, "track_id"] = target_id
+
         for tid, new_cid in changed_map.items():
             mask = det_df["track_id"] == tid
             det_df.loc[mask, "class_id"] = new_cid
             det_df.loc[mask, "class_name"] = CLASS_NAMES.get(
                 new_cid, f"unknown_{new_cid}"
             )
+
+        for tid, cid in target_class_map.items():
+            mask = det_df["track_id"] == tid
+            det_df.loc[mask, "class_id"] = cid
+            det_df.loc[mask, "class_name"] = CLASS_NAMES.get(cid, f"unknown_{cid}")
 
         det_df.to_csv(detections_csv_path, index=False)
 
@@ -291,12 +325,28 @@ def apply_changes(
         if deleted_ids:
             tracks_df = tracks_df[~tracks_df["track_id"].isin(deleted_ids)]
 
+        if merge_map:
+            tracks_df = tracks_df[~tracks_df["track_id"].isin(merge_map.keys())]
+
         for tid, new_cid in changed_map.items():
             mask = tracks_df["track_id"] == tid
             tracks_df.loc[mask, "class_id"] = new_cid
             tracks_df.loc[mask, "class_name"] = CLASS_NAMES.get(
                 new_cid, f"unknown_{new_cid}"
             )
+
+        for tid, cid in target_class_map.items():
+            mask = tracks_df["track_id"] == tid
+            tracks_df.loc[mask, "class_id"] = cid
+            tracks_df.loc[mask, "class_name"] = CLASS_NAMES.get(cid, f"unknown_{cid}")
+
+        if merge_map:
+            track_by_id = {t.track_id: t for t in tracks}
+            for target_id in sorted(set(merge_map.values())):
+                if 'det_df' in locals():
+                    _update_track_row_from_detections(tracks_df, det_df, target_id)
+                else:
+                    _update_track_row_from_track(tracks_df, track_by_id.get(target_id))
 
         tracks_df.to_csv(tracks_csv_path, index=False)
 
@@ -313,6 +363,7 @@ def apply_changes(
                 "deleted": t.deleted,
                 "new_class_id": t.new_class_id,
                 "confirmed": t.confirmed,
+                "merged_into_track_id": t.merged_into_track_id,
                 "verified_at": now,
             }
         )
@@ -322,8 +373,73 @@ def apply_changes(
         total_tracks=len(tracks),
         deleted_count=deleted_count,
         changed_class_count=changed_count,
+        merged_count=merged_count,
         verified_csv_path=vp,
     )
+
+
+def _update_track_row_from_detections(
+    tracks_df: pd.DataFrame,
+    detections_df: pd.DataFrame,
+    track_id: int,
+) -> None:
+    mask = tracks_df["track_id"] == track_id
+    det = detections_df[detections_df["track_id"] == track_id]
+    if not mask.any() or det.empty:
+        return
+
+    det = det.sort_values("frame") if "frame" in det.columns else det
+    first = det.iloc[0]
+    last = det.iloc[-1]
+
+    if "frame" in det.columns:
+        tracks_df.loc[mask, "first_frame"] = int(det["frame"].min())
+        tracks_df.loc[mask, "last_frame"] = int(det["frame"].max())
+        tracks_df.loc[mask, "frame_span"] = int(det["frame"].max() - det["frame"].min() + 1)
+    if "timestamp_s" in det.columns:
+        first_ts = float(det["timestamp_s"].min())
+        last_ts = float(det["timestamp_s"].max())
+        tracks_df.loc[mask, "first_timestamp_s"] = round(first_ts, 2)
+        tracks_df.loc[mask, "last_timestamp_s"] = round(last_ts, 2)
+        tracks_df.loc[mask, "duration_s"] = round(last_ts - first_ts, 2)
+    if "depth_m" in det.columns:
+        first_depth = _safe_float(first, "depth_m")
+        last_depth = _safe_float(last, "depth_m")
+        tracks_df.loc[mask, "first_depth_m"] = first_depth
+        tracks_df.loc[mask, "last_depth_m"] = last_depth
+        if first_depth is not None and last_depth is not None:
+            tracks_df.loc[mask, "depth_change_m"] = round(last_depth - first_depth, 2)
+    tracks_df.loc[mask, "detections_count"] = len(det)
+    if "confidence" in det.columns:
+        tracks_df.loc[mask, "avg_confidence"] = round(float(det["confidence"].mean()), 3)
+
+
+def _update_track_row_from_track(
+    tracks_df: pd.DataFrame,
+    track: Optional[TrackInfo],
+) -> None:
+    if track is None:
+        return
+    mask = tracks_df["track_id"] == track.track_id
+    if not mask.any():
+        return
+
+    values = {
+        "first_frame": track.first_frame,
+        "last_frame": track.last_frame,
+        "frame_span": track.frame_span,
+        "duration_s": track.duration_s,
+        "first_timestamp_s": track.first_timestamp_s,
+        "last_timestamp_s": track.last_timestamp_s,
+        "first_depth_m": track.first_depth_m,
+        "last_depth_m": track.last_depth_m,
+        "depth_change_m": track.depth_change_m,
+        "detections_count": track.detections_count,
+        "avg_confidence": track.avg_confidence,
+    }
+    for column, value in values.items():
+        if column in tracks_df.columns:
+            tracks_df.loc[mask, column] = value
 
 
 def _safe_float(row: pd.Series, col: str) -> Optional[float]:
