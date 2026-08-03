@@ -4,6 +4,10 @@
     "zotero": {
       "type": "local",
       "enabled": false,
+    },
+    "zotpilot": {
+      "type": "local",
+      "enabled": false,
     }
   }
 }
