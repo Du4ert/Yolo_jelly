@@ -9,20 +9,10 @@
 Калибровочные данные получены для GoPro 12 Wide 4K (3840x2160).
 
 Формулы расчёта размеров:
-1. k = (Δpixels/pixels₁) / Δz   - удельный прирост видимого размера (%/м)
-2. k_corr = k / cos(γ)          - приведение к наклонной дальности
-3. d = A * |k_corr|^B           - дистанция до объекта (м)
-4. p = C * d^D                  - калибровка (px/мм)
-5. size = pixels / p            - размер объекта (мм)
-6. z_object = z_camera + d*cos(γ) - глубина объекта (камера смотрит вниз)
-
-Здесь γ — угол между направлением на объект и направлением движения камеры.
-Так как s ∝ 1/d, строго выполняется k = cos(γ)/d, поэтому вертикальный зазор до
-объекта равен d*cos(γ), а не d. Угол γ наблюдаем прямо из пикселей: направление
-движения задаёт FOE, направление на объект — центр bbox. Наклон камеры и внеосевое
-положение объекта в кадре учитываются одной и той же операцией.
-
-Численные значения A, B, C, D берутся из файла калибровки (см. calibrate).
+1. k = (Δpixels/pixels₁) / Δd  - удельный прирост размера (%/м)
+2. d = 80.00 * |k|^(-0.9)     - дистанция до объекта (м)
+3. p = 4.35 * d^(-1.25)       - калибровка (px/мм)
+4. size = pixels / p           - размер объекта (мм)
 """
 
 import cv2
@@ -44,14 +34,10 @@ DISTORTION_MODEL_SEPARABLE_XY = "separable_xy"
 # Рабочее поле зрения GoPro 12 Wide 4K.
 # 156° в спецификации производителя — диагональный угол; для пересчёта пикселей
 # в углы нужны горизонтальный и вертикальный углы рабочей зоны кадра.
-# Проекция объектива близка к эквидистантной (angle ∝ радиус в пикселях):
-#   3840/95 = 40.4 px/°  и  2160/55 = 39.3 px/°  — согласуются в пределах 3%,
-# тогда как ректилинейная модель при 95° требовала бы 63° по вертикали.
+# Проекция объектива близка к эквидистантной (угол ∝ радиус в пикселях):
+#   3840/95 = 40.4 px/°  и  2160/55 = 39.3 px/°  — согласуются в пределах 3%.
 DEFAULT_FOV_HORIZONTAL = 95.0
 DEFAULT_FOV_VERTICAL = 55.0
-
-# Нижняя граница cos(γ): γ = 80°. Дальше поправка 1/cos(γ) разносит оценку.
-MIN_COS_GAMMA = 0.17
 
 # Классы с фиксированным размером (слишком мелкие для k-метода)
 FIXED_SIZE_CLASSES = {
@@ -113,21 +99,17 @@ class CameraCalibration:
 
     @property
     def pixels_per_degree(self) -> float:
+        """Горизонтальный масштаб: пикселей на градус внеосевого угла."""
         return self.frame_width / self.fov_horizontal
 
     @property
-    def pixels_per_radian(self) -> float:
-        """Масштаб эквидистантной проекции: радиус в пикселях = α · pixels_per_radian."""
-        return self.frame_width / np.radians(self.fov_horizontal)
+    def pixels_per_degree_vertical(self) -> float:
+        """Вертикальный масштаб: пикселей на градус внеосевого угла."""
+        return self.frame_height / self.fov_vertical
 
     @property
     def frame_center(self) -> Tuple[float, float]:
         return self.frame_width / 2, self.frame_height / 2
-
-    @property
-    def optical_center_px(self) -> Tuple[float, float]:
-        return (self.optical_center_x * self.frame_width,
-                self.optical_center_y * self.frame_height)
 
     @property
     def resolution_scale(self) -> float:
@@ -239,61 +221,6 @@ def _distortion_profile_is_valid(
     return bool(np.min(fx) > min_axis_factor and np.min(fy) > min_axis_factor)
 
 
-# =============================================================================
-# Угол между направлением на объект и направлением движения камеры (γ)
-# =============================================================================
-
-def _unit_direction(dx_px: float, dy_px: float, px_per_rad: float) -> np.ndarray:
-    """Единичный вектор направления в системе камеры по смещению от оптического центра.
-
-    Эквидистантная проекция: полярный угол α = r/px_per_rad, азимут = atan2(dy, dx).
-    Ось Z направлена вдоль оптической оси.
-    """
-    r = float(np.hypot(dx_px, dy_px))
-    if r < 1e-9:
-        return np.array([0.0, 0.0, 1.0])
-    alpha = r / px_per_rad
-    scale = np.sin(alpha) / r
-    return np.array([dx_px * scale, dy_px * scale, np.cos(alpha)])
-
-
-def cos_gamma_for_point(
-    x_px: float,
-    y_px: float,
-    foe_px: Tuple[float, float],
-    calibration: 'CameraCalibration',
-) -> float:
-    """cos угла γ между направлением на объект и направлением движения камеры.
-
-    Физическая основа: видимый размер s ∝ 1/d, поэтому при погружении камеры на Δz
-        k = d(ln s)/dz = cos(γ) / d,
-    где γ — угол между направлением на объект и направлением движения (вертикалью),
-    а d — наклонная дальность. Соответственно вертикальный зазор до объекта равен
-    d·cos(γ), а не d.
-
-    FOE — это и есть направление движения камеры в системе координат кадра, поэтому
-    обе величины наблюдаемы прямо из пикселей: наклон камеры и внеосевое положение
-    объекта в кадре учитываются одной и той же операцией. Если FOE недоступен,
-    направлением движения считается оптическая ось (γ = внеосевой угол объекта).
-    """
-    ocx, ocy = calibration.optical_center_px
-    px_per_rad = calibration.pixels_per_radian
-    obj_dir = _unit_direction(x_px - ocx, y_px - ocy, px_per_rad)
-    motion_dir = _unit_direction(foe_px[0] - ocx, foe_px[1] - ocy, px_per_rad)
-    return max(float(np.dot(obj_dir, motion_dir)), MIN_COS_GAMMA)
-
-
-def _pair_slant_distance(pair: dict, track_depth: float) -> float:
-    """Истинная наклонная дальность до объекта известной глубины на конце пары.
-
-    Разность глубин — вертикальный зазор Δz; наклонная дальность d = Δz/cos(γ).
-    Подстановка Δz вместо d занижает дальность тем сильнее, чем дальше объект
-    от направления движения камеры.
-    """
-    vertical_gap = track_depth - pair['depth_camera']
-    return vertical_gap / max(pair.get('cos_gamma_end', 1.0), MIN_COS_GAMMA)
-
-
 @dataclass
 class FOEResult:
     """Результат оценки Focus of Expansion."""
@@ -312,11 +239,10 @@ class TrackSizeEstimate:
     
     Метод расчёта:
     1. k = (Δpixels/pixels₁) / Δdepth_camera  - удельный прирост размера для каждой пары
-    2. k_corr = k / cos(γ)                    - приведение к наклонной дальности
-    3. d = A * |k_corr|^B                     - дистанция до объекта (м)
-    4. p = C * d^D                            - калибровка px/мм
-    5. size = pixels_max / p                  - размер объекта по макс. кадру (мм)
-    6. object_depth = camera_depth + d*cos(γ) - глубина объекта (камера смотрит вниз)
+    2. d = 80.00 * |k|^(-0.9)                - дистанция до объекта (м)
+    3. p = 4.35 * d^(-1.25)                  - калибровка px/мм
+    4. size = pixels_max / p                  - размер объекта по макс. кадру (мм)
+    5. object_depth = camera_depth + distance - глубина объекта (камера смотрит вниз)
     """
     track_id: int
     class_name: str
@@ -394,9 +320,11 @@ def estimate_foe(
     cx, cy = width / 2, height / 2
 
     if calibration is not None:
-        pixels_per_degree = calibration.pixels_per_degree
+        px_per_deg_h = calibration.pixels_per_degree
+        px_per_deg_v = calibration.pixels_per_degree_vertical
     else:
-        pixels_per_degree = width / DEFAULT_FOV_HORIZONTAL
+        px_per_deg_h = width / DEFAULT_FOV_HORIZONTAL
+        px_per_deg_v = height / DEFAULT_FOV_VERTICAL
 
     vec_lengths = np.linalg.norm(vectors, axis=1)
     mask = vec_lengths > min_vector_length
@@ -443,8 +371,8 @@ def estimate_foe(
         dot = _foe_error_directed(points_filt, vectors_filt, best_foe)
         confidence = float(np.mean(np.clip(dot, 0, 1)))
 
-    tilt_h = (foe_x - cx) / pixels_per_degree
-    tilt_v = (foe_y - cy) / pixels_per_degree
+    tilt_h = (foe_x - cx) / px_per_deg_h
+    tilt_v = (foe_y - cy) / px_per_deg_v
 
     max_foe_distance = 1.5 * max(width, height)
     foe_distance = np.sqrt((foe_x - cx)**2 + (foe_y - cy)**2)
@@ -458,8 +386,8 @@ def estimate_foe(
     if abs(tilt_h) > max_tilt_deg or abs(tilt_v) > max_tilt_deg:
         tilt_h = float(np.clip(tilt_h, -max_tilt_deg, max_tilt_deg))
         tilt_v = float(np.clip(tilt_v, -max_tilt_deg, max_tilt_deg))
-        foe_x = cx + tilt_h * pixels_per_degree
-        foe_y = cy + tilt_v * pixels_per_degree
+        foe_x = cx + tilt_h * px_per_deg_h
+        foe_y = cy + tilt_v * px_per_deg_v
         return FOEResult(foe_x, foe_y, tilt_h, tilt_v, 0.0, len(points_filt))
 
     # Ветка 3: валидный результат
@@ -625,15 +553,16 @@ def _find_size_pairs(
     x_k2 = calibration.distortion_x_k2
     y_k1 = calibration.distortion_y_k1
     y_k2 = calibration.distortion_y_k2
-    has_positions = xcenter_arr is not None and ycenter_arr is not None
     has_distortion = (
         any(value != 0 for value in (x_k1, x_k2, y_k1, y_k2))
-        and has_positions
+        and xcenter_arr is not None
+        and ycenter_arr is not None
     )
-    ocx = calibration.optical_center_x * frame_width
-    ocy = calibration.optical_center_y * frame_height
-    half_width = frame_width / 2
-    half_height = frame_height / 2
+    if has_distortion:
+        ocx = calibration.optical_center_x * frame_width
+        ocy = calibration.optical_center_y * frame_height
+        half_width = frame_width / 2
+        half_height = frame_height / 2
 
     i = 0
     while i < n:
@@ -691,35 +620,17 @@ def _find_size_pairs(
         k_raw = (delta_pixels / pixels1_for_k) / delta_depth
         k = k_raw
 
-        # --- Полный угол γ между направлением на объект и движением камеры ---
-        # k = cos(γ)/d, поэтому k_corr = k/cos(γ) даёт 1/d. Одна и та же операция
-        # снимает и наклон камеры (через FOE), и внеосевое положение объекта в кадре.
-        cos_gamma = 1.0
-        cos_gamma_end = 1.0
+        cos_tilt = 1.0
         tilt_deg_pair = 0.0
-        if has_positions:
-            foe_px = (ocx, ocy)
-            if apply_tilt_correction:
-                foe_px, tilt_deg_pair, foe_measured = get_foe_for_range(
-                    int(frame1), int(frame2), geometry_df, calibration
-                )
-                if foe_measured and tilt_deg_pair > 0:
-                    tilt_correction_applied = True
-                    avg_tilt_deg = max(avg_tilt_deg, tilt_deg_pair)
-
-            cos_gamma_start = cos_gamma_for_point(
-                xcenter_arr[i] * frame_width, ycenter_arr[i] * frame_height,
-                foe_px, calibration
+        if apply_tilt_correction and geometry_df is not None:
+            cos_tilt, tilt_deg_pair = get_average_tilt_for_range(
+                int(frame1), int(frame2), geometry_df
             )
-            cos_gamma_end = cos_gamma_for_point(
-                xcenter_arr[found_j] * frame_width,
-                ycenter_arr[found_j] * frame_height,
-                foe_px, calibration
-            )
-            # Для конечной пары точное соотношение даёт k = cos(γ_eff)/d₂,
-            # где cos(γ_eff) = (Δ₁+Δ₂)/(d₁+d₂) — среднее по концам пары.
-            cos_gamma = max((cos_gamma_start + cos_gamma_end) / 2.0, MIN_COS_GAMMA)
-            k = k_raw / cos_gamma
+            if cos_tilt < 1.0:
+                tilt_correction_applied = True
+                avg_tilt_deg = max(avg_tilt_deg, tilt_deg_pair)
+            cos_tilt = max(cos_tilt, 0.17)
+            k = k_raw / cos_tilt
 
         if k > 0:
             k_percent = k * 100
@@ -735,8 +646,7 @@ def _find_size_pairs(
             pixels2_ref = pixels2_for_k / calibration.resolution_scale
             size_mm = _calculate_size_mm(pixels2_ref, pixel_calib)
             camera_depth_end = depth2
-            # Вертикальный зазор до объекта — проекция наклонной дальности
-            object_depth = camera_depth_end + distance * cos_gamma_end
+            object_depth = camera_depth_end + distance
 
             pair_data.append({
                 'frame_start': frame1,
@@ -745,9 +655,7 @@ def _find_size_pairs(
                 'k': k,
                 'k_percent': k_percent,
                 'k_raw_percent': k_raw_uncorrected * 100,
-                'cos_gamma': cos_gamma,
-                'cos_gamma_end': cos_gamma_end,
-                'gamma_deg': float(np.degrees(np.arccos(np.clip(cos_gamma, -1.0, 1.0)))),
+                'cos_tilt': cos_tilt,
                 'tilt_deg': tilt_deg_pair,
                 'distance': distance,
                 'pixel_calib': pixel_calib,
@@ -1282,15 +1190,7 @@ def estimate_size_from_typical(
                        calibration.max_reliable_distance + 2.0)
     
     if pd.notna(camera_depth_max):
-        # Вертикальный зазор — проекция наклонной дальности: d·cos(γ).
-        # Данных FOE здесь нет, поэтому направлением движения считается
-        # оптическая ось, и γ сводится к внеосевому углу объекта в кадре.
-        cos_gamma = cos_gamma_for_point(
-            max_row['x_center'] * frame_width,
-            max_row['y_center'] * frame_height,
-            calibration.optical_center_px, calibration
-        )
-        object_depth = camera_depth_max + distance * cos_gamma
+        object_depth = camera_depth_max + distance  # камера смотрит вниз, объект глубже
     else:
         object_depth = np.nan
     
@@ -1387,17 +1287,7 @@ def estimate_size_by_parallax(
 
     camera_depth = max_row.get('depth_m', np.nan)
     if pd.notna(camera_depth):
-        # Вертикальный зазор — проекция наклонной дальности: d·cos(γ)
-        foe_px, _, _ = get_foe_for_range(
-            int(max_row['frame']), int(max_row['frame']),
-            geometry_df, calibration
-        )
-        cos_gamma = cos_gamma_for_point(
-            max_row['x_center'] * frame_width,
-            max_row['y_center'] * frame_height,
-            foe_px, calibration
-        )
-        object_depth = camera_depth + d_obj * cos_gamma
+        object_depth = camera_depth + d_obj
     else:
         object_depth = np.nan
 
@@ -1471,13 +1361,8 @@ def get_tilt_correction_for_frame(
     min_confidence: float = 0.5
 ) -> float:
     """
-    УСТАРЕЛО: учитывает только наклон камеры и игнорирует внеосевое положение
-    объекта в кадре, которое обычно даёт больший вклад. В расчёте размеров
-    заменено на cos_gamma_for_point() + get_foe_for_range(). Оставлено для
-    обратной совместимости внешних скриптов.
-
     Получает коэффициент коррекции наклона для заданного кадра.
-
+    
     При наклоне камеры на угол θ от вертикали, изменение дистанции до объекта
     при погружении камеры на Δd составляет Δd × cos(θ).
     
@@ -1531,52 +1416,6 @@ def get_tilt_correction_for_frame(
     return cos_tilt
 
 
-def get_foe_for_range(
-    frame_start: int,
-    frame_end: int,
-    geometry_df: Optional[pd.DataFrame],
-    calibration: 'CameraCalibration',
-    min_confidence: float = 0.5,
-) -> Tuple[Tuple[float, float], float, bool]:
-    """Возвращает положение FOE (направление движения камеры) для диапазона кадров.
-
-    Returns:
-        ((foe_x, foe_y), tilt_deg, is_measured) — при отсутствии надёжных данных
-        возвращается оптический центр, нулевой наклон и is_measured=False.
-
-    В отличие от get_average_tilt_for_range здесь нет отката на среднее по всему
-    видео: если пересекающихся надёжных интервалов нет, коррекция по наклону просто
-    не применяется, а направлением движения считается оптическая ось.
-    """
-    optical_center = calibration.optical_center_px
-
-    if (geometry_df is None or len(geometry_df) == 0
-            or 'foe_x' not in geometry_df.columns
-            or 'foe_y' not in geometry_df.columns):
-        return optical_center, 0.0, False
-
-    df = geometry_df
-    if 'confidence' in df.columns:
-        df = df[df['confidence'] >= min_confidence]
-    if len(df) == 0:
-        return optical_center, 0.0, False
-
-    overlapping = df[(df['frame_end'] >= frame_start)
-                     & (df['frame_start'] <= frame_end)]
-    if len(overlapping) == 0:
-        return optical_center, 0.0, False
-
-    foe_x = float(overlapping['foe_x'].median())
-    foe_y = float(overlapping['foe_y'].median())
-    if not (np.isfinite(foe_x) and np.isfinite(foe_y)):
-        return optical_center, 0.0, False
-
-    ocx, ocy = optical_center
-    tilt_deg = float(np.hypot(foe_x - ocx, foe_y - ocy)
-                     / calibration.pixels_per_degree)
-    return (foe_x, foe_y), tilt_deg, True
-
-
 def get_average_tilt_for_range(
     frame_start: int,
     frame_end: int,
@@ -1584,12 +1423,8 @@ def get_average_tilt_for_range(
     min_confidence: float = 0.5
 ) -> Tuple[float, float]:
     """
-    УСТАРЕЛО: см. get_tilt_correction_for_frame. Дополнительно усредняет
-    компоненты наклона со знаком (при покачивании установки они взаимно гасятся)
-    и молча откатывается на среднее по всему видео. Заменено на get_foe_for_range.
-
     Вычисляет средний наклон камеры для диапазона кадров.
-
+    
     Returns:
         (cos_tilt, tilt_deg) - коэффициент коррекции и угол в градусах
     """
@@ -2728,8 +2563,8 @@ def _corrected_k_percent(
 
     delta_pix_corr = corrected_end - corrected_start
     k_raw_new = (delta_pix_corr / corrected_start) / delta_depth
-    cos_gamma = max(p.get('cos_gamma', 1.0), MIN_COS_GAMMA)
-    k_new = k_raw_new / cos_gamma
+    cos_tilt = p.get('cos_tilt', 1.0)
+    k_new = k_raw_new / cos_tilt
 
     return max(k_new * 100, 1.0)
 
@@ -2918,7 +2753,8 @@ def _calibration_loss(
                     p, x_k1, x_k2, y_k1, y_k2
                 )
                 computed_dist = A * (k_percent_corr ** B)
-                true_dist = _pair_slant_distance(p, track_depth)
+                camera_depth = p['depth_camera']
+                true_dist = track_depth - camera_depth
                 if true_dist > 0.05:
                     dist_err = (computed_dist - true_dist) / true_dist
                     track_dist_errors.append(min(dist_err**2, 1.0))
@@ -3120,8 +2956,7 @@ def calibrate_coefficients(
 
     if tracks_with_depth:
         # === Декомпозированный подход с известной глубиной ===
-        # Обходим шумную формулу d = A*k^B: истинная наклонная дальность берётся
-        # из известной глубины объекта как (track_depth - camera_depth)/cos(γ).
+        # Обходим шумную формулу d = A*k^B: используем true_dist = track_depth - camera_depth
         # Фитим только p = C * d^D и дисторсию k1, k2
         if verbose:
             print(f"\nДекомпозированная калибровка ({len(tracks_with_depth)} треков с известной глубиной)...")
@@ -3138,7 +2973,7 @@ def calibrate_coefficients(
             known_size = known_sizes[tid]
             track_depth = known_depths[tid]
             for p in all_track_pairs[tid]:
-                true_dist = _pair_slant_distance(p, track_depth)
+                true_dist = track_depth - p['depth_camera']
                 if true_dist < 0.05:
                     continue
                 pixels_ref = p['size_pixels'] / resolution_scale
@@ -3365,7 +3200,7 @@ def calibrate_coefficients(
                     k_values.append(_corrected_k_percent(
                         p, x_k1_, x_k2_, y_k1_, y_k2_
                     ))
-                    true_distances.append(_pair_slant_distance(p, track_depth))
+                    true_distances.append(track_depth - p['depth_camera'])
                     corrected_pixels.append(
                         p['size_pixels'] * factor / resolution_scale
                     )
@@ -3517,7 +3352,7 @@ def calibrate_coefficients(
             track_depth = known_depths[tid]
             direct_sizes = []
             for p in pairs:
-                true_d = _pair_slant_distance(p, track_depth)
+                true_d = track_depth - p['depth_camera']
                 if true_d < 0.05:
                     continue
                 pix_ref = p['size_pixels'] / resolution_scale
@@ -3534,7 +3369,7 @@ def calibrate_coefficients(
                 err_direct = (med_direct - known) / known * 100
                 errors_direct.append(abs(err_direct))
                 r_meds = [p.get('rx_norm', 0) for p in pairs]
-                true_dists = [_pair_slant_distance(p, track_depth) for p in pairs]
+                true_dists = [track_depth - p['depth_camera'] for p in pairs]
                 direct_rows.append(
                     f"{label:<18}  {known:>8.1f}мм  {med_direct:>8.1f}мм  {err_direct:>+8.1f}%  {np.median(true_dists):>7.2f}м  {np.median(r_meds):>7.3f}"
                 )
@@ -3699,7 +3534,7 @@ def main():
                        help='Имя файла детекций в output/ (по умолчанию: ball_detections.csv)')
     calib.add_argument('--geometry-name', default='ball_geometry.csv',
                        help='Имя файла геометрии в output/ (по умолчанию: ball_geometry.csv)')
-    calib.add_argument('--output', '-o', default='calibration_result.json',
+    calib.add_argument('--output', '-o', default='calibration_xy.json',
                        help='JSON с результатами')
     calib.add_argument('--width', type=int, default=3840)
     calib.add_argument('--height', type=int, default=2160)

@@ -359,13 +359,13 @@ python src/camera_geometry.py calibrate \
     --geometry output/ball_geometry.csv \
     --known-size 1:67.0 --known-size 3:67.0 \
     --known-depth 1:67.076 --known-depth 3:67.076 \
-    --output calibration_result.json
+    --output calibration_xy.json
 
 # Калибровка без известной глубины (оптимизация всех 6 параметров)
 python src/camera_geometry.py calibrate \
     --detections output/detections.csv \
     --known-size 1:120.0 --known-size 5:80.0 \
-    --output calibration_result.json
+    --output calibration_xy.json
 ```
 
 | Параметр | По умолчанию | Описание |
@@ -374,7 +374,7 @@ python src/camera_geometry.py calibrate \
 | `--known-size` | — | Размер объекта `track_id:size_mm`, можно указать несколько раз (обязательный) |
 | `--known-depth` | None | Глубина объекта `track_id:depth_m`, можно указать несколько раз |
 | `--geometry`, `-g` | None | CSV с геометрией камеры (для tilt-коррекции) |
-| `--output`, `-o` | `calibration_result.json` | Выходной JSON с коэффициентами |
+| `--output`, `-o` | `calibration_xy.json` | Выходной JSON с коэффициентами |
 | `--width` | 3840 | Ширина кадра |
 | `--height` | 2160 | Высота кадра |
 
@@ -414,7 +414,7 @@ GoPro Wide 156° FOV вносит радиальное искажение — о
 python src/camera_geometry.py size \
     --detections output/detections.csv \
     --geometry output/geometry.csv \
-    --calibration calibration_result.json
+    --calibration calibration_xy.json
 ```
 
 Флаг `--calibration` загружает JSON и заменяет дефолтные коэффициенты (A, B, C, D) и параметры дисторсии (k1, k2) на откалиброванные.
