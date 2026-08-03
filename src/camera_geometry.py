@@ -28,6 +28,8 @@ from video_utils import ThreadedVideoCapture
 
 # Ширина кадра, для которой получены калибровочные коэффициенты (GoPro 12 Wide 4K)
 REFERENCE_FRAME_WIDTH = 3840
+CALIBRATION_SCHEMA_VERSION = 2
+DISTORTION_MODEL_SEPARABLE_XY = "separable_xy"
 
 # Классы с фиксированным размером (слишком мелкие для k-метода)
 FIXED_SIZE_CLASSES = {
@@ -72,12 +74,13 @@ class CameraCalibration:
     min_reliable_distance: float = 0.1   # ближе - слишком крупно
     max_reliable_distance: float = 3.0   # дальше - шум > сигнал
 
-    # Радиальная дисторсия (коррекция fisheye GoPro 156°)
-    # Коррекция: size_corrected = size_raw * (1 + k1*r² + k2*r⁴)
-    # r — нормализованное расстояние от оптического центра (0 = центр, 1 = угол кадра)
-    # При k1 < 0 — уменьшает размер на периферии (компенсация раздутия fisheye)
-    distortion_k1: float = 0.0
-    distortion_k2: float = 0.0
+    # Раздельная XY-дисторсия:
+    # size_corrected = size_raw * f_x(r_x) * f_y(r_y),
+    # f_axis(r) = 1 + k1*r² + k2*r⁴.
+    distortion_x_k1: float = 0.0
+    distortion_x_k2: float = 0.0
+    distortion_y_k1: float = 0.0
+    distortion_y_k2: float = 0.0
     optical_center_x: float = 0.5  # нормализован (0..1 от ширины)
     optical_center_y: float = 0.5  # нормализован (0..1 от высоты)
 
@@ -108,13 +111,34 @@ class CameraCalibration:
         import json
         with open(json_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
+        if data.get('schema_version') != CALIBRATION_SCHEMA_VERSION:
+            raise ValueError(
+                "Устаревший или неизвестный формат калибровки. "
+                "Требуется повторная калибровка в schema_version=2."
+            )
+        if data.get('distortion_model') != DISTORTION_MODEL_SEPARABLE_XY:
+            raise ValueError(
+                "Неподдерживаемая модель дисторсии: ожидается separable_xy."
+            )
+        required_distortion_keys = (
+            'distortion_x_k1', 'distortion_x_k2',
+            'distortion_y_k1', 'distortion_y_k2',
+        )
+        missing = [key for key in required_distortion_keys if key not in data]
+        if missing:
+            raise ValueError(
+                "В калибровке отсутствуют коэффициенты XY-дисторсии: "
+                + ", ".join(missing)
+            )
         return cls(
             distance_coef_A=data.get('distance_coef_A', 80.0),
             distance_coef_B=data.get('distance_coef_B', -0.9),
             pixel_calib_C=data.get('pixel_calib_C', 4.35),
             pixel_calib_D=data.get('pixel_calib_D', -1.25),
-            distortion_k1=data.get('distortion_k1', 0.0),
-            distortion_k2=data.get('distortion_k2', 0.0),
+            distortion_x_k1=data['distortion_x_k1'],
+            distortion_x_k2=data['distortion_x_k2'],
+            distortion_y_k1=data['distortion_y_k1'],
+            distortion_y_k2=data['distortion_y_k2'],
             optical_center_x=data.get('optical_center_x', 0.5),
             optical_center_y=data.get('optical_center_y', 0.5),
             frame_width=data.get('frame_width', 3840),
@@ -128,20 +152,54 @@ class CameraCalibration:
         """Сохраняет калибровку в JSON файл."""
         import json
         data = {
+            'schema_version': CALIBRATION_SCHEMA_VERSION,
+            'distortion_model': DISTORTION_MODEL_SEPARABLE_XY,
             'distance_coef_A': self.distance_coef_A,
             'distance_coef_B': self.distance_coef_B,
             'pixel_calib_C': self.pixel_calib_C,
             'pixel_calib_D': self.pixel_calib_D,
-            'distortion_k1': self.distortion_k1,
-            'distortion_k2': self.distortion_k2,
+            'distortion_x_k1': self.distortion_x_k1,
+            'distortion_x_k2': self.distortion_x_k2,
+            'distortion_y_k1': self.distortion_y_k1,
+            'distortion_y_k2': self.distortion_y_k2,
             'optical_center_x': self.optical_center_x,
             'optical_center_y': self.optical_center_y,
+            'frame_width': self.frame_width,
+            'frame_height': self.frame_height,
             'parallax_ref_percentile': self.parallax_ref_percentile,
             'min_reliable_distance': self.min_reliable_distance,
             'max_reliable_distance': self.max_reliable_distance,
         }
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def _distortion_factor_xy(
+    rx: float,
+    ry: float,
+    x_k1: float,
+    x_k2: float,
+    y_k1: float,
+    y_k2: float,
+) -> float:
+    """Возвращает произведение независимых поправок по X и Y."""
+    fx = 1.0 + x_k1 * rx**2 + x_k2 * rx**4
+    fy = 1.0 + y_k1 * ry**2 + y_k2 * ry**4
+    return fx * fy
+
+
+def _distortion_profile_is_valid(
+    x_k1: float,
+    x_k2: float,
+    y_k1: float,
+    y_k2: float,
+    min_axis_factor: float = 0.2,
+) -> bool:
+    """Проверяет положительность обеих осевых поправок на всём кадре."""
+    grid = np.linspace(0.0, 1.0, 101)
+    fx = 1.0 + x_k1 * grid**2 + x_k2 * grid**4
+    fy = 1.0 + y_k1 * grid**2 + y_k2 * grid**4
+    return bool(np.min(fx) > min_axis_factor and np.min(fy) > min_axis_factor)
 
 
 @dataclass
@@ -470,13 +528,20 @@ def _find_size_pairs(
     # Параметры дисторсии
     frame_width = calibration.frame_width
     frame_height = calibration.frame_height
-    k1 = calibration.distortion_k1
-    k2 = calibration.distortion_k2
-    has_distortion = (k1 != 0 or k2 != 0) and xcenter_arr is not None
+    x_k1 = calibration.distortion_x_k1
+    x_k2 = calibration.distortion_x_k2
+    y_k1 = calibration.distortion_y_k1
+    y_k2 = calibration.distortion_y_k2
+    has_distortion = (
+        any(value != 0 for value in (x_k1, x_k2, y_k1, y_k2))
+        and xcenter_arr is not None
+        and ycenter_arr is not None
+    )
     if has_distortion:
-        diag_half = np.sqrt(frame_width**2 + frame_height**2) / 2
         ocx = calibration.optical_center_x * frame_width
         ocy = calibration.optical_center_y * frame_height
+        half_width = frame_width / 2
+        half_height = frame_height / 2
 
     i = 0
     while i < n:
@@ -516,15 +581,17 @@ def _find_size_pairs(
         if has_distortion:
             cx1 = xcenter_arr[i] * frame_width
             cy1 = ycenter_arr[i] * frame_height
-            r1 = np.sqrt((cx1 - ocx)**2 + (cy1 - ocy)**2) / diag_half
-            df1 = 1.0 + k1 * r1**2 + k2 * r1**4
+            rx1 = abs(cx1 - ocx) / half_width
+            ry1 = abs(cy1 - ocy) / half_height
+            df1 = _distortion_factor_xy(rx1, ry1, x_k1, x_k2, y_k1, y_k2)
             if df1 > 0:
                 pixels1_for_k = pixels1 * df1
 
             cx2 = xcenter_arr[found_j] * frame_width
             cy2 = ycenter_arr[found_j] * frame_height
-            r2 = np.sqrt((cx2 - ocx)**2 + (cy2 - ocy)**2) / diag_half
-            df2 = 1.0 + k1 * r2**2 + k2 * r2**4
+            rx2 = abs(cx2 - ocx) / half_width
+            ry2 = abs(cy2 - ocy) / half_height
+            df2 = _distortion_factor_xy(rx2, ry2, x_k1, x_k2, y_k1, y_k2)
             if df2 > 0:
                 pixels2_for_k = pixels2 * df2
 
@@ -2424,11 +2491,15 @@ def process_volume_estimation(
 # Калибровка коэффициентов
 # =============================================================================
 
-def _corrected_k_percent(p: dict, k1: float, k2: float) -> float:
+def _corrected_k_percent(
+    p: dict,
+    x_k1: float,
+    x_k2: float,
+    y_k1: float,
+    y_k2: float,
+) -> float:
     """
-    Пересчитывает k_percent с учётом коррекции дисторсии обоих концов пары.
-
-    Barrel distortion увеличивает видимый размер объектов на краях кадра.
+    Пересчитывает k_percent с учётом независимых X/Y-поправок обоих концов пары.
     Без коррекции k завышается для объектов, движущихся от центра к краю,
     что приводит к занижению расстояния и искажению размеров.
     """
@@ -2439,13 +2510,19 @@ def _corrected_k_percent(p: dict, k1: float, k2: float) -> float:
     pixels_end = p['size_pixels']
 
     # Коррекция дисторсии обоих концов
-    r_end = p.get('r_norm', 0.0)
-    df_end = 1.0 + k1 * r_end**2 + k2 * r_end**4
+    rx_end = p.get('rx_norm', 0.0)
+    ry_end = p.get('ry_norm', 0.0)
+    df_end = _distortion_factor_xy(
+        rx_end, ry_end, x_k1, x_k2, y_k1, y_k2
+    )
     if df_end <= 0:
         df_end = 1.0
 
-    r_start = p.get('r_norm_start', 0.0)
-    df_start = 1.0 + k1 * r_start**2 + k2 * r_start**4
+    rx_start = p.get('rx_norm_start', 0.0)
+    ry_start = p.get('ry_norm_start', 0.0)
+    df_start = _distortion_factor_xy(
+        rx_start, ry_start, x_k1, x_k2, y_k1, y_k2
+    )
     if df_start <= 0:
         df_start = 1.0
 
@@ -2474,7 +2551,7 @@ def _corrected_k_percent(p: dict, k1: float, k2: float) -> float:
 def _compute_sizes_from_pairs(
     pairs: List[dict],
     A: float, B: float, C: float, D: float,
-    k1: float, k2: float,
+    x_k1: float, x_k2: float, y_k1: float, y_k2: float,
     resolution_scale: float,
 ) -> np.ndarray:
     """
@@ -2487,14 +2564,17 @@ def _compute_sizes_from_pairs(
     sizes = np.empty(len(pairs))
     for i, p in enumerate(pairs):
         # Пересчитываем k с учётом дисторсии обоих концов пары
-        k_percent = _corrected_k_percent(p, k1, k2)
+        k_percent = _corrected_k_percent(p, x_k1, x_k2, y_k1, y_k2)
 
         distance = A * (k_percent ** B)
         pixel_calib = C * (max(distance, 0.1) ** D)
 
         # Коррекция дисторсии конечного кадра для размера
-        r_end = p.get('r_norm', 0.0)
-        df_end = 1.0 + k1 * r_end**2 + k2 * r_end**4
+        rx_end = p.get('rx_norm', 0.0)
+        ry_end = p.get('ry_norm', 0.0)
+        df_end = _distortion_factor_xy(
+            rx_end, ry_end, x_k1, x_k2, y_k1, y_k2
+        )
         if df_end <= 0:
             df_end = 1.0
         corrected_end = p['size_pixels'] * df_end
@@ -2518,13 +2598,12 @@ def _extract_calibration_pairs(
     Извлекает сырые пары из detection CSV для калибровки.
 
     Возвращает dict {track_id: list_of_pairs}, где каждая пара содержит:
-      k_percent, size_pixels, r_norm, frame_end, x_center, y_center
+      k_percent, size_pixels, rx_norm, ry_norm, frame_end, x_center, y_center
     """
     df = pd.read_csv(detections_csv)
     geometry_df = pd.read_csv(geometry_csv) if geometry_csv else None
 
     calibration = CameraCalibration(frame_width=frame_width, frame_height=frame_height)
-    diag_half = np.sqrt(frame_width**2 + frame_height**2) / 2
 
     result = {}
     min_change_ratio = 1.0 + min_size_change_pct / 100.0
@@ -2555,9 +2634,11 @@ def _extract_calibration_pairs(
 
         pair_data_filtered = _filter_pairs_by_mad(pair_data)
 
-        # Добавляем r_norm и координаты начального и конечного кадров
-        ocx = frame_width / 2
-        ocy = frame_height / 2
+        # Добавляем раздельные нормированные координаты обоих концов пары.
+        ocx = calibration.optical_center_x * frame_width
+        ocy = calibration.optical_center_y * frame_height
+        half_width = frame_width / 2
+        half_height = frame_height / 2
         for p in pair_data_filtered:
             # Конечный кадр
             frame_end = int(p['frame_end'])
@@ -2566,11 +2647,13 @@ def _extract_calibration_pairs(
                 end_row = end_rows.iloc[0]
                 cx = end_row['x_center'] * frame_width
                 cy = end_row['y_center'] * frame_height
-                p['r_norm'] = np.sqrt((cx - ocx)**2 + (cy - ocy)**2) / diag_half
+                p['rx_norm'] = abs(cx - ocx) / half_width
+                p['ry_norm'] = abs(cy - ocy) / half_height
                 p['x_center'] = end_row['x_center']
                 p['y_center'] = end_row['y_center']
             else:
-                p['r_norm'] = 0.0
+                p['rx_norm'] = 0.0
+                p['ry_norm'] = 0.0
                 p['x_center'] = 0.5
                 p['y_center'] = 0.5
 
@@ -2581,9 +2664,15 @@ def _extract_calibration_pairs(
                 start_row = start_rows.iloc[0]
                 cx_s = start_row['x_center'] * frame_width
                 cy_s = start_row['y_center'] * frame_height
-                p['r_norm_start'] = np.sqrt((cx_s - ocx)**2 + (cy_s - ocy)**2) / diag_half
+                p['rx_norm_start'] = abs(cx_s - ocx) / half_width
+                p['ry_norm_start'] = abs(cy_s - ocy) / half_height
+                p['x_center_start'] = start_row['x_center']
+                p['y_center_start'] = start_row['y_center']
             else:
-                p['r_norm_start'] = 0.0
+                p['rx_norm_start'] = 0.0
+                p['ry_norm_start'] = 0.0
+                p['x_center_start'] = 0.5
+                p['y_center_start'] = 0.5
 
         result[int(track_id)] = pair_data_filtered
 
@@ -2606,7 +2695,9 @@ def _calibration_loss(
        расчётной дистанции (A*k^B) и реальной (track_depth - camera_depth)
     3. Регуляризация дисторсии
     """
-    A, B, C, D, k1, k2 = params
+    A, B, C, D, x_k1, x_k2, y_k1, y_k2 = params
+    if not _distortion_profile_is_valid(x_k1, x_k2, y_k1, y_k2):
+        return 1e6
     huber_delta = 0.3
     size_loss = 0.0
     bias_sum = 0.0
@@ -2618,7 +2709,9 @@ def _calibration_loss(
         if not pairs:
             continue
 
-        estimated = _compute_sizes_from_pairs(pairs, A, B, C, D, k1, k2, resolution_scale)
+        estimated = _compute_sizes_from_pairs(
+            pairs, A, B, C, D, x_k1, x_k2, y_k1, y_k2, resolution_scale
+        )
         rel_errors = (estimated - known_size) / known_size
         abs_err = np.abs(rel_errors)
         huber = np.where(
@@ -2633,15 +2726,19 @@ def _calibration_loss(
         # Используем скорректированный k (с учётом дисторсии)
         if known_depths and track_id in known_depths:
             track_depth = known_depths[track_id]
+            track_dist_errors = []
             for p in pairs:
-                k_percent_corr = _corrected_k_percent(p, k1, k2)
+                k_percent_corr = _corrected_k_percent(
+                    p, x_k1, x_k2, y_k1, y_k2
+                )
                 computed_dist = A * (k_percent_corr ** B)
                 camera_depth = p['depth_camera']
                 true_dist = track_depth - camera_depth
                 if true_dist > 0.05:
                     dist_err = (computed_dist - true_dist) / true_dist
-                    dist_loss += min(dist_err**2, 1.0)
-            dist_loss /= len(pairs)
+                    track_dist_errors.append(min(dist_err**2, 1.0))
+            if track_dist_errors:
+                dist_loss += float(np.mean(track_dist_errors))
 
         n_tracks += 1
 
@@ -2653,7 +2750,9 @@ def _calibration_loss(
     mean_bias = bias_sum / n_tracks
 
     # Регуляризация дисторсии (мягкая — не мешает оптимизатору)
-    reg_distortion = 0.001 * (k1**2 + k2**2)
+    reg_distortion = 0.001 * (
+        x_k1**2 + x_k2**2 + y_k1**2 + y_k2**2
+    )
 
     return size_loss + 0.5 * mean_bias**2 + dist_loss + reg_distortion
 
@@ -2757,7 +2856,7 @@ def calibrate_coefficients(
     verbose: bool = True
 ) -> CameraCalibration:
     """
-    Оптимизирует калибровочные коэффициенты A, B, C, D, k1, k2 по набору видео.
+    Оптимизирует A, B, C, D и четыре коэффициента separable XY-дисторсии.
 
     Каждый элемент video_specs — словарь:
       detections_csv: путь к CSV с детекциями
@@ -2841,7 +2940,7 @@ def calibrate_coefficients(
         if verbose:
             print(f"\nДекомпозированная калибровка ({len(tracks_with_depth)} треков с известной глубиной)...")
 
-        # Собираем данные: true_distance, pixel_calib_true, r_norm
+        # Собираем данные для начальных оценок distance/pixel calibration.
         all_k = []
         all_true_dist = []
         all_pixel_calib_true = []
@@ -2862,7 +2961,7 @@ def calibrate_coefficients(
                 all_k.append(p['k_percent'])
                 all_true_dist.append(true_dist)
                 all_pixel_calib_true.append(pixel_calib_true)
-                all_r_norm.append(p.get('r_norm', 0.0))
+                all_r_norm.append(p.get('rx_norm', 0.0))
                 all_pixels_ref.append(pixels_ref)
                 all_known_size.append(known_size)
 
@@ -2947,7 +3046,7 @@ def calibrate_coefficients(
             for p in all_track_pairs[tid]:
                 all_pairs_k.append(max(p['k_percent'], 1.0))
                 all_pairs_pixels_ref.append(p['size_pixels'] / resolution_scale)
-                all_pairs_r.append(p.get('r_norm', 0.0))
+                all_pairs_r.append(p.get('rx_norm', 0.0))
                 all_pairs_known.append(known)
                 all_pairs_track_idx.append(track_i)
         all_pairs_k = np.array(all_pairs_k)
@@ -3028,7 +3127,9 @@ def calibrate_coefficients(
         for tid in available_tracks:
             pairs = all_track_pairs[tid]
             known = known_sizes[tid]
-            estimated = _compute_sizes_from_pairs(pairs, A, B, C, D, k1, k2, resolution_scale)
+            estimated = _compute_sizes_from_pairs(
+                pairs, A, B, C, D, k1, k2, 0.0, 0.0, resolution_scale
+            )
             if len(estimated) > 0:
                 bias_ratios.append(np.median(estimated) / known)
         if bias_ratios:
@@ -3042,6 +3143,113 @@ def calibrate_coefficients(
                     print(f"\n  Пост-коррекция bias: медиана отношения оценка/истина = {median_bias_ratio:.4f}")
                     print(f"  C: {C_old:.4f} -> {C:.4f} (*{median_bias_ratio:.4f})")
 
+        # Финальная оптимизация использует тот же полный pipeline, что и рабочий
+        # расчёт/валидация. Для каждой пары корректируются оба конца, заново
+        # вычисляется k, после чего A/B и C/D повторно оцениваются в log-пространстве.
+        # Во внешнем контуре остаются четыре коэффициента XY-дисторсии: это
+        # устраняет неидентифицируемость свободной оптимизации всех параметров.
+        if verbose:
+            print("\n  Финальная согласованная оптимизация полного pipeline...")
+        x_k1 = x_k2 = y_k1 = y_k2 = 0.0
+
+        def _refit_consistent_pipeline(dist_params):
+            x_k1_, x_k2_, y_k1_, y_k2_ = dist_params
+            if not _distortion_profile_is_valid(
+                x_k1_, x_k2_, y_k1_, y_k2_
+            ):
+                return None
+            k_values = []
+            true_distances = []
+            corrected_pixels = []
+            known_values = []
+            track_indices = []
+
+            for track_i, tid in enumerate(sorted_tracks):
+                track_depth = known_depths.get(tid)
+                if track_depth is None:
+                    continue
+                for p in all_track_pairs[tid]:
+                    rx_end = p.get('rx_norm', 0.0)
+                    ry_end = p.get('ry_norm', 0.0)
+                    factor = _distortion_factor_xy(
+                        rx_end, ry_end, x_k1_, x_k2_, y_k1_, y_k2_
+                    )
+                    if factor <= 0.2:
+                        return None
+                    k_values.append(_corrected_k_percent(
+                        p, x_k1_, x_k2_, y_k1_, y_k2_
+                    ))
+                    true_distances.append(track_depth - p['depth_camera'])
+                    corrected_pixels.append(
+                        p['size_pixels'] * factor / resolution_scale
+                    )
+                    known_values.append(known_sizes[tid])
+                    track_indices.append(track_i)
+
+            k_values = np.asarray(k_values)
+            true_distances = np.asarray(true_distances)
+            corrected_pixels = np.asarray(corrected_pixels)
+            known_values = np.asarray(known_values)
+            track_indices = np.asarray(track_indices)
+            valid_distance = true_distances > 0.05
+
+            A_, B_ = _fit_power_law(
+                k_values[valid_distance], true_distances[valid_distance]
+            )
+            estimated_distances = A_ * k_values**B_
+            C_, D_ = _fit_power_law(
+                estimated_distances, corrected_pixels / known_values
+            )
+            estimated_sizes = corrected_pixels / (
+                C_ * np.maximum(estimated_distances, 0.1)**D_
+            )
+
+            size_log_error = np.log(estimated_sizes / known_values)
+            distance_log_error = np.log(
+                estimated_distances[valid_distance]
+                / true_distances[valid_distance]
+            )
+            losses = []
+            for track_i in np.unique(track_indices):
+                size_mask = track_indices == track_i
+                distance_mask = size_mask[valid_distance]
+                track_loss = np.mean(np.minimum(size_log_error[size_mask]**2, 0.5))
+                if np.any(distance_mask):
+                    track_loss += 0.3 * np.mean(
+                        np.minimum(distance_log_error[distance_mask]**2, 0.5)
+                    )
+                losses.append(track_loss)
+
+            # Мягкая регуляризация не даёт полиному дисторсии компенсировать
+            # межтрековые различия за счёт чрезмерной кривизны.
+            regularization = (
+                x_k1_**2 + x_k2_**2 + y_k1_**2 + y_k2_**2
+            )
+            loss = float(np.mean(losses) + 0.01 * regularization)
+            return loss, (A_, B_, C_, D_, x_k1_, x_k2_, y_k1_, y_k2_)
+
+        def _consistent_loss(dist_params):
+            fitted = _refit_consistent_pipeline(dist_params)
+            return fitted[0] if fitted is not None else 1e6
+
+        full_result = minimize(
+            _consistent_loss,
+            np.zeros(4),
+            method='L-BFGS-B',
+            bounds=[(-1.0, 1.0)] * 4,
+            options={'maxiter': 10000, 'ftol': 1e-14, 'gtol': 1e-9},
+        )
+        final_fit = _refit_consistent_pipeline(full_result.x)
+        if final_fit is not None:
+            A, B, C, D, x_k1, x_k2, y_k1, y_k2 = final_fit[1]
+        if verbose:
+            print(
+                f"  loss={full_result.fun:.8f}, success={full_result.success}; "
+                f"A={A:.4f}, B={B:.4f}, C={C:.4f}, D={D:.4f}, "
+                f"x=({x_k1:.6f}, {x_k2:.6f}), "
+                f"y=({y_k1:.6f}, {y_k2:.6f})"
+            )
+
 
     else:
         # === Совместная оптимизация без known_depths ===
@@ -3053,8 +3261,10 @@ def calibrate_coefficients(
             (-1.5, -0.3),     # B
             (1.0, 15.0),      # C
             (-2.0, -0.5),     # D
-            (-0.3, 0.05),     # k1
-            (-0.2, 0.2),      # k2
+            (-1.0, 1.0),      # x_k1
+            (-1.0, 1.0),      # x_k2
+            (-1.0, 1.0),      # y_k1
+            (-1.0, 1.0),      # y_k2
         ]
 
         de_result = differential_evolution(
@@ -3070,7 +3280,7 @@ def calibrate_coefficients(
             method='Nelder-Mead',
             options={'maxiter': 5000, 'xatol': 1e-8, 'fatol': 1e-10}
         )
-        A, B, C, D, k1, k2 = nm_result.x
+        A, B, C, D, x_k1, x_k2, y_k1, y_k2 = nm_result.x
 
     default_calibration = CameraCalibration()
 
@@ -3082,8 +3292,10 @@ def calibrate_coefficients(
         distance_coef_B=round(B, 4),
         pixel_calib_C=round(C, 4),
         pixel_calib_D=round(D, 4),
-        distortion_k1=round(k1, 6),
-        distortion_k2=round(k2, 6),
+        distortion_x_k1=round(x_k1, 6),
+        distortion_x_k2=round(x_k2, 6),
+        distortion_y_k1=round(y_k1, 6),
+        distortion_y_k2=round(y_k2, 6),
         min_reliable_distance=(
             min_reliable_distance
             if min_reliable_distance is not None
@@ -3123,8 +3335,11 @@ def calibrate_coefficients(
                 if true_d < 0.05:
                     continue
                 pix_ref = p['size_pixels'] / resolution_scale
-                r = p.get('r_norm', 0.0)
-                dist_f = 1.0 + k1 * r**2 + k2 * r**4
+                rx = p.get('rx_norm', 0.0)
+                ry = p.get('ry_norm', 0.0)
+                dist_f = _distortion_factor_xy(
+                    rx, ry, x_k1, x_k2, y_k1, y_k2
+                )
                 corrected = pix_ref * dist_f
                 pc = C * (max(true_d, 0.1) ** D)
                 direct_sizes.append(corrected / pc if pc > 0 else 0)
@@ -3132,14 +3347,17 @@ def calibrate_coefficients(
                 med_direct = np.median(direct_sizes)
                 err_direct = (med_direct - known) / known * 100
                 errors_direct.append(abs(err_direct))
-                r_meds = [p.get('r_norm', 0) for p in pairs]
+                r_meds = [p.get('rx_norm', 0) for p in pairs]
                 true_dists = [track_depth - p['depth_camera'] for p in pairs]
                 direct_rows.append(
                     f"{label:<18}  {known:>8.1f}мм  {med_direct:>8.1f}мм  {err_direct:>+8.1f}%  {np.median(true_dists):>7.2f}м  {np.median(r_meds):>7.3f}"
                 )
 
         # Pipeline оценка (через k → A*k^B)
-        estimated = _compute_sizes_from_pairs(pairs, A, B, C, D, k1, k2, resolution_scale)
+        estimated = _compute_sizes_from_pairs(
+            pairs, A, B, C, D,
+            x_k1, x_k2, y_k1, y_k2, resolution_scale
+        )
         median_est = np.median(estimated)
         rel_err = (median_est - known) / known * 100
         errors_pipeline.append(abs(rel_err))
@@ -3166,11 +3384,19 @@ def calibrate_coefficients(
             pairs = all_track_pairs[tid]
             known = known_sizes[tid]
             label = _track_label(tid)
-            estimated = _compute_sizes_from_pairs(pairs, A, B, C, D, k1, k2, resolution_scale)
+            estimated = _compute_sizes_from_pairs(
+                pairs, A, B, C, D,
+                x_k1, x_k2, y_k1, y_k2, resolution_scale
+            )
             median_est = np.median(estimated)
             rel_err = (median_est - known) / known * 100
-            distances = [A * (_corrected_k_percent(p, k1, k2) ** B) for p in pairs]
-            r_norms = [p.get('r_norm', 0) for p in pairs]
+            distances = [
+                A * (_corrected_k_percent(
+                    p, x_k1, x_k2, y_k1, y_k2
+                ) ** B)
+                for p in pairs
+            ]
+            r_norms = [p.get('rx_norm', 0) for p in pairs]
             print(f"{label:<18}  {known:>8.1f}мм  {median_est:>8.1f}мм  {rel_err:>+8.1f}%  {np.median(distances):>8.2f}  {np.median(r_norms):>7.3f}")
         print("-" * 85)
         print(f"Средняя ошибка (pipeline): {np.mean(errors_pipeline):.1f}%")
@@ -3180,18 +3406,42 @@ def calibrate_coefficients(
         print(f"\nКоэффициенты:")
         print(f"  distance: d = {A:.4f} * k^({B:.4f})")
         print(f"  pixel:    p = {C:.4f} * d^({D:.4f})")
-        print(f"  distortion: k1={k1:.6f}, k2={k2:.6f}")
+        print(f"  distortion X: k1={x_k1:.6f}, k2={x_k2:.6f}")
+        print(f"  distortion Y: k1={y_k1:.6f}, k2={y_k2:.6f}")
 
     # Сохраняем результат
     if output_json:
         import json
+        coverage_rx = np.asarray([
+            p.get('rx_norm', 0.0)
+            for tid in available_tracks for p in all_track_pairs[tid]
+        ])
+        coverage_ry = np.asarray([
+            p.get('ry_norm', 0.0)
+            for tid in available_tracks for p in all_track_pairs[tid]
+        ])
+        coverage_x_p95 = float(np.percentile(coverage_rx, 95))
+        coverage_y_p95 = float(np.percentile(coverage_ry, 95))
+        coverage_warnings = []
+        if coverage_x_p95 < 0.3:
+            coverage_warnings.append(
+                "Недостаточное покрытие по X: P95 нормированного удаления < 0.3"
+            )
+        if coverage_y_p95 < 0.3:
+            coverage_warnings.append(
+                "Недостаточное покрытие по Y: P95 нормированного удаления < 0.3"
+            )
         result_data = {
+            'schema_version': CALIBRATION_SCHEMA_VERSION,
+            'distortion_model': DISTORTION_MODEL_SEPARABLE_XY,
             'distance_coef_A': calibration.distance_coef_A,
             'distance_coef_B': calibration.distance_coef_B,
             'pixel_calib_C': calibration.pixel_calib_C,
             'pixel_calib_D': calibration.pixel_calib_D,
-            'distortion_k1': calibration.distortion_k1,
-            'distortion_k2': calibration.distortion_k2,
+            'distortion_x_k1': calibration.distortion_x_k1,
+            'distortion_x_k2': calibration.distortion_x_k2,
+            'distortion_y_k1': calibration.distortion_y_k1,
+            'distortion_y_k2': calibration.distortion_y_k2,
             'optical_center_x': calibration.optical_center_x,
             'optical_center_y': calibration.optical_center_y,
             'frame_width': calibration.frame_width,
@@ -3206,6 +3456,11 @@ def calibrate_coefficients(
             'mean_error_direct_pct': round(float(np.mean(errors_direct)), 2) if errors_direct else None,
             'mean_error_pipeline_pct': round(float(np.mean(errors_pipeline)), 2),
             'mean_bias_pipeline_pct': round(float(np.mean(signed_errors_pipeline)), 2),
+            'coverage_x_p95': round(coverage_x_p95, 4),
+            'coverage_y_p95': round(coverage_y_p95, 4),
+            'coverage_x_max': round(float(np.max(coverage_rx)), 4),
+            'coverage_y_max': round(float(np.max(coverage_ry)), 4),
+            'coverage_warnings': coverage_warnings,
         }
         Path(output_json).parent.mkdir(parents=True, exist_ok=True)
         with open(output_json, 'w', encoding='utf-8') as f:

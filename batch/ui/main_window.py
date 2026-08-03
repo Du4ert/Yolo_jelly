@@ -252,8 +252,16 @@ class MainWindow(QMainWindow):
             path = config.ui.calibration_json
             if path and os.path.exists(path):
                 name = os.path.basename(path)
-                self.btn_calibration.setText(name)
-                self.btn_calibration.setStyleSheet("")
+                try:
+                    from camera_geometry import CameraCalibration
+                    CameraCalibration.from_json(path)
+                    self.btn_calibration.setText(name)
+                    self.btn_calibration.setStyleSheet("")
+                    self.btn_calibration.setToolTip("Калибровка schema v2 / separable_xy")
+                except (OSError, ValueError) as exc:
+                    self.btn_calibration.setText(f"⚠ {name}")
+                    self.btn_calibration.setStyleSheet("color: #b3261e;")
+                    self.btn_calibration.setToolTip(str(exc))
             else:
                 self.btn_calibration.setText("не задана")
                 self.btn_calibration.setStyleSheet("color: gray;")
@@ -276,11 +284,18 @@ class MainWindow(QMainWindow):
         )
         if path:
             try:
+                from camera_geometry import CameraCalibration
+                CameraCalibration.from_json(path)
                 config = get_config()
                 config.ui.calibration_json = path
                 save_config()
-            except Exception:
-                pass
+            except (OSError, ValueError) as exc:
+                QMessageBox.warning(
+                    self,
+                    "Несовместимая калибровка",
+                    f"Файл не выбран:\n{exc}",
+                )
+                return
             self._update_calibration_button()
             self.statusBar().showMessage(
                 f"Калибровка: {os.path.basename(path)}", 3000
@@ -296,6 +311,24 @@ class MainWindow(QMainWindow):
             pass
         self._update_calibration_button()
         self.statusBar().showMessage("Калибровка сброшена — используются дефолтные коэффициенты", 3000)
+
+    def _validate_active_calibration(self) -> bool:
+        """Не позволяет молча использовать несовместимый настроенный JSON."""
+        try:
+            config = get_config()
+            path = config.ui.calibration_json
+            if not path:
+                return True
+            from camera_geometry import CameraCalibration
+            CameraCalibration.from_json(path)
+            return True
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(
+                self,
+                "Несовместимая калибровка",
+                f"Выберите калибровку schema v2 или сбросьте текущий файл.\n\n{exc}",
+            )
+            return False
 
     def _on_add_dive(self):
         self.dive_panel.add_dive()
@@ -389,6 +422,8 @@ class MainWindow(QMainWindow):
         pass
 
     def _on_add_to_queue(self, video_id: int, ctd_id: Optional[int]):
+        if not self._validate_active_calibration():
+            return
         model_id = self.model_panel.get_selected_model_id()
         
         models = self.repo.get_all_models()
@@ -458,6 +493,8 @@ class MainWindow(QMainWindow):
     def _on_batch_add_to_queue(self, video_ctd_pairs: list):
         """Добавляет несколько видео в очередь с одним диалогом настроек."""
         if not video_ctd_pairs:
+            return
+        if not self._validate_active_calibration():
             return
 
         model_id = self.model_panel.get_selected_model_id()
