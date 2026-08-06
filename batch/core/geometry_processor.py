@@ -216,10 +216,10 @@ class SizeEstimationProcessor:
         geometry_csv: Optional[str] = None,
         frame_width: int = 3840,
         frame_height: int = 2160,
-        min_depth_change: float = 0.3,
+        min_track_depth_span_m: float = 0.3,
+        min_pair_depth_change_m: float = 0.01,
         min_track_points: int = 3,
-        min_r_squared: float = 0.5,
-        min_size_change_ratio: float = 0.3,
+        min_size_change_pct: float = 10.0,
         apply_tilt_correction: bool = True,
         calibration_json: Optional[str] = None,
         min_reliable_distance: Optional[float] = None,
@@ -235,10 +235,10 @@ class SizeEstimationProcessor:
             geometry_csv: Путь к CSV с геометрией камеры (опционально).
             frame_width: Ширина кадра.
             frame_height: Высота кадра.
-            min_depth_change: Минимальное изменение глубины для регрессии.
+            min_track_depth_span_m: Минимальный общий диапазон глубины трека (м).
+            min_pair_depth_change_m: Минимальное изменение глубины внутри пары (м).
             min_track_points: Минимальное количество точек в треке.
-            min_r_squared: Минимальный R² для принятия регрессии.
-            min_size_change_ratio: Минимальное относительное изменение размера.
+            min_size_change_pct: Минимальный рост bbox между точками пары (%).
             
         Returns:
             SizeEstimationResult с результатами.
@@ -281,8 +281,10 @@ class SizeEstimationProcessor:
                 calibration=calibration,
                 frame_width=frame_width,
                 frame_height=frame_height,
-                min_depth_change=min_depth_change,
+                min_track_depth_span_m=min_track_depth_span_m,
+                min_pair_depth_change_m=min_pair_depth_change_m,
                 min_track_points=min_track_points,
+                min_size_change_pct=min_size_change_pct,
                 apply_tilt_correction=apply_tilt_correction,
                 verbose=True
             )

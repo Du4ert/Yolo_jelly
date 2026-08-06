@@ -5,6 +5,8 @@ import sys
 import unittest
 from pathlib import Path
 
+import pandas as pd
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -19,6 +21,7 @@ from camera_geometry import (  # noqa: E402
     _calculate_pixel_calibration,
     _calculate_size_mm,
     _discover_test_dirs,
+    _find_size_pairs,
     calibrate_coefficients,
 )
 
@@ -55,6 +58,30 @@ class CalculationBaselineTests(unittest.TestCase):
             },
         )
 
+    def test_pair_depth_and_growth_thresholds_are_independent(self):
+        detections = pd.DataFrame({
+            "frame": [0, 1],
+            "depth_m": [1.0, 1.02],
+            "size_pix": [100.0, 120.0],
+            "x_center": [0.5, 0.5],
+            "y_center": [0.5, 0.5],
+        })
+        calibration = CameraCalibration(frame_width=100, frame_height=100)
+
+        accepted, _, _ = _find_size_pairs(
+            detections, 1.1, 0.01, False, None, calibration
+        )
+        rejected_by_depth, _, _ = _find_size_pairs(
+            detections, 1.1, 0.05, False, None, calibration
+        )
+        rejected_by_growth, _, _ = _find_size_pairs(
+            detections, 1.3, 0.01, False, None, calibration
+        )
+
+        self.assertEqual(len(accepted), 1)
+        self.assertEqual(rejected_by_depth, [])
+        self.assertEqual(rejected_by_growth, [])
+
 
 class LocalCalibrationDatasetTests(unittest.TestCase):
     @classmethod
@@ -70,6 +97,7 @@ class LocalCalibrationDatasetTests(unittest.TestCase):
         cls.expected = json.loads(cls.expected_path.read_text(encoding="utf-8"))
 
     def test_dataset_structure_matches_baseline(self):
+        self.assertEqual(self.actual["settings"], self.expected["settings"])
         self.assertEqual(self.actual["totals"], self.expected["totals"])
         self.assertEqual(self.actual["videos"], self.expected["videos"])
         self.assertEqual(self.actual["inputs"], self.expected["inputs"])

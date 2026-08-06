@@ -232,7 +232,7 @@ def build_baseline_report(
             "frame_width": frame_width,
             "frame_height": frame_height,
             "apply_tilt_correction": apply_tilt_correction,
-            "min_track_depth_change_m": 0.1,
+            "min_track_depth_span_m": 0.1,
             "min_pair_depth_change_m": 0.01,
             "min_track_points": 3,
             "min_size_change_pct": 10.0,

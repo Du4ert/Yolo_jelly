@@ -9,7 +9,7 @@
     "frame_width": 3840,
     "frame_height": 2160,
     "apply_tilt_correction": true,
-    "min_track_depth_change_m": 0.1,
+    "min_track_depth_span_m": 0.1,
     "min_pair_depth_change_m": 0.01,
     "min_track_points": 3,
     "min_size_change_pct": 10.0

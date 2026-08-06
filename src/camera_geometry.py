@@ -521,6 +521,7 @@ def _get_first_frame_data(
 def _find_size_pairs(
     valid_df: pd.DataFrame,
     min_change_ratio: float,
+    min_pair_depth_change_m: float,
     apply_tilt_correction: bool,
     geometry_df: Optional[pd.DataFrame],
     calibration: 'CameraCalibration',
@@ -589,7 +590,7 @@ def _find_size_pairs(
 
         delta_depth = depth2 - depth1
 
-        if abs(delta_depth) < 0.01:
+        if abs(delta_depth) < min_pair_depth_change_m:
             i = found_j
             continue
 
@@ -810,7 +811,8 @@ def _find_max_size_frame(
 def estimate_size_by_k_method(
     track_df: pd.DataFrame,
     calibration: CameraCalibration,
-    min_depth_change: float = 0.1,
+    min_track_depth_span_m: float = 0.3,
+    min_pair_depth_change_m: float = 0.01,
     min_points: int = 3,
     min_size_change_pct: float = 10.0,
     geometry_df: Optional[pd.DataFrame] = None,
@@ -840,13 +842,21 @@ def estimate_size_by_k_method(
     Args:
         track_df: DataFrame с детекциями трека
         calibration: калибровочные параметры камеры
-        min_depth_change: минимальное изменение глубины (м)
+        min_track_depth_span_m: минимальный общий диапазон глубины трека (м)
+        min_pair_depth_change_m: минимальное изменение глубины внутри пары (м)
         min_points: минимальное количество точек
         min_size_change_pct: минимальное изменение размера между точками пары (%)
         geometry_df: DataFrame с данными геометрии (наклон камеры)
         apply_tilt_correction: применять ли коррекцию наклона
         smoothing_window: размер окна для сглаживания медианой
     """
+    if min_track_depth_span_m <= 0:
+        raise ValueError("min_track_depth_span_m должен быть больше 0")
+    if min_pair_depth_change_m <= 0:
+        raise ValueError("min_pair_depth_change_m должен быть больше 0")
+    if min_size_change_pct <= 0:
+        raise ValueError("min_size_change_pct должен быть больше 0")
+
     track_id = track_df['track_id'].iloc[0]
     class_name = track_df['class_name'].iloc[0]
     
@@ -872,12 +882,13 @@ def estimate_size_by_k_method(
 
     # Проверяем достаточное изменение глубины
     depth_change = valid_df['depth_m'].max() - valid_df['depth_m'].min()
-    if depth_change < min_depth_change:
+    if depth_change < min_track_depth_span_m:
         return None
     
     min_change_ratio = 1.0 + min_size_change_pct / 100.0
     pair_data, tilt_correction_applied, avg_tilt_deg = _find_size_pairs(
-        valid_df, min_change_ratio, apply_tilt_correction, geometry_df, calibration
+        valid_df, min_change_ratio, min_pair_depth_change_m,
+        apply_tilt_correction, geometry_df, calibration
     )
 
     if len(pair_data) == 0:
@@ -1710,8 +1721,10 @@ def process_detections_with_size(
     calibration: CameraCalibration = None,
     frame_width: int = 3840,
     frame_height: int = 2160,
-    min_depth_change: float = 0.1,
+    min_track_depth_span_m: float = 0.3,
+    min_pair_depth_change_m: float = 0.01,
     min_track_points: int = 3,
+    min_size_change_pct: float = 10.0,
     apply_tilt_correction: bool = True,
     verbose: bool = True
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -1731,13 +1744,23 @@ def process_detections_with_size(
         calibration: калибровочные параметры
         frame_width: ширина кадра
         frame_height: высота кадра
-        min_depth_change: мин. изменение глубины для k-метода
+        min_track_depth_span_m: минимальный общий диапазон глубины трека (м)
+        min_pair_depth_change_m: минимальное изменение глубины внутри пары (м)
         min_track_points: мин. точек в треке
+        min_size_change_pct: минимальный рост bbox между точками пары (%)
         apply_tilt_correction: применять ли коррекцию наклона камеры
         verbose: выводить ли информацию о прогрессе
     """
     if calibration is None:
         calibration = CameraCalibration()
+    if min_track_depth_span_m <= 0:
+        raise ValueError("min_track_depth_span_m должен быть больше 0")
+    if min_pair_depth_change_m <= 0:
+        raise ValueError("min_pair_depth_change_m должен быть больше 0")
+    if min_track_points < 2:
+        raise ValueError("min_track_points должен быть не меньше 2")
+    if min_size_change_pct <= 0:
+        raise ValueError("min_size_change_pct должен быть больше 0")
     calibration.frame_width = frame_width
     calibration.frame_height = frame_height
     
@@ -1747,6 +1770,12 @@ def process_detections_with_size(
         print(f"Загружено детекций: {len(df)}")
         print(f"Уникальных треков: {df['track_id'].nunique()}")
         print(f"Разрешение: {frame_width}x{frame_height}")
+        print(
+            "Пороги k-метода: "
+            f"диапазон трека >= {min_track_depth_span_m:g} м, "
+            f"шаг пары >= {min_pair_depth_change_m:g} м, "
+            f"рост bbox >= {min_size_change_pct:g}%"
+        )
     
     required_cols = ['track_id', 'frame', 'width', 'height', 'class_name', 'x_center', 'y_center']
     missing = [c for c in required_cols if c not in df.columns]
@@ -1787,8 +1816,10 @@ def process_detections_with_size(
     def _process_track_k_method(track_df):
         return estimate_size_by_k_method(
             track_df, calibration,
-            min_depth_change=min_depth_change,
+            min_track_depth_span_m=min_track_depth_span_m,
+            min_pair_depth_change_m=min_pair_depth_change_m,
             min_points=min_track_points,
+            min_size_change_pct=min_size_change_pct,
             geometry_df=geometry_df,
             apply_tilt_correction=apply_tilt_correction
         )
@@ -2611,7 +2642,8 @@ def _extract_calibration_pairs(
     frame_width: int,
     frame_height: int,
     apply_tilt_correction: bool = True,
-    min_depth_change: float = 0.1,
+    min_track_depth_span_m: float = 0.1,
+    min_pair_depth_change_m: float = 0.01,
     min_track_points: int = 3,
     min_size_change_pct: float = 10.0,
 ) -> Dict[int, List[dict]]:
@@ -2625,6 +2657,13 @@ def _extract_calibration_pairs(
     geometry_df = pd.read_csv(geometry_csv) if geometry_csv else None
 
     calibration = CameraCalibration(frame_width=frame_width, frame_height=frame_height)
+
+    if min_track_depth_span_m <= 0:
+        raise ValueError("min_track_depth_span_m должен быть больше 0")
+    if min_pair_depth_change_m <= 0:
+        raise ValueError("min_pair_depth_change_m должен быть больше 0")
+    if min_size_change_pct <= 0:
+        raise ValueError("min_size_change_pct должен быть больше 0")
 
     result = {}
     min_change_ratio = 1.0 + min_size_change_pct / 100.0
@@ -2644,11 +2683,12 @@ def _extract_calibration_pairs(
         valid_df = valid_df.sort_values('frame').reset_index(drop=True)
 
         depth_change = valid_df['depth_m'].max() - valid_df['depth_m'].min()
-        if depth_change < min_depth_change:
+        if depth_change < min_track_depth_span_m:
             continue
 
         pair_data, _, _ = _find_size_pairs(
-            valid_df, min_change_ratio, apply_tilt_correction, geometry_df, calibration
+            valid_df, min_change_ratio, min_pair_depth_change_m,
+            apply_tilt_correction, geometry_df, calibration
         )
         if not pair_data:
             continue
@@ -3516,7 +3556,16 @@ def main():
     size.add_argument('--geometry', '-g', help='CSV с данными геометрии (наклон камеры)')
     size.add_argument('--width', type=int, default=3840)
     size.add_argument('--height', type=int, default=2160)
-    size.add_argument('--min-depth-change', type=float, default=0.1)
+    size.add_argument(
+        '--min-track-depth-span', '--min-depth-change',
+        dest='min_track_depth_span_m', type=float, default=0.3,
+        help='Минимальный общий диапазон глубины трека, м (по умолчанию: 0.3). '
+             '--min-depth-change оставлен как устаревший алиас.'
+    )
+    size.add_argument('--min-pair-depth-change', type=float, default=0.01,
+                      help='Минимальное изменение глубины внутри пары, м (по умолчанию: 0.01)')
+    size.add_argument('--min-size-change-pct', type=float, default=10.0,
+                      help='Минимальный рост bbox между точками пары, %% (по умолчанию: 10)')
     size.add_argument('--min-track-points', type=int, default=3)
     size.add_argument('--apply-tilt-correction', action='store_true', default=True,
                       help='Применять коррекцию наклона камеры (по умолчанию: вкл.)')
@@ -3591,8 +3640,10 @@ def main():
             args.detections, output, tracks, args.geometry,
             calibration=cal,
             frame_width=args.width, frame_height=args.height,
-            min_depth_change=args.min_depth_change,
+            min_track_depth_span_m=args.min_track_depth_span_m,
+            min_pair_depth_change_m=args.min_pair_depth_change,
             min_track_points=args.min_track_points,
+            min_size_change_pct=args.min_size_change_pct,
             apply_tilt_correction=args.apply_tilt_correction
         )
 

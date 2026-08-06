@@ -89,10 +89,10 @@ class SizeWorker(QThread):
         geometry_csv: Optional[str] = None,
         frame_width: int = 1920,
         frame_height: int = 1080,
-        min_depth_change: float = 0.3,
+        min_track_depth_span_m: float = 0.3,
+        min_pair_depth_change_m: float = 0.01,
         min_track_points: int = 3,
-        min_r_squared: float = 0.5,
-        min_size_change: float = 0.3,
+        min_size_change_pct: float = 10.0,
         apply_tilt_correction: bool = True,
         min_reliable_distance: Optional[float] = None,
         max_reliable_distance: Optional[float] = None,
@@ -104,10 +104,10 @@ class SizeWorker(QThread):
         self.geometry_csv = geometry_csv
         self.frame_width = frame_width
         self.frame_height = frame_height
-        self.min_depth_change = min_depth_change
+        self.min_track_depth_span_m = min_track_depth_span_m
+        self.min_pair_depth_change_m = min_pair_depth_change_m
         self.min_track_points = min_track_points
-        self.min_r_squared = min_r_squared
-        self.min_size_change = min_size_change
+        self.min_size_change_pct = min_size_change_pct
         self.apply_tilt_correction = apply_tilt_correction
         self.min_reliable_distance = min_reliable_distance
         self.max_reliable_distance = max_reliable_distance
@@ -125,10 +125,10 @@ class SizeWorker(QThread):
             geometry_csv=self.geometry_csv,
             frame_width=self.frame_width,
             frame_height=self.frame_height,
-            min_depth_change=self.min_depth_change,
+            min_track_depth_span_m=self.min_track_depth_span_m,
+            min_pair_depth_change_m=self.min_pair_depth_change_m,
             min_track_points=self.min_track_points,
-            min_r_squared=self.min_r_squared,
-            min_size_change_ratio=self.min_size_change,
+            min_size_change_pct=self.min_size_change_pct,
             apply_tilt_correction=self.apply_tilt_correction,
             min_reliable_distance=self.min_reliable_distance,
             max_reliable_distance=self.max_reliable_distance,
@@ -453,29 +453,31 @@ class GeometryDialog(QDialog):
         params_group = QGroupBox("Параметры регрессии")
         params_layout = QFormLayout(params_group)
         
-        self.size_min_depth = QDoubleSpinBox()
-        self.size_min_depth.setRange(0.1, 5.0)
-        self.size_min_depth.setValue(0.3)
-        self.size_min_depth.setSingleStep(0.1)
-        self.size_min_depth.setSuffix(" м")
-        params_layout.addRow("Мин. изменение глубины:", self.size_min_depth)
+        self.size_min_track_depth_span = QDoubleSpinBox()
+        self.size_min_track_depth_span.setRange(0.01, 5.0)
+        self.size_min_track_depth_span.setValue(0.3)
+        self.size_min_track_depth_span.setSingleStep(0.1)
+        self.size_min_track_depth_span.setSuffix(" м")
+        params_layout.addRow("Диапазон глубины трека:", self.size_min_track_depth_span)
+
+        self.size_min_pair_depth_change = QDoubleSpinBox()
+        self.size_min_pair_depth_change.setRange(0.01, 1.0)
+        self.size_min_pair_depth_change.setValue(0.01)
+        self.size_min_pair_depth_change.setSingleStep(0.01)
+        self.size_min_pair_depth_change.setSuffix(" м")
+        params_layout.addRow("Шаг глубины пары:", self.size_min_pair_depth_change)
         
         self.size_min_points = QSpinBox()
         self.size_min_points.setRange(3, 50)
         self.size_min_points.setValue(3)
         params_layout.addRow("Мин. точек в треке:", self.size_min_points)
         
-        self.size_min_r2 = QDoubleSpinBox()
-        self.size_min_r2.setRange(0.1, 0.99)
-        self.size_min_r2.setValue(0.5)
-        self.size_min_r2.setSingleStep(0.05)
-        params_layout.addRow("Мин. R²:", self.size_min_r2)
-        
-        self.size_min_change = QDoubleSpinBox()
-        self.size_min_change.setRange(0.1, 1.0)
-        self.size_min_change.setValue(0.3)
-        self.size_min_change.setSingleStep(0.05)
-        params_layout.addRow("Мин. изменение размера:", self.size_min_change)
+        self.size_min_change_pct = QDoubleSpinBox()
+        self.size_min_change_pct.setRange(1.0, 100.0)
+        self.size_min_change_pct.setValue(10.0)
+        self.size_min_change_pct.setSingleStep(1.0)
+        self.size_min_change_pct.setSuffix(" %")
+        params_layout.addRow("Рост bbox пары:", self.size_min_change_pct)
 
         self.size_min_reliable = QDoubleSpinBox()
         self.size_min_reliable.setRange(0.05, 2.0)
@@ -912,10 +914,10 @@ class GeometryDialog(QDialog):
             geometry_csv=geom_path if geom_path else None,
             frame_width=self.geom_width.value(),
             frame_height=self.geom_height.value(),
-            min_depth_change=self.size_min_depth.value(),
+            min_track_depth_span_m=self.size_min_track_depth_span.value(),
+            min_pair_depth_change_m=self.size_min_pair_depth_change.value(),
             min_track_points=self.size_min_points.value(),
-            min_r_squared=self.size_min_r2.value(),
-            min_size_change=self.size_min_change.value(),
+            min_size_change_pct=self.size_min_change_pct.value(),
             min_reliable_distance=self.size_min_reliable.value(),
             max_reliable_distance=self.size_max_reliable.value(),
         )
