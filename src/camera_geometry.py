@@ -242,13 +242,13 @@ class TrackSizeEstimate:
     2. d = 80.00 * |k|^(-0.9)                - дистанция до объекта (м)
     3. p = 4.35 * d^(-1.25)                  - калибровка px/мм
     4. size = pixels_max / p                  - размер объекта по макс. кадру (мм)
-    5. object_depth = camera_depth + distance·cos(θ) - глубина объекта с учётом наклона камеры
+    5. object_depth = camera_depth + distance - глубина объекта (камера смотрит вниз)
     """
     track_id: int
     class_name: str
     real_size_mm: float            # Финальный размер в миллиметрах
     real_size_cm: float            # Финальный размер в сантиметрах
-    distance_m: float              # Дистанция до объекта на финальный момент (м, вдоль оси камеры)
+    distance_m: float              # Дистанция до объекта на финальный момент (м)
     object_depth_m: float          # Глубина объекта в воде (м)
     measurement_frame: int         # Кадр финального измерения
     measurement_size_pixels: float # Размер в пикселях на финальном кадре
@@ -259,7 +259,6 @@ class TrackSizeEstimate:
     confidence: float              # Уверенность оценки (0-1)
     method: str                    # 'k_method', 'typical', 'fixed'
     n_points_used: int             # Количество пар для расчёта k
-    tilt_cos_used: float = 1.0     # cos(θ), применённый при расчёте object_depth_m
     warnings: List[str] = field(default_factory=list)
     # Покадровые размеры для k-method: {frame: size_mm}
     # Расстояние вычисляется динамически: object_depth_m - camera_depth
@@ -647,8 +646,7 @@ def _find_size_pairs(
             pixels2_ref = pixels2_for_k / calibration.resolution_scale
             size_mm = _calculate_size_mm(pixels2_ref, pixel_calib)
             camera_depth_end = depth2
-            # Вертикальная составляющая дистанции = distance * cos(наклона камеры)
-            object_depth = camera_depth_end + distance * cos_tilt
+            object_depth = camera_depth_end + distance
 
             pair_data.append({
                 'frame_start': frame1,
@@ -832,7 +830,7 @@ def estimate_size_by_k_method(
        - size_mm = pixels_end / pixel_calib
     3. Сглаживаем ряд размеров скользящей медианой
     4. Выбираем последний стабильный размер до начала уменьшения
-    5. Глубина объекта = глубина камеры + дистанция·cos(θ) (вертикальная составляющая)
+    5. Глубина объекта = глубина камеры + дистанция
 
     Коррекция наклона:
     При наклоне камеры на угол θ от вертикали, реальное изменение дистанции
@@ -920,11 +918,7 @@ def estimate_size_by_k_method(
                 d_assumed = calibration.min_reliable_distance
                 px_calib = _calculate_pixel_calibration(d_assumed, calibration)
                 peak_size_mm = _calculate_size_mm(peak_px_ref, px_calib)
-                cos_tilt_peak = (
-                    get_tilt_correction_for_frame(peak_frame, geometry_df)
-                    if apply_tilt_correction else 1.0
-                )
-                obj_d = peak_depth + d_assumed * cos_tilt_peak if pd.notna(peak_depth) else np.nan
+                obj_d = peak_depth + d_assumed if pd.notna(peak_depth) else np.nan
 
                 extra_warnings = ["all_pairs_clamped", "peak_frame_estimate"]
                 if tilt_correction_applied:
@@ -949,7 +943,6 @@ def estimate_size_by_k_method(
                     confidence=0.55,
                     method="k_method_near",
                     n_points_used=len(pair_data_filtered),
-                    tilt_cos_used=cos_tilt_peak,
                     warnings=extra_warnings,
                     frame_data={peak_frame: round(peak_size_mm, 1)}
                 )
@@ -1046,18 +1039,12 @@ def estimate_size_by_k_method(
         obj_depth_threshold = obj_depth_median * 0.2  # 20% от медианы
     
     valid_depths = [d for d in object_depths_raw if abs(d - obj_depth_median) <= obj_depth_threshold]
-    valid_cos_tilts = [
-        p['cos_tilt'] for p, d in zip(pair_data_filtered, object_depths_raw)
-        if abs(d - obj_depth_median) <= obj_depth_threshold
-    ]
 
     if valid_depths:
         # Берём медиану отфильтрованных значений как финальную глубину объекта
         object_depth_final = np.median(valid_depths)
-        tilt_cos_final = np.median(valid_cos_tilts) if valid_cos_tilts else 1.0
     else:
         object_depth_final = obj_depth_median
-        tilt_cos_final = np.median([p['cos_tilt'] for p in pair_data_filtered])
 
     # Собираем покадровые данные: {frame: size_mm}
     # Расстояние будем вычислять динамически в process_detections_with_size
@@ -1082,7 +1069,6 @@ def estimate_size_by_k_method(
         confidence=round(confidence, 3),
         method="k_method",
         n_points_used=len(pair_data_filtered),
-        tilt_cos_used=round(float(tilt_cos_final), 4),
         warnings=warnings_list,
         frame_data=frame_sizes  # теперь только размеры, расстояние вычисляется динамически
     )
@@ -1090,9 +1076,7 @@ def estimate_size_by_k_method(
 
 def estimate_size_fixed(
     track_df: pd.DataFrame,
-    calibration: CameraCalibration,
-    geometry_df: Optional[pd.DataFrame] = None,
-    apply_tilt_correction: bool = True,
+    calibration: CameraCalibration
 ) -> Optional[TrackSizeEstimate]:
     """
     Оценивает размер для классов с фиксированным размером.
@@ -1125,13 +1109,9 @@ def estimate_size_fixed(
     # Размер в пикселях на последнем кадре
     last_size_pix = _get_bbox_size_pixels(last_row, frame_width, frame_height, calibration)
 
-    # Глубина объекта = глубина камеры + вертикальная составляющая дистанции
-    cos_tilt = (
-        get_tilt_correction_for_frame(last_frame, geometry_df)
-        if apply_tilt_correction else 1.0
-    )
+    # Глубина объекта = глубина камеры + дистанция
     if pd.notna(camera_depth_last):
-        object_depth = camera_depth_last + distance * cos_tilt
+        object_depth = camera_depth_last + distance
     else:
         object_depth = np.nan
     
@@ -1154,16 +1134,13 @@ def estimate_size_fixed(
         confidence=0.5,  # средняя уверенность для фиксированных
         method="fixed",
         n_points_used=len(valid_df),
-        tilt_cos_used=cos_tilt,
         warnings=["fixed_size_estimate"]
     )
 
 
 def estimate_size_from_typical(
     track_df: pd.DataFrame,
-    calibration: CameraCalibration,
-    geometry_df: Optional[pd.DataFrame] = None,
-    apply_tilt_correction: bool = True,
+    calibration: CameraCalibration
 ) -> Optional[TrackSizeEstimate]:
     """
     Оценивает размер на основе типичных размеров вида.
@@ -1212,13 +1189,8 @@ def estimate_size_from_typical(
     distance = np.clip(distance, calibration.min_reliable_distance,
                        calibration.max_reliable_distance + 2.0)
     
-    cos_tilt = (
-        get_tilt_correction_for_frame(max_frame, geometry_df)
-        if apply_tilt_correction else 1.0
-    )
     if pd.notna(camera_depth_max):
-        # камера смотрит вниз, объект глубже на вертикальную составляющую дистанции
-        object_depth = camera_depth_max + distance * cos_tilt
+        object_depth = camera_depth_max + distance  # камера смотрит вниз, объект глубже
     else:
         object_depth = np.nan
 
@@ -1238,7 +1210,6 @@ def estimate_size_from_typical(
         confidence=0.2,
         method="typical",
         n_points_used=len(valid_df),
-        tilt_cos_used=cos_tilt,
         warnings=["estimated_from_typical_size"]
     )
 
@@ -1250,7 +1221,6 @@ def estimate_size_by_parallax(
     frame_width: int = 3840,
     frame_height: int = 2160,
     min_track_points: int = 3,
-    apply_tilt_correction: bool = True,
 ) -> Optional[TrackSizeEstimate]:
     """Оценивает размер объекта по параллаксу движения.
 
@@ -1316,15 +1286,12 @@ def estimate_size_by_parallax(
     size_mm = _calculate_size_mm(max_size_pix_ref, pixel_calib)
 
     camera_depth = max_row.get('depth_m', np.nan)
-    max_frame = int(max_row['frame'])
-    cos_tilt = (
-        get_tilt_correction_for_frame(max_frame, geometry_df)
-        if apply_tilt_correction else 1.0
-    )
     if pd.notna(camera_depth):
-        object_depth = camera_depth + d_obj * cos_tilt
+        object_depth = camera_depth + d_obj
     else:
         object_depth = np.nan
+
+    max_frame = int(max_row['frame'])
 
     # Confidence: базовый 0.5, штрафы
     confidence = 0.5
@@ -1373,7 +1340,6 @@ def estimate_size_by_parallax(
         confidence=round(confidence, 3),
         method="parallax",
         n_points_used=len(valid_df),
-        tilt_cos_used=cos_tilt,
         warnings=warnings,
     )
 
@@ -1529,7 +1495,6 @@ def _build_tracks_dataframe(all_estimates: List['TrackSizeEstimate']) -> pd.Data
             'confidence': e.confidence,
             'method': e.method,
             'n_points': e.n_points_used,
-            'tilt_cos_used': e.tilt_cos_used,
             'warnings': ';'.join(e.warnings) if e.warnings else ''
         }
         for e in all_estimates
@@ -1540,8 +1505,6 @@ def _assign_size_columns_to_detections(
     df: pd.DataFrame,
     size_map: dict,
     calibration: CameraCalibration = None,
-    geometry_df: Optional[pd.DataFrame] = None,
-    apply_tilt_correction: bool = True,
 ) -> pd.DataFrame:
     """
     Добавляет к DataFrame детекций колонки размеров:
@@ -1549,12 +1512,7 @@ def _assign_size_columns_to_detections(
     distance_to_object_m, size_confidence, size_method.
 
     Для k-method: размер интерполируется между кадрами трека.
-    Расстояние вычисляется динамически: (object_depth - camera_depth) / cos(наклона(кадра)),
-    т.к. object_depth хранит вертикальную составляющую, а distance_to_object_m должна
-    оставаться наклонной дистанцией вдоль оси камеры (используется для d_eff/объёма
-    и проверки надёжного диапазона калибровки). Наклон берётся покадрово из geometry_df
-    (тот же наклон, который использовался при построении object_depth), а не усредняется
-    по треку, т.к. наклон камеры может дрейфовать в течение трека.
+    Расстояние вычисляется динамически: object_depth - camera_depth.
     """
     df['estimated_size_mm'] = None
     df['estimated_size_cm'] = None
@@ -1586,29 +1544,13 @@ def _assign_size_columns_to_detections(
     df.loc[mask, 'size_confidence'] = confidences.values
     df.loc[mask, 'size_method'] = methods.values
 
-    # distance_to_object_m = max((object_depth - camera_depth) / cos_tilt(frame), 0)
-    # object_depth хранит вертикальную составляющую (уже умноженную на cos_tilt при
-    # расчёте), поэтому обратное деление восстанавливает наклонную дистанцию.
+    # distance_to_object_m = max(object_depth - camera_depth, 0)
     dist_mask = mask & df['depth_m'].notna() & df['object_depth_m'].notna()
     if dist_mask.any():
         obj_d = df.loc[dist_mask, 'object_depth_m'].astype(float)
         cam_d = df.loc[dist_mask, 'depth_m'].astype(float)
-
-        if apply_tilt_correction and geometry_df is not None:
-            # Наклон берётся покадрово (а не усредняется по треку), т.к. может
-            # дрейфовать внутри одного трека. Считаем один раз на уникальный
-            # кадр, чтобы не пересчитывать geometry_df для каждой детекции.
-            frames = df.loc[dist_mask, 'frame']
-            cos_by_frame = {
-                int(f): get_tilt_correction_for_frame(int(f), geometry_df)
-                for f in frames.unique()
-            }
-            cos_tilt = frames.map(lambda f: cos_by_frame[int(f)]).astype(float).clip(lower=0.17)
-        else:
-            cos_tilt = pd.Series(1.0, index=obj_d.index)
-
         lo = calibration.min_reliable_distance if calibration else 0.0
-        distances = ((obj_d - cam_d) / cos_tilt).clip(lower=lo).round(3)
+        distances = (obj_d - cam_d).clip(lower=lo).round(3)
         df.loc[dist_mask, 'distance_to_object_m'] = distances.values
 
     # Интерполяция размеров по кадрам для каждого трека
@@ -1831,10 +1773,7 @@ def process_detections_with_size(
 
         # Сначала проверяем фиксированные классы
         if class_name in FIXED_SIZE_CLASSES:
-            estimate = estimate_size_fixed(
-                track_df, calibration, geometry_df=geometry_df,
-                apply_tilt_correction=apply_tilt_correction,
-            )
+            estimate = estimate_size_fixed(track_df, calibration)
             if estimate is not None:
                 fixed_estimates.append(estimate)
             continue
@@ -1886,7 +1825,6 @@ def process_detections_with_size(
                 track_df, calibration, geometry_df,
                 frame_width=frame_width, frame_height=frame_height,
                 min_track_points=min_track_points,
-                apply_tilt_correction=apply_tilt_correction,
             )
             if estimate is not None:
                 parallax_estimates.append(estimate)
@@ -1903,10 +1841,7 @@ def process_detections_with_size(
     typical_estimates = []
 
     for track_id, track_df in tracks_for_typical:
-        estimate = estimate_size_from_typical(
-            track_df, calibration, geometry_df=geometry_df,
-            apply_tilt_correction=apply_tilt_correction,
-        )
+        estimate = estimate_size_from_typical(track_df, calibration)
         if estimate is not None:
             typical_estimates.append(estimate)
 
@@ -1923,11 +1858,7 @@ def process_detections_with_size(
     tracks_df = _build_tracks_dataframe(all_estimates)
 
     size_map = {e.track_id: e for e in all_estimates}
-    df = _assign_size_columns_to_detections(
-        df, size_map, calibration,
-        geometry_df=geometry_df,
-        apply_tilt_correction=apply_tilt_correction,
-    )
+    df = _assign_size_columns_to_detections(df, size_map, calibration)
     tracks_df = _add_track_detection_distances(tracks_df, df)
     tracks_df = _add_track_frame_positions(tracks_df, df)
     

@@ -216,7 +216,7 @@ class SizeEstimationProcessor:
         geometry_csv: Optional[str] = None,
         frame_width: int = 3840,
         frame_height: int = 2160,
-        min_depth_change: float = 0.1,
+        min_depth_change: float = 0.3,
         min_track_points: int = 3,
         min_r_squared: float = 0.5,
         min_size_change_ratio: float = 0.3,
