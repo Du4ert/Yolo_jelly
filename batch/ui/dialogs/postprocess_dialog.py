@@ -149,10 +149,10 @@ class PostProcessDialog(QDialog):
             SubTaskType.SIZE, "📏 Размеры объектов",
             "Расчёт реальных размеров по k-методу.",
         ))
-        self.chk_size_use_geometry = QCheckBox("С коррекцией наклона камеры")
+        self.chk_size_use_geometry = QCheckBox("Учитывать угол до объекта")
         self.chk_size_use_geometry.setChecked(True)
         self.chk_size_use_geometry.setToolTip(
-            "Применяется, если есть файл *_geometry.csv (рассчитанный или существующий)."
+            "Считает наклонную дистанцию и вертикальный зазор по локальному FOE."
         )
         size_geom_row = QHBoxLayout()
         size_geom_row.setContentsMargins(40, 0, 0, 0)

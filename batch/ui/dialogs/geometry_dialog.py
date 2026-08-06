@@ -1046,7 +1046,7 @@ class GeometryDialog(QDialog):
             self.result_text.append(f"  - параллакс: {result.tracks_with_parallax}")
             self.result_text.append(f"  - типичный: {result.tracks_with_typical}")
             if result.tilt_correction_applied:
-                self.result_text.append(f"  ✔ Применена коррекция наклона")
+                self.result_text.append(f"  ✔ Применена угловая модель дистанции")
             self.result_text.append(f"\nФайл сохранён: {result.output_csv_path}")
             if result.tracks_csv_path:
                 self.result_text.append(f"Треки: {result.tracks_csv_path}")

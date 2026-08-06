@@ -30,6 +30,7 @@ from video_utils import ThreadedVideoCapture
 REFERENCE_FRAME_WIDTH = 3840
 CALIBRATION_SCHEMA_VERSION = 2
 DISTORTION_MODEL_SEPARABLE_XY = "separable_xy"
+ANGLE_DISTANCE_MODEL_SIMPLE = "simple_endpoint_angle_vertical_offset"
 
 # Рабочее поле зрения GoPro 12 Wide 4K.
 # 156° в спецификации производителя — диагональный угол; для пересчёта пикселей
@@ -74,10 +75,16 @@ class CameraCalibration:
     # Формула: d = A * k^B, где k - удельный прирост размера (%/м)
     distance_coef_A: float = 80.00
     distance_coef_B: float = -0.9
+
+    # Простая угловая модель вертикального зазора. None сохраняет legacy-режим.
+    angle_distance_coef_A: Optional[float] = None
+    angle_distance_coef_B: Optional[float] = None
     
     # Формула: p = C * d^D, где p - px/мм, d - дистанция (м)
     pixel_calib_C: float = 4.35
     pixel_calib_D: float = -1.25
+    angle_pixel_calib_C: Optional[float] = None
+    angle_pixel_calib_D: Optional[float] = None
     
     # Диапазон надёжных измерений (по SNR анализу)
     min_reliable_distance: float = 0.1   # ближе - слишком крупно
@@ -128,6 +135,16 @@ class CameraCalibration:
         """
         return self.frame_width / REFERENCE_FRAME_WIDTH
 
+    @property
+    def has_angle_distance_model(self) -> bool:
+        """Есть ли полный набор коэффициентов production angle-модели."""
+        return all(value is not None for value in (
+            self.angle_distance_coef_A,
+            self.angle_distance_coef_B,
+            self.angle_pixel_calib_C,
+            self.angle_pixel_calib_D,
+        ))
+
     @classmethod
     def from_json(cls, json_path: str) -> 'CameraCalibration':
         """Загружает калибровку из JSON файла."""
@@ -153,11 +170,24 @@ class CameraCalibration:
                 "В калибровке отсутствуют коэффициенты XY-дисторсии: "
                 + ", ".join(missing)
             )
+        angle_keys = (
+            'angle_distance_coef_A', 'angle_distance_coef_B',
+            'angle_pixel_calib_C', 'angle_pixel_calib_D',
+        )
+        present_angle_keys = [key for key in angle_keys if data.get(key) is not None]
+        if present_angle_keys and len(present_angle_keys) != len(angle_keys):
+            raise ValueError("Угловая калибровка должна содержать полный набор коэффициентов")
+        if present_angle_keys and data.get('angle_distance_model') != ANGLE_DISTANCE_MODEL_SIMPLE:
+            raise ValueError("Неподдерживаемая угловая модель дистанции")
         return cls(
             distance_coef_A=data.get('distance_coef_A', 80.0),
             distance_coef_B=data.get('distance_coef_B', -0.9),
+            angle_distance_coef_A=data.get('angle_distance_coef_A'),
+            angle_distance_coef_B=data.get('angle_distance_coef_B'),
             pixel_calib_C=data.get('pixel_calib_C', 4.35),
             pixel_calib_D=data.get('pixel_calib_D', -1.25),
+            angle_pixel_calib_C=data.get('angle_pixel_calib_C'),
+            angle_pixel_calib_D=data.get('angle_pixel_calib_D'),
             distortion_x_k1=data['distortion_x_k1'],
             distortion_x_k2=data['distortion_x_k2'],
             distortion_y_k1=data['distortion_y_k1'],
@@ -181,8 +211,16 @@ class CameraCalibration:
             'distortion_model': DISTORTION_MODEL_SEPARABLE_XY,
             'distance_coef_A': self.distance_coef_A,
             'distance_coef_B': self.distance_coef_B,
+            'angle_distance_model': (
+                ANGLE_DISTANCE_MODEL_SIMPLE
+                if self.has_angle_distance_model else None
+            ),
+            'angle_distance_coef_A': self.angle_distance_coef_A,
+            'angle_distance_coef_B': self.angle_distance_coef_B,
             'pixel_calib_C': self.pixel_calib_C,
             'pixel_calib_D': self.pixel_calib_D,
+            'angle_pixel_calib_C': self.angle_pixel_calib_C,
+            'angle_pixel_calib_D': self.angle_pixel_calib_D,
             'distortion_x_k1': self.distortion_x_k1,
             'distortion_x_k2': self.distortion_x_k2,
             'distortion_y_k1': self.distortion_y_k1,
@@ -360,6 +398,141 @@ def select_foe_for_range(
     )
 
 
+def simple_gamma_from_foe(
+    x_normalized: float,
+    y_normalized: float,
+    foe_x_px: float,
+    foe_y_px: float,
+    calibration: CameraCalibration,
+) -> Tuple[float, float]:
+    """Считает угол до направления движения в угловой плоскости кадра."""
+    values = (x_normalized, y_normalized, foe_x_px, foe_y_px)
+    if not all(np.isfinite(value) for value in values):
+        raise ValueError("Координаты объекта и FOE должны быть конечными")
+    if calibration.frame_width <= 0 or calibration.frame_height <= 0:
+        raise ValueError("Размер кадра должен быть больше нуля")
+
+    object_x_px = float(x_normalized) * calibration.frame_width
+    object_y_px = float(y_normalized) * calibration.frame_height
+    angle_x = (
+        (object_x_px - float(foe_x_px))
+        / calibration.frame_width
+        * calibration.fov_horizontal
+    )
+    angle_y = (
+        (object_y_px - float(foe_y_px))
+        / calibration.frame_height
+        * calibration.fov_vertical
+    )
+    gamma_deg = float(np.hypot(angle_x, angle_y))
+    return gamma_deg, float(np.cos(np.radians(gamma_deg)))
+
+
+def select_pair_angle(
+    frame_start: int,
+    frame_end: int,
+    x_normalized_end: float,
+    y_normalized_end: float,
+    geometry_df: Optional[pd.DataFrame],
+    calibration: CameraCalibration,
+    min_confidence: float = 0.5,
+    min_cos_gamma: float = 0.17,
+) -> Optional[dict]:
+    """Выбирает локальный уверенный radial FOE и угол конца пары."""
+    local_geometry = geometry_df
+    if local_geometry is not None and 'flow_regime' in local_geometry.columns:
+        local_geometry = local_geometry[
+            local_geometry['flow_regime'] == 'radial'
+        ].copy()
+    selection = select_foe_for_range(
+        frame_start,
+        frame_end,
+        local_geometry,
+        min_confidence=min_confidence,
+    )
+    if selection is None:
+        return None
+    gamma_deg, cosine = simple_gamma_from_foe(
+        x_normalized_end,
+        y_normalized_end,
+        selection.x_px,
+        selection.y_px,
+        calibration,
+    )
+    if cosine <= min_cos_gamma:
+        return None
+    _, cos_camera_tilt = simple_gamma_from_foe(
+        calibration.optical_center_x,
+        calibration.optical_center_y,
+        selection.x_px,
+        selection.y_px,
+        calibration,
+    )
+    return {
+        'gamma_end_deg': gamma_deg,
+        'cos_gamma_end': cosine,
+        'cos_camera_tilt': max(cos_camera_tilt, min_cos_gamma),
+        'foe_confidence': selection.confidence,
+        'foe_intervals': selection.n_intervals,
+        'angle_source': 'local_foe',
+    }
+
+
+def exact_pair_distances(
+    corrected_size_start: float,
+    corrected_size_end: float,
+    delta_depth_m: float,
+    cos_gamma_end: float,
+) -> Tuple[float, float]:
+    """Возвращает конечные (наклонную дальность, вертикальный зазор)."""
+    values = (
+        corrected_size_start,
+        corrected_size_end,
+        delta_depth_m,
+        cos_gamma_end,
+    )
+    if not all(np.isfinite(value) for value in values):
+        raise ValueError("Параметры пары должны быть конечными")
+    if corrected_size_start <= 0 or corrected_size_end <= 0:
+        raise ValueError("Размеры пары должны быть больше нуля")
+    if delta_depth_m <= 0:
+        raise ValueError("Поддерживается только положительный спуск")
+    if cos_gamma_end <= 0 or cos_gamma_end > 1:
+        raise ValueError("cos_gamma_end должен находиться в диапазоне (0, 1]")
+
+    ratio = corrected_size_end / corrected_size_start
+    if ratio <= 1:
+        raise ValueError("Видимый размер объекта должен увеличиваться")
+    radicand = cos_gamma_end**2 + ratio**2 - 1.0
+    if radicand <= 0:
+        raise ValueError("Геометрия пары не даёт положительную дистанцию")
+    slant_distance = (
+        delta_depth_m
+        * (np.sqrt(radicand) + cos_gamma_end)
+        / (ratio**2 - 1.0)
+    )
+    vertical_offset = slant_distance * cos_gamma_end
+    if slant_distance <= 0 or vertical_offset <= 0:
+        raise ValueError("Дистанция и вертикальный зазор должны быть больше нуля")
+    return float(slant_distance), float(vertical_offset)
+
+
+def exact_vertical_k_percent(
+    corrected_size_start: float,
+    corrected_size_end: float,
+    delta_depth_m: float,
+    cos_gamma_end: float,
+) -> float:
+    """Возвращает геометрический признак 100 / vertical_offset."""
+    _, vertical_offset = exact_pair_distances(
+        corrected_size_start,
+        corrected_size_end,
+        delta_depth_m,
+        cos_gamma_end,
+    )
+    return 100.0 / vertical_offset
+
+
 def motion_ray_for_range(
     frame_start: int,
     frame_end: int,
@@ -396,18 +569,15 @@ class TrackSizeEstimate:
     """
     Результат оценки размера объекта по треку.
     
-    Метод расчёта:
-    1. k = (Δpixels/pixels₁) / Δdepth_camera  - удельный прирост размера для каждой пары
-    2. d = 80.00 * |k|^(-0.9)                - дистанция до объекта (м)
-    3. p = 4.35 * d^(-1.25)                  - калибровка px/мм
-    4. size = pixels_max / p                  - размер объекта по макс. кадру (мм)
-    5. object_depth = camera_depth + distance - глубина объекта (камера смотрит вниз)
+    При наличии локального FOE k-метод отдельно считает вертикальный зазор и
+    наклонную дальность. К глубине камеры прибавляется только вертикальный зазор.
+    Без локального FOE используется legacy-модель вертикального зазора.
     """
     track_id: int
     class_name: str
     real_size_mm: float            # Финальный размер в миллиметрах
     real_size_cm: float            # Финальный размер в сантиметрах
-    distance_m: float              # Дистанция до объекта на финальный момент (м)
+    distance_m: float              # Наклонная дальность либо legacy-оценка (м)
     object_depth_m: float          # Глубина объекта в воде (м)
     measurement_frame: int         # Кадр финального измерения
     measurement_size_pixels: float # Размер в пикселях на финальном кадре
@@ -416,12 +586,17 @@ class TrackSizeEstimate:
     k_std: float                   # Стд k (%/м)
     pixel_calibration: float       # Калибровка px/мм на финальный момент
     confidence: float              # Уверенность оценки (0-1)
-    method: str                    # 'k_method', 'typical', 'fixed'
+    method: str                    # 'k_method_angle', 'k_method_legacy', fallback
     n_points_used: int             # Количество пар для расчёта k
     warnings: List[str] = field(default_factory=list)
     # Покадровые размеры для k-method: {frame: size_mm}
     # Расстояние вычисляется динамически: object_depth_m - camera_depth
     frame_data: Dict[int, float] = field(default_factory=dict)
+    vertical_offset_m: Optional[float] = None
+    slant_distance_m: Optional[float] = None
+    view_angle_deg: Optional[float] = None
+    angle_source: Optional[str] = None
+    angle_confidence: Optional[float] = None
 
 
 # =============================================================================
@@ -695,6 +870,8 @@ def _find_size_pairs(
         avg_tilt_deg: максимальный угол наклона среди пар
     """
     pair_data = []
+    angle_pair_data = []
+    legacy_pair_data = []
     tilt_correction_applied = False
     avg_tilt_deg = 0.0
 
@@ -778,46 +955,70 @@ def _find_size_pairs(
 
         delta_pixels = pixels2_for_k - pixels1_for_k
         k_raw = (delta_pixels / pixels1_for_k) / delta_depth
-        k = k_raw
 
-        cos_tilt = 1.0
-        tilt_deg_pair = 0.0
-        if apply_tilt_correction and geometry_df is not None:
-            cos_tilt, tilt_deg_pair = get_average_tilt_for_range(
-                int(frame1), int(frame2), geometry_df
+        angle = None
+        if (
+            apply_tilt_correction
+            and geometry_df is not None
+            and calibration.has_angle_distance_model
+            and xcenter_arr is not None
+            and ycenter_arr is not None
+        ):
+            angle = select_pair_angle(
+                int(frame1),
+                int(frame2),
+                float(xcenter_arr[found_j]),
+                float(ycenter_arr[found_j]),
+                geometry_df,
+                calibration,
             )
-            if cos_tilt < 1.0:
-                tilt_correction_applied = True
-                avg_tilt_deg = max(avg_tilt_deg, tilt_deg_pair)
-            cos_tilt = max(cos_tilt, 0.17)
-            k = k_raw / cos_tilt
 
-        if k > 0:
-            k_percent = k * 100
-            distance = _calculate_distance_from_k(k_percent, calibration)
+        if angle is not None:
+            try:
+                k_percent = exact_vertical_k_percent(
+                    pixels1_for_k,
+                    pixels2_for_k,
+                    delta_depth,
+                    angle['cos_gamma_end'],
+                )
+            except ValueError:
+                angle = None
+
+        if angle is not None:
+            k = k_percent / 100.0
+            distance = (
+                calibration.angle_distance_coef_A
+                * k_percent**calibration.angle_distance_coef_B
+            )
             clamped = False
             if distance < calibration.min_reliable_distance:
                 distance = calibration.min_reliable_distance
                 clamped = True
-            pixel_calib = _calculate_pixel_calibration(distance, calibration)
-
-            # Используем скорректированные пиксели конечного кадра (уже посчитаны выше)
-            # Нормализуем к референсному разрешению (3840px)
+            pixel_calib = (
+                calibration.angle_pixel_calib_C
+                * distance**calibration.angle_pixel_calib_D
+            )
             pixels2_ref = pixels2_for_k / calibration.resolution_scale
             size_mm = _calculate_size_mm(pixels2_ref, pixel_calib)
             camera_depth_end = depth2
             object_depth = camera_depth_end + distance
-
-            pair_data.append({
+            slant_distance = distance / angle['cos_gamma_end']
+            angle_pair_data.append({
                 'frame_start': frame1,
                 'frame_end': frame2,
                 'frame_mid': (frame1 + frame2) / 2,
                 'k': k,
                 'k_percent': k_percent,
                 'k_raw_percent': k_raw_uncorrected * 100,
-                'cos_tilt': cos_tilt,
-                'tilt_deg': tilt_deg_pair,
+                'cos_tilt': angle['cos_camera_tilt'],
+                'tilt_deg': angle['gamma_end_deg'],
                 'distance': distance,
+                'vertical_offset_m': distance,
+                'slant_distance_m': slant_distance,
+                'view_angle_deg': angle['gamma_end_deg'],
+                'angle_source': angle['angle_source'],
+                'angle_confidence': angle['foe_confidence'],
+                'distance_model': 'simple_endpoint_angle',
                 'pixel_calib': pixel_calib,
                 'size_mm': size_mm,
                 'size_pixels': pixels2,
@@ -828,8 +1029,76 @@ def _find_size_pairs(
                 'clamped_to_min': clamped,
             })
 
+        cos_tilt = 1.0
+        tilt_deg_pair = 0.0
+        if (
+            apply_tilt_correction
+            and geometry_df is not None
+            and not calibration.has_angle_distance_model
+        ):
+            cos_tilt, tilt_deg_pair = get_average_tilt_for_range(
+                int(frame1), int(frame2), geometry_df
+            )
+            cos_tilt = max(cos_tilt, 0.17)
+        legacy_k = k_raw / cos_tilt
+        if legacy_k > 0:
+            legacy_k_percent = legacy_k * 100
+            legacy_distance = _calculate_distance_from_k(
+                legacy_k_percent, calibration
+            )
+            legacy_clamped = False
+            if legacy_distance < calibration.min_reliable_distance:
+                legacy_distance = calibration.min_reliable_distance
+                legacy_clamped = True
+            legacy_pixel_calib = _calculate_pixel_calibration(
+                legacy_distance, calibration
+            )
+            pixels2_ref = pixels2_for_k / calibration.resolution_scale
+            legacy_size_mm = _calculate_size_mm(
+                pixels2_ref, legacy_pixel_calib
+            )
+            legacy_pair_data.append({
+                'frame_start': frame1,
+                'frame_end': frame2,
+                'frame_mid': (frame1 + frame2) / 2,
+                'k': legacy_k,
+                'k_percent': legacy_k_percent,
+                'k_raw_percent': k_raw_uncorrected * 100,
+                'cos_tilt': cos_tilt,
+                'tilt_deg': tilt_deg_pair,
+                'distance': legacy_distance,
+                'vertical_offset_m': legacy_distance,
+                'slant_distance_m': None,
+                'view_angle_deg': None,
+                'angle_source': None,
+                'angle_confidence': None,
+                'distance_model': 'legacy_vertical',
+                'pixel_calib': legacy_pixel_calib,
+                'size_mm': legacy_size_mm,
+                'size_pixels': pixels2,
+                'size_pixels_start': pixels1,
+                'depth_camera': depth2,
+                'object_depth': depth2 + legacy_distance,
+                'size_change_pct': (pixels2 / pixels1 - 1) * 100,
+                'clamped_to_min': legacy_clamped,
+            })
+
         i = found_j
 
+    if angle_pair_data:
+        pair_data = angle_pair_data
+        tilt_correction_applied = True
+        avg_tilt_deg = max(pair['view_angle_deg'] for pair in angle_pair_data)
+    else:
+        pair_data = legacy_pair_data
+        if (
+            apply_tilt_correction
+            and geometry_df is not None
+            and not calibration.has_angle_distance_model
+            and pair_data
+        ):
+            tilt_correction_applied = any(pair['cos_tilt'] < 1.0 for pair in pair_data)
+            avg_tilt_deg = max(pair['tilt_deg'] for pair in pair_data)
     return pair_data, tilt_correction_applied, avg_tilt_deg
 
 
@@ -985,18 +1254,17 @@ def estimate_size_by_k_method(
     1. Берём пары точек, где размер изменился минимум на 10%
     2. Для каждой пары вычисляем:
        - k = (Δpx/px₁) / Δdepth_camera
-       - k_corr = k / cos(θ) (коррекция наклона)
-       - distance = 80.00 × |k|^(-0.9)
+       - angle feature = точный конечный 100 / vertical_offset
+       - vertical_offset = A_angle × feature^B_angle
+       - slant_distance = vertical_offset / cos(γ)
        - pixel_calib = 4.35 × d^(-1.25)
        - size_mm = pixels_end / pixel_calib
     3. Сглаживаем ряд размеров скользящей медианой
     4. Выбираем последний стабильный размер до начала уменьшения
-    5. Глубина объекта = глубина камеры + дистанция
+    5. Глубина объекта = глубина камеры + вертикальный зазор
 
-    Коррекция наклона:
-    При наклоне камеры на угол θ от вертикали, реальное изменение дистанции
-    до объекта = Δdepth × cos(θ). Измеренный k занижен, поэтому:
-    k_corrected = k_measured / cos(θ)
+    Угол γ определяется между локальным FOE и центром bbox конечного кадра.
+    Если локального уверенного radial FOE нет, применяется legacy fallback.
     
     Args:
         track_df: DataFrame с детекциями трека
@@ -1006,7 +1274,7 @@ def estimate_size_by_k_method(
         min_points: минимальное количество точек
         min_size_change_pct: минимальное изменение размера между точками пары (%)
         geometry_df: DataFrame с данными геометрии (наклон камеры)
-        apply_tilt_correction: применять ли коррекцию наклона
+        apply_tilt_correction: применять угловую модель при наличии геометрии
         smoothing_window: размер окна для сглаживания медианой
     """
     if min_track_depth_span_m <= 0:
@@ -1129,6 +1397,7 @@ def estimate_size_by_k_method(
     size_mm = final_size_mm
     size_cm = size_mm / 10.0
     distance_final = final_pair['distance']
+    slant_distance_final = final_pair.get('slant_distance_m')
     camera_depth_final = final_pair['depth_camera']
     pixel_calib = final_pair['pixel_calib']
     final_frame = int(final_pair['frame_end'])
@@ -1187,9 +1456,15 @@ def estimate_size_by_k_method(
     if size_mm > 1000:
         warnings_list.append("size_too_large")
     
-    # Добавляем информацию о коррекции наклона
-    if tilt_correction_applied:
-        warnings_list.append(f"tilt_corrected_{avg_tilt_deg:.0f}deg")
+    distance_model = final_pair.get('distance_model', 'legacy_vertical')
+    if distance_model == 'simple_endpoint_angle':
+        warnings_list.append(
+            f"angle_corrected_{final_pair['view_angle_deg']:.0f}deg"
+        )
+    else:
+        warnings_list.append("legacy_without_local_foe")
+        if tilt_correction_applied:
+            warnings_list.append(f"tilt_corrected_{avg_tilt_deg:.0f}deg")
     
     # Информация о сглаживании
     n_filtered = len(pair_data) - len(pair_data_filtered)
@@ -1228,7 +1503,11 @@ def estimate_size_by_k_method(
         class_name=class_name,
         real_size_mm=round(size_mm, 1),
         real_size_cm=round(size_cm, 2),
-        distance_m=round(distance_final, 3),
+        distance_m=round(
+            slant_distance_final
+            if slant_distance_final is not None else distance_final,
+            3,
+        ),
         object_depth_m=round(object_depth_final, 2),  # единая фиксированная глубина
         measurement_frame=final_frame,
         measurement_size_pixels=round(final_size_pixels, 1),
@@ -1237,10 +1516,28 @@ def estimate_size_by_k_method(
         k_std=round(k_std, 2),
         pixel_calibration=round(pixel_calib, 4),
         confidence=round(confidence, 3),
-        method="k_method",
+        method=(
+            "k_method_angle"
+            if distance_model == 'simple_endpoint_angle'
+            else "k_method_legacy"
+        ),
         n_points_used=len(pair_data_filtered),
         warnings=warnings_list,
-        frame_data=frame_sizes  # теперь только размеры, расстояние вычисляется динамически
+        frame_data=frame_sizes,
+        vertical_offset_m=round(distance_final, 3),
+        slant_distance_m=(
+            round(slant_distance_final, 3)
+            if slant_distance_final is not None else None
+        ),
+        view_angle_deg=(
+            round(final_pair['view_angle_deg'], 3)
+            if final_pair.get('view_angle_deg') is not None else None
+        ),
+        angle_source=final_pair.get('angle_source'),
+        angle_confidence=(
+            round(final_pair['angle_confidence'], 3)
+            if final_pair.get('angle_confidence') is not None else None
+        ),
     )
 
 
@@ -1646,6 +1943,14 @@ def _build_tracks_dataframe(all_estimates: List['TrackSizeEstimate']) -> pd.Data
             'real_size_cm': e.real_size_cm,
             'max_detection_distance_m': None,
             'distance_m': e.distance_m,
+            'vertical_offset_m': (
+                e.vertical_offset_m
+                if e.vertical_offset_m is not None else e.distance_m
+            ),
+            'slant_distance_m': e.slant_distance_m,
+            'view_angle_deg': e.view_angle_deg,
+            'angle_source': e.angle_source,
+            'angle_confidence': e.angle_confidence,
             'object_depth_m': e.object_depth_m,
             'measurement_frame': e.measurement_frame,
             'measurement_size_pixels': e.measurement_size_pixels,
@@ -1675,6 +1980,7 @@ def _assign_size_columns_to_detections(
     df: pd.DataFrame,
     size_map: dict,
     calibration: CameraCalibration = None,
+    geometry_df: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """
     Добавляет к DataFrame детекций колонки размеров:
@@ -1688,6 +1994,11 @@ def _assign_size_columns_to_detections(
     df['estimated_size_cm'] = None
     df['object_depth_m'] = None
     df['distance_to_object_m'] = None
+    df['vertical_offset_m'] = None
+    df['slant_distance_m'] = None
+    df['view_angle_deg'] = None
+    df['angle_source'] = None
+    df['angle_confidence'] = None
     df['size_confidence'] = None
     df['size_method'] = None
 
@@ -1714,7 +2025,8 @@ def _assign_size_columns_to_detections(
     df.loc[mask, 'size_confidence'] = confidences.values
     df.loc[mask, 'size_method'] = methods.values
 
-    # distance_to_object_m = max(object_depth - camera_depth, 0)
+    # Сначала задаём legacy-дистанцию равной вертикальному зазору. Для строк с
+    # локальным FOE ниже она заменяется наклонной дальностью.
     dist_mask = mask & df['depth_m'].notna() & df['object_depth_m'].notna()
     if dist_mask.any():
         obj_d = df.loc[dist_mask, 'object_depth_m'].astype(float)
@@ -1722,6 +2034,7 @@ def _assign_size_columns_to_detections(
         lo = calibration.min_reliable_distance if calibration else 0.0
         distances = (obj_d - cam_d).clip(lower=lo).round(3)
         df.loc[dist_mask, 'distance_to_object_m'] = distances.values
+        df.loc[dist_mask, 'vertical_offset_m'] = distances.values
 
     # Интерполяция размеров по кадрам для каждого трека
     # Предварительно подготовим кеш отсортированных frame_data
@@ -1749,6 +2062,44 @@ def _assign_size_columns_to_detections(
             df.loc[group_idx, 'estimated_size_mm'] = sizes
         else:
             df.loc[group_idx, 'estimated_size_mm'] = est.real_size_mm
+
+        if est.angle_source == 'local_foe' and geometry_df is not None:
+            for row_idx in group_idx:
+                row = df.loc[row_idx]
+                if (
+                    pd.isna(row.get('vertical_offset_m'))
+                    or pd.isna(row.get('x_center'))
+                    or pd.isna(row.get('y_center'))
+                    or pd.isna(row.get('frame'))
+                ):
+                    continue
+                frame = int(row['frame'])
+                angle = select_pair_angle(
+                    frame,
+                    frame,
+                    float(row['x_center']),
+                    float(row['y_center']),
+                    geometry_df,
+                    calibration,
+                )
+                if angle is None:
+                    continue
+                vertical_offset = float(row['vertical_offset_m'])
+                df.at[row_idx, 'slant_distance_m'] = round(
+                    vertical_offset / angle['cos_gamma_end'], 3
+                )
+                df.at[row_idx, 'distance_to_object_m'] = df.at[
+                    row_idx, 'slant_distance_m'
+                ]
+                df.at[row_idx, 'view_angle_deg'] = round(
+                    angle['gamma_end_deg'], 3
+                )
+                df.at[row_idx, 'angle_source'] = angle['angle_source']
+                df.at[row_idx, 'angle_confidence'] = round(
+                    angle['foe_confidence'], 3
+                )
+        else:
+            df.loc[group_idx, 'angle_source'] = 'legacy_without_local_foe'
 
     # estimated_size_cm из estimated_size_mm
     size_assigned = mask & df['estimated_size_mm'].notna()
@@ -1907,7 +2258,7 @@ def process_detections_with_size(
         min_pair_depth_change_m: минимальное изменение глубины внутри пары (м)
         min_track_points: мин. точек в треке
         min_size_change_pct: минимальный рост bbox между точками пары (%)
-        apply_tilt_correction: применять ли коррекцию наклона камеры
+        apply_tilt_correction: применять угловую модель при наличии геометрии
         verbose: выводить ли информацию о прогрессе
     """
     if calibration is None:
@@ -2048,7 +2399,9 @@ def process_detections_with_size(
     tracks_df = _build_tracks_dataframe(all_estimates)
 
     size_map = {e.track_id: e for e in all_estimates}
-    df = _assign_size_columns_to_detections(df, size_map, calibration)
+    df = _assign_size_columns_to_detections(
+        df, size_map, calibration, geometry_df
+    )
     tracks_df = _add_track_detection_distances(tracks_df, df)
     tracks_df = _add_track_frame_positions(tracks_df, df)
     
@@ -3073,6 +3426,9 @@ def calibrate_coefficients(
     min_reliable_distance: Optional[float] = None,
     max_reliable_distance: Optional[float] = None,
     apply_tilt_correction: bool = True,
+    min_track_depth_span_m: float = 0.1,
+    min_pair_depth_change_m: float = 0.01,
+    min_size_change_pct: float = 10.0,
     verbose: bool = True
 ) -> CameraCalibration:
     """
@@ -3112,7 +3468,10 @@ def calibrate_coefficients(
         video_pairs = _extract_calibration_pairs(
             spec['detections_csv'], spec.get('geometry_csv'),
             frame_width, frame_height,
-            apply_tilt_correction=apply_tilt_correction
+            apply_tilt_correction=apply_tilt_correction,
+            min_track_depth_span_m=min_track_depth_span_m,
+            min_pair_depth_change_m=min_pair_depth_change_m,
+            min_size_change_pct=min_size_change_pct,
         )
 
         spec_known = spec.get('known_sizes', {})
@@ -3673,6 +4032,9 @@ def calibrate_coefficients(
             'n_tracks_used': len(available_tracks),
             'n_videos_used': len(video_specs),
             'videos': [s['name'] for s in video_specs],
+            'min_track_depth_span_m': min_track_depth_span_m,
+            'min_pair_depth_change_m': min_pair_depth_change_m,
+            'min_size_change_pct': min_size_change_pct,
             'mean_error_direct_pct': round(float(np.mean(errors_direct)), 2) if errors_direct else None,
             'mean_error_pipeline_pct': round(float(np.mean(errors_pipeline)), 2),
             'mean_bias_pipeline_pct': round(float(np.mean(signed_errors_pipeline)), 2),
@@ -3752,6 +4114,12 @@ def main():
                        help='Максимальная надёжная дистанция (м). Если не задано, используется дефолт CameraCalibration.')
     calib.add_argument('--apply-tilt-correction', action='store_true', default=True)
     calib.add_argument('--no-tilt-correction', dest='apply_tilt_correction', action='store_false')
+    calib.add_argument('--min-track-depth-span', type=float, default=0.1,
+                       help='Минимальный общий диапазон глубины калибровочного трека, м')
+    calib.add_argument('--min-pair-depth-change', type=float, default=0.01,
+                       help='Минимальное изменение глубины внутри калибровочной пары, м')
+    calib.add_argument('--min-size-change-pct', type=float, default=10.0,
+                       help='Минимальный рост bbox калибровочной пары, %%')
 
     # volume
     vol = subparsers.add_parser('volume', help='Расчёт осмотренного объёма воды (цилиндрическая модель)')
@@ -3821,7 +4189,10 @@ def main():
             frame_width=args.width, frame_height=args.height,
             min_reliable_distance=args.min_reliable_distance,
             max_reliable_distance=args.max_reliable_distance,
-            apply_tilt_correction=args.apply_tilt_correction
+            apply_tilt_correction=args.apply_tilt_correction,
+            min_track_depth_span_m=args.min_track_depth_span,
+            min_pair_depth_change_m=args.min_pair_depth_change,
+            min_size_change_pct=args.min_size_change_pct,
         )
     
     elif args.command == 'volume':

@@ -78,6 +78,9 @@ def build_baseline_report(
     frame_width: int = 3840,
     frame_height: int = 2160,
     apply_tilt_correction: bool = True,
+    min_track_depth_span_m: float = 0.1,
+    min_pair_depth_change_m: float = 0.01,
+    min_size_change_pct: float = 10.0,
 ) -> dict:
     """Evaluate one calibration against all discovered calibration tracks."""
     test_dir = test_dir.resolve()
@@ -104,6 +107,7 @@ def build_baseline_report(
     videos = []
     tracks = []
     distance_signed_errors = []
+    track_distance_signed_errors = []
     pipeline_signed_errors = []
     direct_signed_errors = []
     predicted_distances = []
@@ -129,6 +133,9 @@ def build_baseline_report(
             frame_width,
             frame_height,
             apply_tilt_correction=apply_tilt_correction,
+            min_track_depth_span_m=min_track_depth_span_m,
+            min_pair_depth_change_m=min_pair_depth_change_m,
+            min_size_change_pct=min_size_change_pct,
         )
 
         contributing_tracks = 0
@@ -154,6 +161,7 @@ def build_baseline_report(
             direct_sizes = []
             track_distances = []
             true_distances = []
+            valid_predicted_distances = []
             for pair in pairs:
                 true_distance = known_depth - float(pair["depth_camera"])
                 corrected_k = _corrected_k_percent(pair, x_k1, x_k2, y_k1, y_k2)
@@ -162,6 +170,7 @@ def build_baseline_report(
                 track_distances.append(predicted_distance)
                 true_distances.append(true_distance)
                 if true_distance > 0.05:
+                    valid_predicted_distances.append(predicted_distance)
                     distance_signed_errors.append(
                         (predicted_distance - true_distance) / true_distance * 100.0
                     )
@@ -182,6 +191,17 @@ def build_baseline_report(
                 direct_error = (median_direct_size - known_size) / known_size * 100.0
                 direct_signed_errors.append(direct_error)
 
+            valid_true_distances = [value for value in true_distances if value > 0.05]
+            track_distance_error = None
+            if valid_true_distances:
+                median_predicted_distance = float(np.median(valid_predicted_distances))
+                median_true_distance = float(np.median(valid_true_distances))
+                track_distance_error = (
+                    (median_predicted_distance - median_true_distance)
+                    / median_true_distance * 100.0
+                )
+                track_distance_signed_errors.append(track_distance_error)
+
             tracks.append({
                 "video": spec["name"],
                 "track_id": int(track_id),
@@ -194,6 +214,10 @@ def build_baseline_report(
                 "direct_error_pct": round(direct_error, 6) if direct_error is not None else None,
                 "median_predicted_distance_m": round(float(np.median(track_distances)), 6),
                 "median_true_vertical_distance_m": round(float(np.median(true_distances)), 6),
+                "track_distance_error_pct": (
+                    round(track_distance_error, 6)
+                    if track_distance_error is not None else None
+                ),
             })
 
         videos.append({
@@ -218,7 +242,7 @@ def build_baseline_report(
         try:
             relative_path = path.relative_to(test_dir.parent)
         except ValueError:
-            relative_path = path.name
+            relative_path = Path(path.name)
         input_files.append({"path": relative_path.as_posix(), "sha256": _sha256(path)})
 
     return {
@@ -232,10 +256,10 @@ def build_baseline_report(
             "frame_width": frame_width,
             "frame_height": frame_height,
             "apply_tilt_correction": apply_tilt_correction,
-            "min_track_depth_span_m": 0.1,
-            "min_pair_depth_change_m": 0.01,
+            "min_track_depth_span_m": min_track_depth_span_m,
+            "min_pair_depth_change_m": min_pair_depth_change_m,
             "min_track_points": 3,
-            "min_size_change_pct": 10.0,
+            "min_size_change_pct": min_size_change_pct,
         },
         "environment": {
             "python": platform.python_version(),
@@ -257,6 +281,10 @@ def build_baseline_report(
         "metrics": {
             "distance_signed_error_pct": _summary(distance_signed_errors),
             "distance_absolute_error_pct": _summary(abs(value) for value in distance_signed_errors),
+            "track_distance_signed_error_pct": _summary(track_distance_signed_errors),
+            "track_distance_absolute_error_pct": _summary(
+                abs(value) for value in track_distance_signed_errors
+            ),
             "pipeline_size_signed_error_pct": _summary(pipeline_signed_errors),
             "pipeline_size_absolute_error_pct": _summary(abs(value) for value in pipeline_signed_errors),
             "direct_size_signed_error_pct": _summary(direct_signed_errors),
@@ -278,6 +306,9 @@ def main() -> None:
     parser.add_argument("--width", type=int, default=3840)
     parser.add_argument("--height", type=int, default=2160)
     parser.add_argument("--no-tilt-correction", action="store_true")
+    parser.add_argument("--min-track-depth-span", type=float, default=0.1)
+    parser.add_argument("--min-pair-depth-change", type=float, default=0.01)
+    parser.add_argument("--min-size-change-pct", type=float, default=10.0)
     args = parser.parse_args()
 
     report = build_baseline_report(
@@ -286,6 +317,9 @@ def main() -> None:
         frame_width=args.width,
         frame_height=args.height,
         apply_tilt_correction=not args.no_tilt_correction,
+        min_track_depth_span_m=args.min_track_depth_span,
+        min_pair_depth_change_m=args.min_pair_depth_change,
+        min_size_change_pct=args.min_size_change_pct,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(

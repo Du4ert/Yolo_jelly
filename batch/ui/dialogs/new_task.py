@@ -560,18 +560,18 @@ class NewTaskDialog(QDialog):
         self.pp_chk_size.toggled.connect(self._update_postprocess_dependencies)
         layout.addWidget(self.pp_chk_size)
         
-        # Опция коррекции наклона
+        # Опция угловой модели дистанции
         size_indent = QWidget()
         size_indent_layout = QHBoxLayout(size_indent)
         size_indent_layout.setContentsMargins(20, 0, 0, 0)
-        self.pp_chk_size_use_geometry = QCheckBox("С коррекцией наклона камеры")
+        self.pp_chk_size_use_geometry = QCheckBox("Учитывать угол до объекта")
         self.pp_chk_size_use_geometry.setToolTip(
-            "Коррекция k-значений с учётом угла наклона камеры:\n"
-            "k_real = k_measured / cos(θ)\n\n"
+            "Раздельный расчёт наклонной дистанции и вертикального зазора\n"
+            "по положению объекта относительно локального FOE.\n\n"
             "Применяется, если в папке output уже есть файл *_geometry.csv\n"
             "или если выбран пункт «Геометрия камеры (FOE)» (он пересчитает\n"
             "геометрию заново). Если геометрии нет — опция игнорируется,\n"
-            "размеры считаются как для вертикальной камеры."
+            "используется legacy-оценка без угла."
         )
         self.pp_chk_size_use_geometry.setChecked(True)
         size_indent_layout.addWidget(self.pp_chk_size_use_geometry)

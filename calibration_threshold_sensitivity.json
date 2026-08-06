@@ -1,0 +1,1368 @@
+{
+  "schema_version": 1,
+  "method": "leave_one_video_out",
+  "frame_width": 3840,
+  "frame_height": 2160,
+  "videos": [
+    "2down",
+    "3down1",
+    "3down2",
+    "3down3",
+    "3down4",
+    "bottom",
+    "down1",
+    "down3"
+  ],
+  "results": [
+    {
+      "min_pair_depth_change_m": 0.01,
+      "full_fit_coefficients": {
+        "distance_coef_A": 25.8078,
+        "distance_coef_B": -0.7421,
+        "pixel_calib_C": 2.7171,
+        "pixel_calib_D": -0.9268,
+        "distortion_x_k1": 0.197787,
+        "distortion_x_k2": 0.364149,
+        "distortion_y_k1": -0.081234,
+        "distortion_y_k2": 0.323655
+      },
+      "in_sample": {
+        "tracks": 21,
+        "pairs": 273,
+        "distance_signed_error_pct": {
+          "count": 249,
+          "mean": 16.223906,
+          "median": -2.396849,
+          "p95": 158.70297,
+          "max": 536.515795
+        },
+        "distance_absolute_error_pct": {
+          "count": 249,
+          "mean": 47.960022,
+          "median": 34.60123,
+          "p95": 158.70297,
+          "max": 536.515795
+        },
+        "track_distance_signed_error_pct": {
+          "count": 19,
+          "mean": -2.631908,
+          "median": -6.931654,
+          "p95": 39.641516,
+          "max": 40.33486
+        },
+        "track_distance_absolute_error_pct": {
+          "count": 19,
+          "mean": 17.236431,
+          "median": 13.512099,
+          "p95": 41.16181,
+          "max": 48.604356
+        },
+        "size_signed_error_pct": {
+          "count": 21,
+          "mean": -1.585166,
+          "median": -1.104217,
+          "p95": 25.562758,
+          "max": 32.836121
+        },
+        "size_absolute_error_pct": {
+          "count": 21,
+          "mean": 11.488506,
+          "median": 5.385798,
+          "p95": 32.836121,
+          "max": 35.535408
+        }
+      },
+      "leave_one_video_out": {
+        "tracks": 21,
+        "pairs": 273,
+        "video_mean_distance_mae_pct": 48.034414,
+        "video_mean_track_distance_mae_pct": 18.319958,
+        "video_mean_size_mae_pct": 13.52734,
+        "folds": [
+          {
+            "held_out_video": "2down",
+            "tracks": 3,
+            "pairs": 50,
+            "distance_signed_error_pct": {
+              "count": 50,
+              "mean": 11.80537,
+              "median": 4.963765,
+              "p95": 100.407006,
+              "max": 120.538315
+            },
+            "distance_absolute_error_pct": {
+              "count": 50,
+              "mean": 37.396622,
+              "median": 28.828041,
+              "p95": 100.407006,
+              "max": 120.538315
+            },
+            "track_distance_signed_error_pct": {
+              "count": 3,
+              "mean": -1.953843,
+              "median": -2.803473,
+              "p95": 2.111872,
+              "max": 2.658021
+            },
+            "track_distance_absolute_error_pct": {
+              "count": 3,
+              "mean": 3.725857,
+              "median": 2.803473,
+              "p95": 5.424817,
+              "max": 5.716078
+            },
+            "size_signed_error_pct": {
+              "count": 3,
+              "mean": 21.462395,
+              "median": 27.581998,
+              "p95": 37.529429,
+              "max": 38.634699
+            },
+            "size_absolute_error_pct": {
+              "count": 3,
+              "mean": 22.682069,
+              "median": 27.581998,
+              "p95": 37.529429,
+              "max": 38.634699
+            }
+          },
+          {
+            "held_out_video": "3down1",
+            "tracks": 3,
+            "pairs": 46,
+            "distance_signed_error_pct": {
+              "count": 46,
+              "mean": 10.504692,
+              "median": -12.160469,
+              "p95": 127.735683,
+              "max": 310.781646
+            },
+            "distance_absolute_error_pct": {
+              "count": 46,
+              "mean": 43.816845,
+              "median": 32.736997,
+              "p95": 127.735683,
+              "max": 310.781646
+            },
+            "track_distance_signed_error_pct": {
+              "count": 3,
+              "mean": -10.355004,
+              "median": -14.543338,
+              "p95": 0.705874,
+              "max": 2.400231
+            },
+            "track_distance_absolute_error_pct": {
+              "count": 3,
+              "mean": 11.955158,
+              "median": 14.543338,
+              "p95": 18.484049,
+              "max": 18.921905
+            },
+            "size_signed_error_pct": {
+              "count": 3,
+              "mean": -2.675089,
+              "median": 0.278663,
+              "p95": 3.829755,
+              "max": 4.224321
+            },
+            "size_absolute_error_pct": {
+              "count": 3,
+              "mean": 5.677078,
+              "median": 4.224321,
+              "p95": 11.697858,
+              "max": 12.528251
+            }
+          },
+          {
+            "held_out_video": "3down2",
+            "tracks": 3,
+            "pairs": 51,
+            "distance_signed_error_pct": {
+              "count": 48,
+              "mean": 8.987008,
+              "median": -27.069511,
+              "p95": 199.014454,
+              "max": 511.53905
+            },
+            "distance_absolute_error_pct": {
+              "count": 48,
+              "mean": 64.654052,
+              "median": 46.101013,
+              "p95": 199.014454,
+              "max": 511.53905
+            },
+            "track_distance_signed_error_pct": {
+              "count": 3,
+              "mean": -9.931155,
+              "median": -13.393982,
+              "p95": 29.317926,
+              "max": 34.063693
+            },
+            "track_distance_absolute_error_pct": {
+              "count": 3,
+              "mean": 32.640284,
+              "median": 34.063693,
+              "p95": 48.823228,
+              "max": 50.463177
+            },
+            "size_signed_error_pct": {
+              "count": 3,
+              "mean": -1.906729,
+              "median": -1.37487,
+              "p95": -1.252064,
+              "max": -1.238419
+            },
+            "size_absolute_error_pct": {
+              "count": 3,
+              "mean": 1.906729,
+              "median": 1.37487,
+              "p95": 2.933693,
+              "max": 3.106896
+            }
+          },
+          {
+            "held_out_video": "3down3",
+            "tracks": 2,
+            "pairs": 15,
+            "distance_signed_error_pct": {
+              "count": 15,
+              "mean": 0.109534,
+              "median": -18.585588,
+              "p95": 106.427293,
+              "max": 152.756743
+            },
+            "distance_absolute_error_pct": {
+              "count": 15,
+              "mean": 41.900215,
+              "median": 33.051644,
+              "p95": 106.427293,
+              "max": 152.756743
+            },
+            "track_distance_signed_error_pct": {
+              "count": 2,
+              "mean": -21.40668,
+              "median": -21.40668,
+              "p95": -8.16262,
+              "max": -6.691057
+            },
+            "track_distance_absolute_error_pct": {
+              "count": 2,
+              "mean": 21.40668,
+              "median": 21.40668,
+              "p95": 34.65074,
+              "max": 36.122303
+            },
+            "size_signed_error_pct": {
+              "count": 2,
+              "mean": -32.294888,
+              "median": -32.294888,
+              "p95": -28.434978,
+              "max": -28.0061
+            },
+            "size_absolute_error_pct": {
+              "count": 2,
+              "mean": 32.294888,
+              "median": 32.294888,
+              "p95": 36.154797,
+              "max": 36.583676
+            }
+          },
+          {
+            "held_out_video": "3down4",
+            "tracks": 2,
+            "pairs": 22,
+            "distance_signed_error_pct": {
+              "count": 22,
+              "mean": -27.991443,
+              "median": -27.236311,
+              "p95": -5.644522,
+              "max": -0.253795
+            },
+            "distance_absolute_error_pct": {
+              "count": 22,
+              "mean": 27.991443,
+              "median": 27.236311,
+              "p95": 49.57549,
+              "max": 55.893442
+            },
+            "track_distance_signed_error_pct": {
+              "count": 2,
+              "mean": -15.396054,
+              "median": -15.396054,
+              "p95": -14.134542,
+              "max": -13.994374
+            },
+            "track_distance_absolute_error_pct": {
+              "count": 2,
+              "mean": 15.396054,
+              "median": 15.396054,
+              "p95": 16.657566,
+              "max": 16.797734
+            },
+            "size_signed_error_pct": {
+              "count": 2,
+              "mean": 3.76816,
+              "median": 3.76816,
+              "p95": 8.161604,
+              "max": 8.649764
+            },
+            "size_absolute_error_pct": {
+              "count": 2,
+              "mean": 4.881604,
+              "median": 4.881604,
+              "p95": 8.272948,
+              "max": 8.649764
+            }
+          },
+          {
+            "held_out_video": "bottom",
+            "tracks": 2,
+            "pairs": 20,
+            "distance_signed_error_pct": {
+              "count": 0,
+              "mean": null,
+              "median": null,
+              "p95": null,
+              "max": null
+            },
+            "distance_absolute_error_pct": {
+              "count": 0,
+              "mean": null,
+              "median": null,
+              "p95": null,
+              "max": null
+            },
+            "track_distance_signed_error_pct": {
+              "count": 0,
+              "mean": null,
+              "median": null,
+              "p95": null,
+              "max": null
+            },
+            "track_distance_absolute_error_pct": {
+              "count": 0,
+              "mean": null,
+              "median": null,
+              "p95": null,
+              "max": null
+            },
+            "size_signed_error_pct": {
+              "count": 2,
+              "mean": -24.108893,
+              "median": -24.108893,
+              "p95": -13.816399,
+              "max": -12.672789
+            },
+            "size_absolute_error_pct": {
+              "count": 2,
+              "mean": 24.108893,
+              "median": 24.108893,
+              "p95": 34.401387,
+              "max": 35.544997
+            }
+          },
+          {
+            "held_out_video": "down1",
+            "tracks": 3,
+            "pairs": 33,
+            "distance_signed_error_pct": {
+              "count": 33,
+              "mean": 26.195666,
+              "median": 19.623452,
+              "p95": 81.809095,
+              "max": 99.399727
+            },
+            "distance_absolute_error_pct": {
+              "count": 33,
+              "mean": 36.171984,
+              "median": 28.58438,
+              "p95": 81.809095,
+              "max": 99.399727
+            },
+            "track_distance_signed_error_pct": {
+              "count": 3,
+              "mean": 14.590845,
+              "median": 9.486676,
+              "p95": 37.369425,
+              "max": 40.467509
+            },
+            "track_distance_absolute_error_pct": {
+              "count": 3,
+              "mean": 18.711945,
+              "median": 9.486676,
+              "p95": 37.369425,
+              "max": 40.467509
+            },
+            "size_signed_error_pct": {
+              "count": 3,
+              "mean": 10.912753,
+              "median": 4.924183,
+              "p95": 25.343594,
+              "max": 27.612418
+            },
+            "size_absolute_error_pct": {
+              "count": 3,
+              "mean": 10.912753,
+              "median": 4.924183,
+              "p95": 25.343594,
+              "max": 27.612418
+            }
+          },
+          {
+            "held_out_video": "down3",
+            "tracks": 3,
+            "pairs": 36,
+            "distance_signed_error_pct": {
+              "count": 35,
+              "mean": 72.878849,
+              "median": 39.9786,
+              "p95": 304.859977,
+              "max": 345.920835
+            },
+            "distance_absolute_error_pct": {
+              "count": 35,
+              "mean": 84.30974,
+              "median": 39.9786,
+              "p95": 304.859977,
+              "max": 345.920835
+            },
+            "track_distance_signed_error_pct": {
+              "count": 3,
+              "mean": 22.865226,
+              "median": 21.764509,
+              "p95": 46.401486,
+              "max": 49.138928
+            },
+            "track_distance_absolute_error_pct": {
+              "count": 3,
+              "mean": 24.403731,
+              "median": 21.764509,
+              "p95": 46.401486,
+              "max": 49.138928
+            },
+            "size_signed_error_pct": {
+              "count": 3,
+              "mean": 2.355466,
+              "median": -1.135801,
+              "p95": 10.835147,
+              "max": 12.165252
+            },
+            "size_absolute_error_pct": {
+              "count": 3,
+              "mean": 5.754702,
+              "median": 3.963054,
+              "p95": 11.345032,
+              "max": 12.165252
+            }
+          }
+        ]
+      },
+      "comparison_to_first_threshold": {
+        "distance_improvement_pct_points": 0.0,
+        "track_distance_improvement_pct_points": 0.0,
+        "size_improvement_pct_points": 0.0,
+        "same_track_coverage": true
+      }
+    },
+    {
+      "min_pair_depth_change_m": 0.05,
+      "full_fit_coefficients": {
+        "distance_coef_A": 28.963,
+        "distance_coef_B": -0.7726,
+        "pixel_calib_C": 2.7051,
+        "pixel_calib_D": -0.7617,
+        "distortion_x_k1": 0.193883,
+        "distortion_x_k2": 0.348033,
+        "distortion_y_k1": -0.124484,
+        "distortion_y_k2": 0.286138
+      },
+      "in_sample": {
+        "tracks": 21,
+        "pairs": 213,
+        "distance_signed_error_pct": {
+          "count": 193,
+          "mean": 13.196358,
+          "median": -2.456556,
+          "p95": 157.489357,
+          "max": 313.787519
+        },
+        "distance_absolute_error_pct": {
+          "count": 193,
+          "mean": 42.946492,
+          "median": 31.957878,
+          "p95": 157.489357,
+          "max": 313.787519
+        },
+        "track_distance_signed_error_pct": {
+          "count": 19,
+          "mean": -7.279818,
+          "median": -11.130421,
+          "p95": 20.783456,
+          "max": 30.709214
+        },
+        "track_distance_absolute_error_pct": {
+          "count": 19,
+          "mean": 17.140034,
+          "median": 15.129818,
+          "p95": 38.317533,
+          "max": 49.269784
+        },
+        "size_signed_error_pct": {
+          "count": 21,
+          "mean": -0.798863,
+          "median": 3.60656,
+          "p95": 20.207492,
+          "max": 22.031339
+        },
+        "size_absolute_error_pct": {
+          "count": 21,
+          "mean": 11.433352,
+          "median": 6.814072,
+          "p95": 27.283842,
+          "max": 35.281988
+        }
+      },
+      "leave_one_video_out": {
+        "tracks": 21,
+        "pairs": 213,
+        "video_mean_distance_mae_pct": 43.450616,
+        "video_mean_track_distance_mae_pct": 19.103579,
+        "video_mean_size_mae_pct": 14.861676,
+        "folds": [
+          {
+            "held_out_video": "2down",
+            "tracks": 3,
+            "pairs": 34,
+            "distance_signed_error_pct": {
+              "count": 34,
+              "mean": 1.471556,
+              "median": -4.086111,
+              "p95": 88.980786,
+              "max": 116.794831
+            },
+            "distance_absolute_error_pct": {
+              "count": 34,
+              "mean": 33.667637,
+              "median": 27.549579,
+              "p95": 88.980786,
+              "max": 116.794831
+            },
+            "track_distance_signed_error_pct": {
+              "count": 3,
+              "mean": -16.105217,
+              "median": -16.845213,
+              "p95": -11.031258,
+              "max": -10.385264
+            },
+            "track_distance_absolute_error_pct": {
+              "count": 3,
+              "mean": 16.105217,
+              "median": 16.845213,
+              "p95": 20.661177,
+              "max": 21.085173
+            },
+            "size_signed_error_pct": {
+              "count": 3,
+              "mean": 19.785874,
+              "median": 19.003774,
+              "p95": 26.093338,
+              "max": 26.881068
+            },
+            "size_absolute_error_pct": {
+              "count": 3,
+              "mean": 19.785874,
+              "median": 19.003774,
+              "p95": 26.093338,
+              "max": 26.881068
+            }
+          },
+          {
+            "held_out_video": "3down1",
+            "tracks": 3,
+            "pairs": 40,
+            "distance_signed_error_pct": {
+              "count": 40,
+              "mean": 13.881689,
+              "median": -6.779608,
+              "p95": 141.181135,
+              "max": 313.246353
+            },
+            "distance_absolute_error_pct": {
+              "count": 40,
+              "mean": 46.100779,
+              "median": 33.709618,
+              "p95": 141.181135,
+              "max": 313.246353
+            },
+            "track_distance_signed_error_pct": {
+              "count": 3,
+              "mean": -6.318198,
+              "median": -2.885842,
+              "p95": 3.605583,
+              "max": 4.326852
+            },
+            "track_distance_absolute_error_pct": {
+              "count": 3,
+              "mean": 9.202767,
+              "median": 4.326852,
+              "p95": 18.78873,
+              "max": 20.395605
+            },
+            "size_signed_error_pct": {
+              "count": 3,
+              "mean": 1.378638,
+              "median": 6.276556,
+              "p95": 7.402731,
+              "max": 7.527862
+            },
+            "size_absolute_error_pct": {
+              "count": 3,
+              "mean": 7.824307,
+              "median": 7.527862,
+              "p95": 9.454439,
+              "max": 9.668503
+            }
+          },
+          {
+            "held_out_video": "3down2",
+            "tracks": 3,
+            "pairs": 34,
+            "distance_signed_error_pct": {
+              "count": 34,
+              "mean": -0.655579,
+              "median": -26.080772,
+              "p95": 135.508646,
+              "max": 240.739338
+            },
+            "distance_absolute_error_pct": {
+              "count": 34,
+              "mean": 45.579619,
+              "median": 37.157544,
+              "p95": 135.508646,
+              "max": 240.739338
+            },
+            "track_distance_signed_error_pct": {
+              "count": 3,
+              "mean": -16.498689,
+              "median": -14.072963,
+              "p95": 12.481386,
+              "max": 15.431869
+            },
+            "track_distance_absolute_error_pct": {
+              "count": 3,
+              "mean": 26.786602,
+              "median": 15.431869,
+              "p95": 47.312662,
+              "max": 50.854973
+            },
+            "size_signed_error_pct": {
+              "count": 3,
+              "mean": -8.72412,
+              "median": -6.491238,
+              "p95": -6.432217,
+              "max": -6.425659
+            },
+            "size_absolute_error_pct": {
+              "count": 3,
+              "mean": 8.72412,
+              "median": 6.491238,
+              "p95": 12.579039,
+              "max": 13.255462
+            }
+          },
+          {
+            "held_out_video": "3down3",
+            "tracks": 2,
+            "pairs": 13,
+            "distance_signed_error_pct": {
+              "count": 13,
+              "mean": 5.774826,
+              "median": -19.733618,
+              "p95": 128.949807,
+              "max": 179.922369
+            },
+            "distance_absolute_error_pct": {
+              "count": 13,
+              "mean": 48.517936,
+              "median": 37.340143,
+              "p95": 128.949807,
+              "max": 179.922369
+            },
+            "track_distance_signed_error_pct": {
+              "count": 2,
+              "mean": -22.723197,
+              "median": -22.723197,
+              "p95": -9.567946,
+              "max": -8.106252
+            },
+            "track_distance_absolute_error_pct": {
+              "count": 2,
+              "mean": 22.723197,
+              "median": 22.723197,
+              "p95": 35.878448,
+              "max": 37.340143
+            },
+            "size_signed_error_pct": {
+              "count": 2,
+              "mean": -29.631819,
+              "median": -29.631819,
+              "p95": -23.572935,
+              "max": -22.899726
+            },
+            "size_absolute_error_pct": {
+              "count": 2,
+              "mean": 29.631819,
+              "median": 29.631819,
+              "p95": 35.690702,
+              "max": 36.363911
+            }
+          },
+          {
+            "held_out_video": "3down4",
+            "tracks": 2,
+            "pairs": 14,
+            "distance_signed_error_pct": {
+              "count": 14,
+              "mean": -24.250776,
+              "median": -22.829962,
+              "p95": -6.166713,
+              "max": -3.306488
+            },
+            "distance_absolute_error_pct": {
+              "count": 14,
+              "mean": 24.250776,
+              "median": 22.829962,
+              "p95": 52.806965,
+              "max": 56.657671
+            },
+            "track_distance_signed_error_pct": {
+              "count": 2,
+              "mean": -24.190225,
+              "median": -24.190225,
+              "p95": -17.24607,
+              "max": -16.474497
+            },
+            "track_distance_absolute_error_pct": {
+              "count": 2,
+              "mean": 24.190225,
+              "median": 24.190225,
+              "p95": 31.13438,
+              "max": 31.905953
+            },
+            "size_signed_error_pct": {
+              "count": 2,
+              "mean": -1.233751,
+              "median": -1.233751,
+              "p95": 3.721836,
+              "max": 4.272457
+            },
+            "size_absolute_error_pct": {
+              "count": 2,
+              "mean": 5.506208,
+              "median": 5.506208,
+              "p95": 6.616584,
+              "max": 6.73996
+            }
+          },
+          {
+            "held_out_video": "bottom",
+            "tracks": 2,
+            "pairs": 20,
+            "distance_signed_error_pct": {
+              "count": 0,
+              "mean": null,
+              "median": null,
+              "p95": null,
+              "max": null
+            },
+            "distance_absolute_error_pct": {
+              "count": 0,
+              "mean": null,
+              "median": null,
+              "p95": null,
+              "max": null
+            },
+            "track_distance_signed_error_pct": {
+              "count": 0,
+              "mean": null,
+              "median": null,
+              "p95": null,
+              "max": null
+            },
+            "track_distance_absolute_error_pct": {
+              "count": 0,
+              "mean": null,
+              "median": null,
+              "p95": null,
+              "max": null
+            },
+            "size_signed_error_pct": {
+              "count": 2,
+              "mean": -21.291306,
+              "median": -21.291306,
+              "p95": -10.229774,
+              "max": -9.000715
+            },
+            "size_absolute_error_pct": {
+              "count": 2,
+              "mean": 21.291306,
+              "median": 21.291306,
+              "p95": 32.352838,
+              "max": 33.581897
+            }
+          },
+          {
+            "held_out_video": "down1",
+            "tracks": 3,
+            "pairs": 28,
+            "distance_signed_error_pct": {
+              "count": 28,
+              "mean": 23.761292,
+              "median": 19.358938,
+              "p95": 70.643305,
+              "max": 96.588681
+            },
+            "distance_absolute_error_pct": {
+              "count": 28,
+              "mean": 30.98418,
+              "median": 25.790205,
+              "p95": 70.643305,
+              "max": 96.588681
+            },
+            "track_distance_signed_error_pct": {
+              "count": 3,
+              "mean": 17.406874,
+              "median": 20.919651,
+              "p95": 23.774492,
+              "max": 24.091696
+            },
+            "track_distance_absolute_error_pct": {
+              "count": 3,
+              "mean": 17.406874,
+              "median": 20.919651,
+              "p95": 23.774492,
+              "max": 24.091696
+            },
+            "size_signed_error_pct": {
+              "count": 3,
+              "mean": 14.715902,
+              "median": 10.929426,
+              "p95": 25.722062,
+              "max": 27.365688
+            },
+            "size_absolute_error_pct": {
+              "count": 3,
+              "mean": 14.715902,
+              "median": 10.929426,
+              "p95": 25.722062,
+              "max": 27.365688
+            }
+          },
+          {
+            "held_out_video": "down3",
+            "tracks": 3,
+            "pairs": 30,
+            "distance_signed_error_pct": {
+              "count": 30,
+              "mean": 59.522155,
+              "median": 36.946969,
+              "p95": 247.257892,
+              "max": 310.303346
+            },
+            "distance_absolute_error_pct": {
+              "count": 30,
+              "mean": 75.053386,
+              "median": 38.838292,
+              "p95": 247.257892,
+              "max": 310.303346
+            },
+            "track_distance_signed_error_pct": {
+              "count": 3,
+              "mean": 12.711203,
+              "median": 9.036072,
+              "p95": 33.299995,
+              "max": 35.995986
+            },
+            "track_distance_absolute_error_pct": {
+              "count": 3,
+              "mean": 17.310169,
+              "median": 9.036072,
+              "p95": 33.299995,
+              "max": 35.995986
+            },
+            "size_signed_error_pct": {
+              "count": 3,
+              "mean": 11.413868,
+              "median": 9.046704,
+              "p95": 16.860587,
+              "max": 17.728797
+            },
+            "size_absolute_error_pct": {
+              "count": 3,
+              "mean": 11.413868,
+              "median": 9.046704,
+              "p95": 16.860587,
+              "max": 17.728797
+            }
+          }
+        ]
+      },
+      "comparison_to_first_threshold": {
+        "distance_improvement_pct_points": 4.583798,
+        "track_distance_improvement_pct_points": -0.783621,
+        "size_improvement_pct_points": -1.334336,
+        "same_track_coverage": true
+      }
+    },
+    {
+      "min_pair_depth_change_m": 0.1,
+      "full_fit_coefficients": {
+        "distance_coef_A": 6.935,
+        "distance_coef_B": -0.4456,
+        "pixel_calib_C": 2.6244,
+        "pixel_calib_D": -1.0752,
+        "distortion_x_k1": 0.188172,
+        "distortion_x_k2": 0.121256,
+        "distortion_y_k1": -0.211579,
+        "distortion_y_k2": 0.151024
+      },
+      "in_sample": {
+        "tracks": 21,
+        "pairs": 112,
+        "distance_signed_error_pct": {
+          "count": 99,
+          "mean": 14.08616,
+          "median": -6.933705,
+          "p95": 200.498278,
+          "max": 276.401243
+        },
+        "distance_absolute_error_pct": {
+          "count": 99,
+          "mean": 43.923817,
+          "median": 29.03415,
+          "p95": 200.498278,
+          "max": 276.401243
+        },
+        "track_distance_signed_error_pct": {
+          "count": 19,
+          "mean": 0.115479,
+          "median": -7.914393,
+          "p95": 37.217741,
+          "max": 118.346112
+        },
+        "track_distance_absolute_error_pct": {
+          "count": 19,
+          "mean": 24.924867,
+          "median": 22.195117,
+          "p95": 54.094394,
+          "max": 118.346112
+        },
+        "size_signed_error_pct": {
+          "count": 21,
+          "mean": 2.544147,
+          "median": -0.735481,
+          "p95": 29.927731,
+          "max": 35.098126
+        },
+        "size_absolute_error_pct": {
+          "count": 21,
+          "mean": 11.126986,
+          "median": 7.676471,
+          "p95": 29.927731,
+          "max": 35.098126
+        }
+      },
+      "leave_one_video_out": {
+        "tracks": 21,
+        "pairs": 112,
+        "video_mean_distance_mae_pct": 46.257866,
+        "video_mean_track_distance_mae_pct": 28.107227,
+        "video_mean_size_mae_pct": 13.224947,
+        "folds": [
+          {
+            "held_out_video": "2down",
+            "tracks": 3,
+            "pairs": 15,
+            "distance_signed_error_pct": {
+              "count": 15,
+              "mean": -4.976443,
+              "median": -15.931501,
+              "p95": 54.835241,
+              "max": 124.588014
+            },
+            "distance_absolute_error_pct": {
+              "count": 15,
+              "mean": 31.249459,
+              "median": 24.941196,
+              "p95": 72.779783,
+              "max": 124.588014
+            },
+            "track_distance_signed_error_pct": {
+              "count": 3,
+              "mean": -18.305917,
+              "median": -22.421952,
+              "p95": -6.380583,
+              "max": -4.598209
+            },
+            "track_distance_absolute_error_pct": {
+              "count": 3,
+              "mean": 18.305917,
+              "median": 22.421952,
+              "p95": 27.350025,
+              "max": 27.897589
+            },
+            "size_signed_error_pct": {
+              "count": 3,
+              "mean": 11.143442,
+              "median": -0.137109,
+              "p95": 33.670685,
+              "max": 37.427107
+            },
+            "size_absolute_error_pct": {
+              "count": 3,
+              "mean": 13.807962,
+              "median": 3.85967,
+              "p95": 34.070363,
+              "max": 37.427107
+            }
+          },
+          {
+            "held_out_video": "3down1",
+            "tracks": 3,
+            "pairs": 21,
+            "distance_signed_error_pct": {
+              "count": 21,
+              "mean": 6.618571,
+              "median": -15.85967,
+              "p95": 65.287833,
+              "max": 223.554854
+            },
+            "distance_absolute_error_pct": {
+              "count": 21,
+              "mean": 38.903367,
+              "median": 30.592723,
+              "p95": 65.287833,
+              "max": 223.554854
+            },
+            "track_distance_signed_error_pct": {
+              "count": 3,
+              "mean": -13.956493,
+              "median": -23.92307,
+              "p95": 4.538042,
+              "max": 7.700388
+            },
+            "track_distance_absolute_error_pct": {
+              "count": 3,
+              "mean": 19.090084,
+              "median": 23.92307,
+              "p95": 25.474423,
+              "max": 25.646795
+            },
+            "size_signed_error_pct": {
+              "count": 3,
+              "mean": 0.965466,
+              "median": -2.915665,
+              "p95": 10.569445,
+              "max": 12.067791
+            },
+            "size_absolute_error_pct": {
+              "count": 3,
+              "mean": 7.079728,
+              "median": 6.255729,
+              "p95": 11.486585,
+              "max": 12.067791
+            }
+          },
+          {
+            "held_out_video": "3down2",
+            "tracks": 3,
+            "pairs": 22,
+            "distance_signed_error_pct": {
+              "count": 22,
+              "mean": 2.017468,
+              "median": -16.086607,
+              "p95": 118.156501,
+              "max": 228.094616
+            },
+            "distance_absolute_error_pct": {
+              "count": 22,
+              "mean": 46.784768,
+              "median": 35.587547,
+              "p95": 118.156501,
+              "max": 228.094616
+            },
+            "track_distance_signed_error_pct": {
+              "count": 3,
+              "mean": -19.043207,
+              "median": -10.7964,
+              "p95": 1.564332,
+              "max": 2.937747
+            },
+            "track_distance_absolute_error_pct": {
+              "count": 3,
+              "mean": 21.001704,
+              "median": 10.7964,
+              "p95": 45.42351,
+              "max": 49.270966
+            },
+            "size_signed_error_pct": {
+              "count": 3,
+              "mean": -7.168655,
+              "median": -6.53525,
+              "p95": -5.765355,
+              "max": -5.679811
+            },
+            "size_absolute_error_pct": {
+              "count": 3,
+              "mean": 7.168655,
+              "median": 6.53525,
+              "p95": 9.01534,
+              "max": 9.290905
+            }
+          },
+          {
+            "held_out_video": "3down3",
+            "tracks": 2,
+            "pairs": 7,
+            "distance_signed_error_pct": {
+              "count": 7,
+              "mean": 28.241339,
+              "median": -20.005456,
+              "p95": 181.568525,
+              "max": 239.762439
+            },
+            "distance_absolute_error_pct": {
+              "count": 7,
+              "mean": 63.308768,
+              "median": 34.880212,
+              "p95": 182.108669,
+              "max": 239.762439
+            },
+            "track_distance_signed_error_pct": {
+              "count": 2,
+              "mean": -2.305228,
+              "median": -2.305228,
+              "p95": 20.173222,
+              "max": 22.670828
+            },
+            "track_distance_absolute_error_pct": {
+              "count": 2,
+              "mean": 24.976056,
+              "median": 24.976056,
+              "p95": 27.050762,
+              "max": 27.281285
+            },
+            "size_signed_error_pct": {
+              "count": 2,
+              "mean": -3.925913,
+              "median": -3.925913,
+              "p95": 16.138792,
+              "max": 18.368204
+            },
+            "size_absolute_error_pct": {
+              "count": 2,
+              "mean": 22.294116,
+              "median": 22.294116,
+              "p95": 25.827438,
+              "max": 26.220029
+            }
+          },
+          {
+            "held_out_video": "3down4",
+            "tracks": 2,
+            "pairs": 9,
+            "distance_signed_error_pct": {
+              "count": 9,
+              "mean": -24.860453,
+              "median": -31.45589,
+              "p95": 1.149565,
+              "max": 7.53147
+            },
+            "distance_absolute_error_pct": {
+              "count": 9,
+              "mean": 26.534113,
+              "median": 31.45589,
+              "p95": 40.651173,
+              "max": 42.507685
+            },
+            "track_distance_signed_error_pct": {
+              "count": 2,
+              "mean": -29.093861,
+              "median": -29.093861,
+              "p95": -24.824973,
+              "max": -24.350652
+            },
+            "track_distance_absolute_error_pct": {
+              "count": 2,
+              "mean": 29.093861,
+              "median": 29.093861,
+              "p95": 33.362749,
+              "max": 33.83707
+            },
+            "size_signed_error_pct": {
+              "count": 2,
+              "mean": -3.422763,
+              "median": -3.422763,
+              "p95": 3.721167,
+              "max": 4.514938
+            },
+            "size_absolute_error_pct": {
+              "count": 2,
+              "mean": 7.9377,
+              "median": 7.9377,
+              "p95": 11.018187,
+              "max": 11.360463
+            }
+          },
+          {
+            "held_out_video": "bottom",
+            "tracks": 2,
+            "pairs": 13,
+            "distance_signed_error_pct": {
+              "count": 0,
+              "mean": null,
+              "median": null,
+              "p95": null,
+              "max": null
+            },
+            "distance_absolute_error_pct": {
+              "count": 0,
+              "mean": null,
+              "median": null,
+              "p95": null,
+              "max": null
+            },
+            "track_distance_signed_error_pct": {
+              "count": 0,
+              "mean": null,
+              "median": null,
+              "p95": null,
+              "max": null
+            },
+            "track_distance_absolute_error_pct": {
+              "count": 0,
+              "mean": null,
+              "median": null,
+              "p95": null,
+              "max": null
+            },
+            "size_signed_error_pct": {
+              "count": 2,
+              "mean": -14.291811,
+              "median": -14.291811,
+              "p95": -9.278899,
+              "max": -8.721909
+            },
+            "size_absolute_error_pct": {
+              "count": 2,
+              "mean": 14.291811,
+              "median": 14.291811,
+              "p95": 19.304722,
+              "max": 19.861713
+            }
+          },
+          {
+            "held_out_video": "down1",
+            "tracks": 3,
+            "pairs": 11,
+            "distance_signed_error_pct": {
+              "count": 11,
+              "mean": 23.72281,
+              "median": 28.39704,
+              "p95": 59.118775,
+              "max": 72.078378
+            },
+            "distance_absolute_error_pct": {
+              "count": 11,
+              "mean": 28.112752,
+              "median": 28.39704,
+              "p95": 59.118775,
+              "max": 72.078378
+            },
+            "track_distance_signed_error_pct": {
+              "count": 3,
+              "mean": 24.833762,
+              "median": 28.39704,
+              "p95": 33.24605,
+              "max": 33.784828
+            },
+            "track_distance_absolute_error_pct": {
+              "count": 3,
+              "mean": 24.833762,
+              "median": 28.39704,
+              "p95": 33.24605,
+              "max": 33.784828
+            },
+            "size_signed_error_pct": {
+              "count": 3,
+              "mean": 16.267575,
+              "median": 10.790817,
+              "p95": 30.960611,
+              "max": 33.201699
+            },
+            "size_absolute_error_pct": {
+              "count": 3,
+              "mean": 16.267575,
+              "median": 10.790817,
+              "p95": 30.960611,
+              "max": 33.201699
+            }
+          },
+          {
+            "held_out_video": "down3",
+            "tracks": 3,
+            "pairs": 14,
+            "distance_signed_error_pct": {
+              "count": 14,
+              "mean": 78.005111,
+              "median": 27.537275,
+              "p95": 284.905125,
+              "max": 299.856923
+            },
+            "distance_absolute_error_pct": {
+              "count": 14,
+              "mean": 88.911838,
+              "median": 33.553365,
+              "p95": 284.905125,
+              "max": 299.856923
+            },
+            "track_distance_signed_error_pct": {
+              "count": 3,
+              "mean": 53.882706,
+              "median": 36.752492,
+              "p95": 123.596083,
+              "max": 133.24537
+            },
+            "track_distance_absolute_error_pct": {
+              "count": 3,
+              "mean": 59.449203,
+              "median": 36.752492,
+              "p95": 123.596083,
+              "max": 133.24537
+            },
+            "size_signed_error_pct": {
+              "count": 3,
+              "mean": 16.952031,
+              "median": 14.978902,
+              "p95": 30.589612,
+              "max": 32.324135
+            },
+            "size_absolute_error_pct": {
+              "count": 3,
+              "mean": 16.952031,
+              "median": 14.978902,
+              "p95": 30.589612,
+              "max": 32.324135
+            }
+          }
+        ]
+      },
+      "comparison_to_first_threshold": {
+        "distance_improvement_pct_points": 1.776548,
+        "track_distance_improvement_pct_points": -9.787269,
+        "size_improvement_pct_points": 0.302393,
+        "same_track_coverage": true
+      }
+    }
+  ]
+}

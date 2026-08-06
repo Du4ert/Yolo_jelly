@@ -74,6 +74,20 @@ class CalibrationSchemaTests(unittest.TestCase):
         self.assertEqual(loaded.distortion_y_k1, -0.05)
         self.assertEqual(loaded.distortion_y_k2, 0.3)
 
+    def test_angle_model_round_trip(self):
+        calibration = CameraCalibration(
+            angle_distance_coef_A=21.0,
+            angle_distance_coef_B=-0.69,
+            angle_pixel_calib_C=2.7,
+            angle_pixel_calib_D=-0.89,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "calibration.json"
+            calibration.to_json(str(path))
+            loaded = CameraCalibration.from_json(str(path))
+        self.assertTrue(loaded.has_angle_distance_model)
+        self.assertEqual(loaded.angle_distance_coef_A, 21.0)
+
     def test_legacy_schema_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "legacy.json"
