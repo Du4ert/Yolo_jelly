@@ -350,56 +350,50 @@ python src/camera_geometry.py size \
 
 #### Подкоманда: calibrate
 
-Автоматическая калибровка коэффициентов размера по объектам с известными размерами.
+Автоматическая калибровка коэффициентов по наборам объектов с известными размерами
+и глубинами. Каждая подпапка тестового каталога должна содержать `size-depth.txt`
+и `output/ball_detections.csv`; `output/ball_geometry.csv` опционален.
 
 ```bash
-# Калибровка по тестовому видео с шариками 6.7 см на глубине 67.076 м
 python src/camera_geometry.py calibrate \
-    --detections output/ball_detected.csv \
-    --geometry output/ball_geometry.csv \
-    --known-size 1:67.0 --known-size 3:67.0 \
-    --known-depth 1:67.076 --known-depth 3:67.076 \
-    --output calibration_xy.json
-
-# Калибровка без известной глубины (оптимизация всех 6 параметров)
-python src/camera_geometry.py calibrate \
-    --detections output/detections.csv \
-    --known-size 1:120.0 --known-size 5:80.0 \
+    --test-dir test_video \
     --output calibration_xy.json
 ```
 
 | Параметр | По умолчанию | Описание |
 |----------|--------------|----------|
-| `--detections`, `-d` | — | CSV с детекциями (обязательный) |
-| `--known-size` | — | Размер объекта `track_id:size_mm`, можно указать несколько раз (обязательный) |
-| `--known-depth` | None | Глубина объекта `track_id:depth_m`, можно указать несколько раз |
-| `--geometry`, `-g` | None | CSV с геометрией камеры (для tilt-коррекции) |
+| `--test-dir` | — | Родительский каталог калибровочных наборов (обязательный) |
+| `--detections-name` | `ball_detections.csv` | Имя CSV детекций в `output/` |
+| `--geometry-name` | `ball_geometry.csv` | Имя опционального CSV геометрии в `output/` |
 | `--output`, `-o` | `calibration_xy.json` | Выходной JSON с коэффициентами |
 | `--width` | 3840 | Ширина кадра |
 | `--height` | 2160 | Высота кадра |
+| `--min-reliable-distance` | 0.1 | Нижняя граница надёжной дистанции |
+| `--max-reliable-distance` | 3.0 | Верхняя граница надёжной дистанции |
+| `--no-tilt-correction` | — | Отключить коррекцию наклона |
 
-**Режимы калибровки:**
+Формат `size-depth.txt`:
 
-- **С `--known-depth`** (рекомендуется) — декомпозированная калибровка: сначала фитируются C, D (pixel calibration) по истинной дистанции, затем k1, k2 (дисторсия) по остаткам, затем локальная доводка. Оптимизация A, B (distance) отдельно. Более робастный подход.
-- **Без `--known-depth`** — совместная оптимизация всех 6 параметров (A, B, C, D, k1, k2) через `differential_evolution`. Требует больше данных для надёжного результата.
-
-**Выходной JSON:**
-```json
-{
-  "distance_coef_A": 2.76,
-  "distance_coef_B": -0.21,
-  "pixel_calib_C": 2.10,
-  "pixel_calib_D": -0.56,
-  "distortion_k1": 0.14,
-  "distortion_k2": -0.40,
-  "optical_center_x": 0.5,
-  "optical_center_y": 0.5,
-  "n_pairs_used": 20,
-  "n_tracks_used": 2,
-  "mean_error_direct_pct": 0.58,
-  "mean_error_pipeline_pct": 12.24
-}
+```text
+track_id1:35:3.4
 ```
+
+Поля: идентификатор трека, размер объекта в миллиметрах, абсолютная глубина
+объекта в метрах.
+
+**Контрольный baseline:**
+
+```bash
+python src/calibration_baseline.py \
+    --test-dir test_video \
+    --calibration calibration_xy.json \
+    --output calibration_baseline.json
+```
+
+Отчёт фиксирует хэши входных CSV, версии библиотек, параметры выборки пар,
+коэффициенты, ошибки дистанции и размера, пространственное покрытие, результаты
+по каждому треку и долю оценок за пределами надёжного диапазона. Файл
+`calibration_baseline.json` является контрольной точкой перед изменением формул.
 
 **Коррекция дисторсии:**
 
