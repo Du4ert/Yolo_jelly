@@ -920,7 +920,10 @@ def estimate_size_by_k_method(
                 d_assumed = calibration.min_reliable_distance
                 px_calib = _calculate_pixel_calibration(d_assumed, calibration)
                 peak_size_mm = _calculate_size_mm(peak_px_ref, px_calib)
-                cos_tilt_peak = get_tilt_correction_for_frame(peak_frame, geometry_df)
+                cos_tilt_peak = (
+                    get_tilt_correction_for_frame(peak_frame, geometry_df)
+                    if apply_tilt_correction else 1.0
+                )
                 obj_d = peak_depth + d_assumed * cos_tilt_peak if pd.notna(peak_depth) else np.nan
 
                 extra_warnings = ["all_pairs_clamped", "peak_frame_estimate"]
@@ -1089,6 +1092,7 @@ def estimate_size_fixed(
     track_df: pd.DataFrame,
     calibration: CameraCalibration,
     geometry_df: Optional[pd.DataFrame] = None,
+    apply_tilt_correction: bool = True,
 ) -> Optional[TrackSizeEstimate]:
     """
     Оценивает размер для классов с фиксированным размером.
@@ -1122,7 +1126,10 @@ def estimate_size_fixed(
     last_size_pix = _get_bbox_size_pixels(last_row, frame_width, frame_height, calibration)
 
     # Глубина объекта = глубина камеры + вертикальная составляющая дистанции
-    cos_tilt = get_tilt_correction_for_frame(last_frame, geometry_df)
+    cos_tilt = (
+        get_tilt_correction_for_frame(last_frame, geometry_df)
+        if apply_tilt_correction else 1.0
+    )
     if pd.notna(camera_depth_last):
         object_depth = camera_depth_last + distance * cos_tilt
     else:
@@ -1156,6 +1163,7 @@ def estimate_size_from_typical(
     track_df: pd.DataFrame,
     calibration: CameraCalibration,
     geometry_df: Optional[pd.DataFrame] = None,
+    apply_tilt_correction: bool = True,
 ) -> Optional[TrackSizeEstimate]:
     """
     Оценивает размер на основе типичных размеров вида.
@@ -1204,7 +1212,10 @@ def estimate_size_from_typical(
     distance = np.clip(distance, calibration.min_reliable_distance,
                        calibration.max_reliable_distance + 2.0)
     
-    cos_tilt = get_tilt_correction_for_frame(max_frame, geometry_df)
+    cos_tilt = (
+        get_tilt_correction_for_frame(max_frame, geometry_df)
+        if apply_tilt_correction else 1.0
+    )
     if pd.notna(camera_depth_max):
         # камера смотрит вниз, объект глубже на вертикальную составляющую дистанции
         object_depth = camera_depth_max + distance * cos_tilt
@@ -1239,6 +1250,7 @@ def estimate_size_by_parallax(
     frame_width: int = 3840,
     frame_height: int = 2160,
     min_track_points: int = 3,
+    apply_tilt_correction: bool = True,
 ) -> Optional[TrackSizeEstimate]:
     """Оценивает размер объекта по параллаксу движения.
 
@@ -1305,7 +1317,10 @@ def estimate_size_by_parallax(
 
     camera_depth = max_row.get('depth_m', np.nan)
     max_frame = int(max_row['frame'])
-    cos_tilt = get_tilt_correction_for_frame(max_frame, geometry_df)
+    cos_tilt = (
+        get_tilt_correction_for_frame(max_frame, geometry_df)
+        if apply_tilt_correction else 1.0
+    )
     if pd.notna(camera_depth):
         object_depth = camera_depth + d_obj * cos_tilt
     else:
@@ -1514,6 +1529,7 @@ def _build_tracks_dataframe(all_estimates: List['TrackSizeEstimate']) -> pd.Data
             'confidence': e.confidence,
             'method': e.method,
             'n_points': e.n_points_used,
+            'tilt_cos_used': e.tilt_cos_used,
             'warnings': ';'.join(e.warnings) if e.warnings else ''
         }
         for e in all_estimates
@@ -1524,6 +1540,8 @@ def _assign_size_columns_to_detections(
     df: pd.DataFrame,
     size_map: dict,
     calibration: CameraCalibration = None,
+    geometry_df: Optional[pd.DataFrame] = None,
+    apply_tilt_correction: bool = True,
 ) -> pd.DataFrame:
     """
     Добавляет к DataFrame детекций колонки размеров:
@@ -1531,10 +1549,12 @@ def _assign_size_columns_to_detections(
     distance_to_object_m, size_confidence, size_method.
 
     Для k-method: размер интерполируется между кадрами трека.
-    Расстояние вычисляется динамически: (object_depth - camera_depth) / cos(наклона трека),
+    Расстояние вычисляется динамически: (object_depth - camera_depth) / cos(наклона(кадра)),
     т.к. object_depth хранит вертикальную составляющую, а distance_to_object_m должна
     оставаться наклонной дистанцией вдоль оси камеры (используется для d_eff/объёма
-    и проверки надёжного диапазона калибровки).
+    и проверки надёжного диапазона калибровки). Наклон берётся покадрово из geometry_df
+    (тот же наклон, который использовался при построении object_depth), а не усредняется
+    по треку, т.к. наклон камеры может дрейфовать в течение трека.
     """
     df['estimated_size_mm'] = None
     df['estimated_size_cm'] = None
@@ -1566,16 +1586,27 @@ def _assign_size_columns_to_detections(
     df.loc[mask, 'size_confidence'] = confidences.values
     df.loc[mask, 'size_method'] = methods.values
 
-    # distance_to_object_m = max((object_depth - camera_depth) / cos_tilt, 0)
+    # distance_to_object_m = max((object_depth - camera_depth) / cos_tilt(frame), 0)
     # object_depth хранит вертикальную составляющую (уже умноженную на cos_tilt при
     # расчёте), поэтому обратное деление восстанавливает наклонную дистанцию.
     dist_mask = mask & df['depth_m'].notna() & df['object_depth_m'].notna()
     if dist_mask.any():
         obj_d = df.loc[dist_mask, 'object_depth_m'].astype(float)
         cam_d = df.loc[dist_mask, 'depth_m'].astype(float)
-        cos_tilt = df.loc[dist_mask, 'track_id'].map(
-            lambda tid: getattr(size_map[tid], 'tilt_cos_used', 1.0) or 1.0
-        ).astype(float).clip(lower=0.17)
+
+        if apply_tilt_correction and geometry_df is not None:
+            # Наклон берётся покадрово (а не усредняется по треку), т.к. может
+            # дрейфовать внутри одного трека. Считаем один раз на уникальный
+            # кадр, чтобы не пересчитывать geometry_df для каждой детекции.
+            frames = df.loc[dist_mask, 'frame']
+            cos_by_frame = {
+                int(f): get_tilt_correction_for_frame(int(f), geometry_df)
+                for f in frames.unique()
+            }
+            cos_tilt = frames.map(lambda f: cos_by_frame[int(f)]).astype(float).clip(lower=0.17)
+        else:
+            cos_tilt = pd.Series(1.0, index=obj_d.index)
+
         lo = calibration.min_reliable_distance if calibration else 0.0
         distances = ((obj_d - cam_d) / cos_tilt).clip(lower=lo).round(3)
         df.loc[dist_mask, 'distance_to_object_m'] = distances.values
@@ -1800,7 +1831,10 @@ def process_detections_with_size(
 
         # Сначала проверяем фиксированные классы
         if class_name in FIXED_SIZE_CLASSES:
-            estimate = estimate_size_fixed(track_df, calibration, geometry_df=geometry_df)
+            estimate = estimate_size_fixed(
+                track_df, calibration, geometry_df=geometry_df,
+                apply_tilt_correction=apply_tilt_correction,
+            )
             if estimate is not None:
                 fixed_estimates.append(estimate)
             continue
@@ -1852,6 +1886,7 @@ def process_detections_with_size(
                 track_df, calibration, geometry_df,
                 frame_width=frame_width, frame_height=frame_height,
                 min_track_points=min_track_points,
+                apply_tilt_correction=apply_tilt_correction,
             )
             if estimate is not None:
                 parallax_estimates.append(estimate)
@@ -1868,7 +1903,10 @@ def process_detections_with_size(
     typical_estimates = []
 
     for track_id, track_df in tracks_for_typical:
-        estimate = estimate_size_from_typical(track_df, calibration, geometry_df=geometry_df)
+        estimate = estimate_size_from_typical(
+            track_df, calibration, geometry_df=geometry_df,
+            apply_tilt_correction=apply_tilt_correction,
+        )
         if estimate is not None:
             typical_estimates.append(estimate)
 
@@ -1885,7 +1923,11 @@ def process_detections_with_size(
     tracks_df = _build_tracks_dataframe(all_estimates)
 
     size_map = {e.track_id: e for e in all_estimates}
-    df = _assign_size_columns_to_detections(df, size_map, calibration)
+    df = _assign_size_columns_to_detections(
+        df, size_map, calibration,
+        geometry_df=geometry_df,
+        apply_tilt_correction=apply_tilt_correction,
+    )
     tracks_df = _add_track_detection_distances(tracks_df, df)
     tracks_df = _add_track_frame_positions(tracks_df, df)
     
