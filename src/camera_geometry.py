@@ -112,6 +112,14 @@ class CameraCalibration:
         return self.frame_width / 2, self.frame_height / 2
 
     @property
+    def optical_center_px(self) -> Tuple[float, float]:
+        """Оптический центр в пикселях текущего разрешения."""
+        return (
+            self.optical_center_x * self.frame_width,
+            self.optical_center_y * self.frame_height,
+        )
+
+    @property
     def resolution_scale(self) -> float:
         """Масштаб разрешения относительно референсного (3840x2160).
 
@@ -219,6 +227,157 @@ def _distortion_profile_is_valid(
     fx = 1.0 + x_k1 * grid**2 + x_k2 * grid**4
     fy = 1.0 + y_k1 * grid**2 + y_k2 * grid**4
     return bool(np.min(fx) > min_axis_factor and np.min(fy) > min_axis_factor)
+
+
+# =============================================================================
+# Чистая геометрия лучей (пока не подключена к оценке размеров)
+# =============================================================================
+
+@dataclass(frozen=True)
+class FOESelection:
+    """Надёжная агрегированная оценка FOE для диапазона кадров."""
+
+    x_px: float
+    y_px: float
+    confidence: float
+    n_intervals: int
+
+
+def pixel_to_ray(
+    x_px: float,
+    y_px: float,
+    calibration: CameraCalibration,
+) -> np.ndarray:
+    """Преобразует координату пикселя в единичный луч системы камеры.
+
+    Используется эквидистантная модель: угловое смещение пропорционально
+    смещению в пикселях. Горизонтальный и вертикальный масштабы считаются
+    независимо из рабочего FOV, затем объединяются в один полярный угол.
+    Ось Z направлена вдоль оптической оси, X вправо, Y вниз по кадру.
+    """
+    values = (
+        x_px, y_px, calibration.frame_width, calibration.frame_height,
+        calibration.fov_horizontal, calibration.fov_vertical,
+        calibration.optical_center_x, calibration.optical_center_y,
+    )
+    if not all(np.isfinite(value) for value in values):
+        raise ValueError("Параметры луча должны быть конечными числами")
+    if calibration.frame_width <= 0 or calibration.frame_height <= 0:
+        raise ValueError("Размер кадра должен быть больше 0")
+    if calibration.fov_horizontal <= 0 or calibration.fov_vertical <= 0:
+        raise ValueError("Углы поля зрения должны быть больше 0")
+
+    center_x, center_y = calibration.optical_center_px
+    radians_per_pixel_x = np.radians(calibration.fov_horizontal) / calibration.frame_width
+    radians_per_pixel_y = np.radians(calibration.fov_vertical) / calibration.frame_height
+    angle_x = (float(x_px) - center_x) * radians_per_pixel_x
+    angle_y = (float(y_px) - center_y) * radians_per_pixel_y
+    polar_angle = float(np.hypot(angle_x, angle_y))
+
+    if polar_angle < 1e-12:
+        return np.array([0.0, 0.0, 1.0], dtype=float)
+
+    transverse_scale = np.sin(polar_angle) / polar_angle
+    ray = np.array([
+        angle_x * transverse_scale,
+        angle_y * transverse_scale,
+        np.cos(polar_angle),
+    ], dtype=float)
+    return ray / np.linalg.norm(ray)
+
+
+def foe_to_motion_ray(
+    foe_x_px: float,
+    foe_y_px: float,
+    calibration: CameraCalibration,
+) -> np.ndarray:
+    """Преобразует FOE в единичное направление поступательного движения."""
+    return pixel_to_ray(foe_x_px, foe_y_px, calibration)
+
+
+def cos_gamma(object_ray: np.ndarray, motion_ray: np.ndarray) -> float:
+    """Возвращает cos угла между лучом на объект и направлением движения."""
+    object_vector = np.asarray(object_ray, dtype=float)
+    motion_vector = np.asarray(motion_ray, dtype=float)
+    if object_vector.shape != (3,) or motion_vector.shape != (3,):
+        raise ValueError("Лучи должны быть трёхмерными векторами")
+    if not np.all(np.isfinite(object_vector)) or not np.all(np.isfinite(motion_vector)):
+        raise ValueError("Компоненты лучей должны быть конечными")
+    object_norm = np.linalg.norm(object_vector)
+    motion_norm = np.linalg.norm(motion_vector)
+    if object_norm <= 0 or motion_norm <= 0:
+        raise ValueError("Длина луча должна быть больше 0")
+    cosine = np.dot(object_vector / object_norm, motion_vector / motion_norm)
+    return float(np.clip(cosine, -1.0, 1.0))
+
+
+def select_foe_for_range(
+    frame_start: int,
+    frame_end: int,
+    geometry_df: Optional[pd.DataFrame],
+    min_confidence: float = 0.5,
+) -> Optional[FOESelection]:
+    """Выбирает FOE только из надёжных интервалов, пересекающих диапазон.
+
+    Функция намеренно не использует ближайший интервал и не усредняет всё видео:
+    отсутствие локальной надёжной геометрии должно оставаться явным.
+    """
+    if frame_end < frame_start:
+        raise ValueError("frame_end должен быть не меньше frame_start")
+    if not 0 <= min_confidence <= 1:
+        raise ValueError("min_confidence должен находиться в диапазоне 0..1")
+    required_columns = {"frame_start", "frame_end", "foe_x", "foe_y"}
+    if geometry_df is None or geometry_df.empty:
+        return None
+    if not required_columns.issubset(geometry_df.columns):
+        return None
+
+    valid = geometry_df.copy()
+    if "confidence" in valid.columns:
+        confidence = pd.to_numeric(valid["confidence"], errors="coerce")
+        valid = valid[confidence >= min_confidence]
+    valid = valid[
+        (valid["frame_end"] >= frame_start)
+        & (valid["frame_start"] <= frame_end)
+    ].copy()
+    if valid.empty:
+        return None
+
+    valid["foe_x"] = pd.to_numeric(valid["foe_x"], errors="coerce")
+    valid["foe_y"] = pd.to_numeric(valid["foe_y"], errors="coerce")
+    valid = valid[np.isfinite(valid["foe_x"]) & np.isfinite(valid["foe_y"])]
+    if valid.empty:
+        return None
+
+    confidence_value = 1.0
+    if "confidence" in valid.columns:
+        confidence_value = float(pd.to_numeric(valid["confidence"], errors="coerce").median())
+    return FOESelection(
+        x_px=float(valid["foe_x"].median()),
+        y_px=float(valid["foe_y"].median()),
+        confidence=confidence_value,
+        n_intervals=len(valid),
+    )
+
+
+def motion_ray_for_range(
+    frame_start: int,
+    frame_end: int,
+    geometry_df: Optional[pd.DataFrame],
+    calibration: CameraCalibration,
+    min_confidence: float = 0.5,
+) -> Tuple[np.ndarray, Optional[FOESelection]]:
+    """Возвращает направление движения и использованную оценку FOE.
+
+    При отсутствии локального надёжного FOE возвращается оптическая ось и None.
+    """
+    selection = select_foe_for_range(
+        frame_start, frame_end, geometry_df, min_confidence=min_confidence
+    )
+    if selection is None:
+        center_x, center_y = calibration.optical_center_px
+        return pixel_to_ray(center_x, center_y, calibration), None
+    return foe_to_motion_ray(selection.x_px, selection.y_px, calibration), selection
 
 
 @dataclass
