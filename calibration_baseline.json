@@ -24,7 +24,7 @@
   "inputs": [
     {
       "path": "calibration_xy.json",
-      "sha256": "8ce18e89fccf4fb29bb51f0023c53979a2760e1955f88c06817758434b7bc575"
+      "sha256": "7e2491f39dbc6ed34af1a7215792793f9ca5fcfe1773ac88f2141e1094d968c3"
     },
     {
       "path": "test_video/2down/output/ball_detections.csv",

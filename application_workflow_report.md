@@ -398,12 +398,13 @@ min_pair_depth_change_m = 0.01 м
 разницу глубины между двумя точками одной пары. Калибровочный baseline сохраняет
 исторический порог диапазона трека `0.1 м` для воспроизводимости коэффициентов.
 
-## 7. Дистанция до объекта
+## 7. Вертикальный зазор до объекта
 
-Дистанция до объекта оценивается эмпирической калибровочной формулой:
+Модель оценивает вертикальный зазор между камерой и объектом. Историческое имя
+`distance_m` сохранено для совместимости CSV и API:
 
 ```text
-distance_m = A * |k_percent|^B
+vertical_offset_m = distance_m = A * |k_percent|^B
 ```
 
 По умолчанию:
@@ -501,19 +502,30 @@ size_cm = size_mm / 10
 Так как камера смотрит вниз, объект считается глубже камеры на величину дистанции до объекта:
 
 ```text
-object_depth_m = camera_depth_m + distance_m
+object_depth_m = camera_depth_m + vertical_offset_m
 ```
 
 Для покадровой таблицы дистанция до объекта восстанавливается обратно:
 
 ```text
-distance_to_object_m = object_depth_m - camera_depth_m
+distance_to_object_m = vertical_offset_m
+                     = object_depth_m - camera_depth_m
 ```
 
 С ограничением снизу:
 
 ```text
-distance_to_object_m >= min_reliable_distance
+vertical_offset_m >= min_reliable_distance
+```
+
+Таким образом, текущие характеристики имеют разные роли:
+
+```text
+camera_depth_m       — абсолютная глубина камеры
+vertical_offset_m    — вертикальный зазор от камеры до объекта
+distance_m           — совместимое имя vertical_offset_m в таблице треков
+distance_to_object_m — совместимое имя vertical_offset_m в таблице детекций
+object_depth_m       — абсолютная глубина объекта
 ```
 
 ## 11. Коррекция дисторсии
@@ -695,16 +707,16 @@ size_mm = 10.0
 size_cm = 1.0
 ```
 
-Дистанция принимается минимальной надёжной:
+Вертикальный зазор принимается минимальным надёжным:
 
 ```text
-distance_m = min_reliable_distance
+vertical_offset_m = distance_m = min_reliable_distance
 ```
 
 Глубина объекта:
 
 ```text
-object_depth_m = camera_depth_last + distance_m
+object_depth_m = camera_depth_last + vertical_offset_m
 ```
 
 Метод помечается как:
@@ -821,6 +833,7 @@ pixel_calibration = 4.35 * d_obj^(-1.25)
 size_mm = max_size_pix_ref / pixel_calibration
 ```
 
+В parallax fallback величина `d_obj` также трактуется как вертикальный зазор.
 Глубина объекта:
 
 ```text
@@ -843,6 +856,7 @@ estimated_size_mm
 estimated_size_cm
 object_depth_m
 distance_to_object_m
+vertical_offset_m
 size_confidence
 size_method
 ```

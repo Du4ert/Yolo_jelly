@@ -60,6 +60,16 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+### Тесты
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Набор содержит 13 тестов калибровочной схемы, XY-коррекции дисторсии,
+формирования пар и воспроизводимости baseline. Тесты с локальным каталогом
+`test_video/` пропускаются, если калибровочные данные недоступны.
+
 ### 3. Проверка GPU (опционально)
 
 ```python
@@ -332,16 +342,18 @@ python src/camera_geometry.py size \
 **Выходные колонки в детекциях:**
 - `estimated_size_mm` — оценённый размер (мм)
 - `estimated_size_cm` — оценённый размер (см)
-- `object_depth_m` — абсолютная глубина объекта
-- `distance_to_object_m` — расстояние до объекта
+- `vertical_offset_m` — вертикальный зазор между камерой и объектом
+- `distance_to_object_m` — совместимое имя того же вертикального зазора
+- `object_depth_m` — абсолютная глубина объекта: `depth_m + vertical_offset_m`
 - `size_confidence` — уверенность оценки
 - `size_method` — использованный метод
 
 **Файл треков** (`track_sizes.csv`):
 - `track_id`, `class_name` — идентификация
 - `real_size_mm`, `real_size_cm` — размер объекта
-- `distance_m` — дистанция до объекта при макс. размере
-- `object_depth_m` — глубина объекта в столбе воды
+- `distance_m` — совместимое имя вертикального зазора на кадре измерения
+- `vertical_offset_m` — тот же зазор с явным физическим названием
+- `object_depth_m` — абсолютная глубина объекта в столбе воды
 - `k_mean_pct_per_m`, `k_std_pct_per_m` — статистика k (%/м)
 - `method`, `confidence` — метаданные
 - `warnings` — предупреждения (включая `tilt_corrected_XXdeg` если применена коррекция)
@@ -398,36 +410,6 @@ python src/calibration_baseline.py \
 по каждому треку и долю оценок за пределами надёжного диапазона. Файл
 `calibration_baseline.json` является контрольной точкой перед изменением формул.
 
-**Эксперимент наклонной дистанции:**
-
-Для воспроизводимого сравнения сначала формируются отдельные geometry CSV. Они
-не заменяют рабочие `ball_geometry.csv`:
-
-```bash
-for name in 2down 3down1 3down2 3down3 3down4 bottom down1 down3; do
-    python src/camera_geometry.py geometry \
-        --video "test_video/$name/ball.MP4" \
-        --output "test_video/$name/output/ball_geometry_step4.csv" \
-        --interval 30 --frame-step 4
-done
-
-python src/slant_calibration_experiment.py \
-    --test-dir test_video \
-    --geometry-name ball_geometry_step4.csv \
-    --geometry-frame-step 4 \
-    --baseline-report calibration_baseline.json \
-    --vertical-calibration calibration_xy.json \
-    --min-pair-depth-change 0.01 \
-    --output calibration_slant_experiment.json
-```
-
-`calibration_slant_experiment.json` имеет `runtime_compatible=false`: это отчёт
-эксперимента, а не рабочая калибровка. Текущий результат не рекомендует переход:
-наклонная модель покрывает 19 из 21 трека. На одинаковых парах ошибка дистанции
-снижается с 47.96% до 47.46%, но для медианного результата трека возрастает с
-17.42% до 18.33%. Ошибка размера также немного возрастает: с 9.67% до 9.71%.
-Именно метрика по трекам соответствует итоговому результату приложения.
-
 Проверка порога минимального изменения глубины выполняется с исключением одного
 видео из калибровки на каждой итерации:
 
@@ -443,43 +425,12 @@ python src/calibration_threshold_sensitivity.py \
 а ошибка размера с 13.53% до 14.86%. При `0.10 м` ошибка дистанции трека
 возрастает до 28.11%.
 
-Простая угловая модель без построения трёхмерных лучей проверяется отдельно:
-
-```bash
-python src/angle_vertical_calibration_experiment.py \
-    --test-dir test_video \
-    --geometry-name ball_geometry_step4.csv \
-    --output calibration_angle_vertical_experiment.json
-```
-
-Для конечного кадра каждой пары модель вычисляет угловое расстояние между
-центром bbox и локальным FOE через горизонтальный и вертикальный FOV. Затем она
-раздельно получает наклонную дистанцию, вертикальный зазор и абсолютную глубину.
-Пара без пересекающего её уверенного radial FOE пропускается; средний FOE всего
-видео не используется. Если в треке остаются угловые пары, их оценки абсолютной
-глубины агрегируются медианой. Для трека без таких пар предусмотрен явно
-маркированный legacy fallback.
-
-Leave-one-video-out проверка дала ошибку абсолютной глубины `0.179 м` против
-`0.176 м` у заново обученного baseline на тех же 19 треках. Угловая модель
-улучшила 9 треков и ухудшила 10. Несмотря на небольшое ухудшение CV, модель
-включена в production явным решением: при наличии локального уверенного FOE
-используется `k_method_angle`, иначе тот же трек считается через
-`k_method_legacy`. Экспериментальный JSON остаётся отчётом, а production-
-коэффициенты записаны отдельно в `calibration_xy.json`.
-
 В выходных CSV величины разделены явно:
 
 - `vertical_offset_m` — вертикальный зазор, прибавляемый к глубине камеры;
-- `slant_distance_m` — наклонная дистанция от камеры до объекта;
-- `view_angle_deg` — угол между вертикальным движением и направлением на объект;
 - `object_depth_m` — абсолютная глубина объекта;
-- `angle_source` и `angle_confidence` — происхождение и достоверность угла.
 
-Поле `distance_to_object_m` содержит наклонную дистанцию при доступном угле и
-используется для отображения и расчёта рабочей дальности. В legacy fallback,
-где угол неизвестен, оно временно совпадает с `vertical_offset_m`; это различимо
-по `angle_source=legacy_without_local_foe`.
+Совместимое поле `distance_to_object_m` пока совпадает с `vertical_offset_m`.
 
 **Коррекция дисторсии:**
 
@@ -497,10 +448,8 @@ python src/camera_geometry.py size \
     --calibration calibration_xy.json
 ```
 
-Флаг `--calibration` загружает JSON и заменяет дефолтные коэффициенты и параметры
-дисторсии. Если калибровка содержит `angle_distance_coef_*` и
-`angle_pixel_calib_*`, а передан `--geometry`, k-метод использует простую
-угловую модель. Без локального уверенного FOE применяется legacy fallback.
+Флаг `--calibration` загружает JSON и заменяет дефолтные коэффициенты (A, B, C,
+D) и параметры XY-дисторсии на откалиброванные.
 
 ---
 

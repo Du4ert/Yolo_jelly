@@ -301,22 +301,14 @@ class SizeEstimationProcessor:
             if tracks_df is not None and len(tracks_df) > 0:
                 if 'method' in tracks_df.columns:
                     method_counts = tracks_df['method'].value_counts()
-                    k_method = sum(
-                        method_counts.get(name, 0)
-                        for name in (
-                            'k_method', 'k_method_angle', 'k_method_legacy',
-                            'k_method_near',
-                        )
-                    )
+                    k_method = method_counts.get('k_method', 0)
                     fixed = method_counts.get('fixed', 0)
                     parallax = method_counts.get('parallax', 0)
                     typical = method_counts.get('typical', 0)
                 
-                if 'angle_source' in tracks_df.columns:
-                    tilt_applied = tracks_df['angle_source'].eq('local_foe').any()
-                elif 'warnings' in tracks_df.columns:
+                if 'warnings' in tracks_df.columns:
                     tilt_warnings = tracks_df['warnings'].str.contains(
-                        'tilt_corrected|angle_corrected', na=False
+                        'tilt_corrected', na=False
                     )
                     tilt_applied = tilt_warnings.any()
             

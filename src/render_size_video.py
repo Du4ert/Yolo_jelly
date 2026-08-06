@@ -110,7 +110,7 @@ def draw_size_info(
     y_center: float,
     width: float,
     height: float,
-    distance_m: Optional[float],
+    vertical_offset_m: Optional[float],
     size_cm: Optional[float],
     class_name: str,
     frame_width: int,
@@ -123,7 +123,7 @@ def draw_size_info(
         frame: кадр изображения
         x_center, y_center: нормализованные координаты центра
         width, height: нормализованные размеры рамки
-        distance_m: дистанция до объекта (м)
+        vertical_offset_m: вертикальный зазор до объекта (м)
         size_cm: размер объекта (см)
         class_name: название класса
         frame_width, frame_height: размеры кадра в пикселях
@@ -142,8 +142,8 @@ def draw_size_info(
     
     # Формируем текст
     text_parts = []
-    if distance_m is not None and not pd.isna(distance_m):
-        text_parts.append(f"{distance_m:.2f}m")
+    if vertical_offset_m is not None and not pd.isna(vertical_offset_m):
+        text_parts.append(f"Δz {vertical_offset_m:.2f}m")
     if size_cm is not None and not pd.isna(size_cm):
         text_parts.append(f"{size_cm:.1f}cm")
     
@@ -353,7 +353,9 @@ def render_size_video(
                     y_center=det['y_center'],
                     width=det['width'],
                     height=det['height'],
-                    distance_m=det.get('distance_to_object_m'),
+                    vertical_offset_m=det.get(
+                        'vertical_offset_m', det.get('distance_to_object_m')
+                    ),
                     size_cm=det.get('estimated_size_cm'),
                     class_name=det['class_name'],
                     frame_width=frame_width,

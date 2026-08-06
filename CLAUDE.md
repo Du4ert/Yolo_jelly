@@ -125,7 +125,7 @@ Standard processing sequence (enforced by `CANONICAL_SUBTASK_ORDER`):
 - Primary method: k-method (growth rate: `k = (Δpixels/pixels₁) / Δdepth`)
 - Tilt correction: `k_real = k_measured / cos(θ)` (15° tilt → +3.5%, 30° → +15.5%, 45° → +41.4%)
 - Fallback: fixed sizes for small species (P. pileus = 10mm), typical sizes
-- Outputs: `estimated_size_mm`, `distance_to_object_m`, `object_depth_m`, `size_confidence`, `size_method`
+- Outputs: `estimated_size_mm`, `vertical_offset_m`, `distance_to_object_m` (compatibility alias), `object_depth_m`, `size_confidence`, `size_method`
 
 **3. `calibrate` - Calibration coefficient fitting**
 - Decomposes 6 parameters: A,B (distance), C,D (pixel), k1,k2 (distortion)

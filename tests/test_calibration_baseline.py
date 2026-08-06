@@ -20,9 +20,11 @@ from camera_geometry import (  # noqa: E402
     _calculate_k_for_pair,
     _calculate_pixel_calibration,
     _calculate_size_mm,
+    _assign_size_columns_to_detections,
     _discover_test_dirs,
     _find_size_pairs,
     calibrate_coefficients,
+    TrackSizeEstimate,
 )
 
 
@@ -79,8 +81,50 @@ class CalculationBaselineTests(unittest.TestCase):
         )
 
         self.assertEqual(len(accepted), 1)
+        self.assertEqual(accepted[0]["vertical_offset_m"], accepted[0]["distance"])
         self.assertEqual(rejected_by_depth, [])
         self.assertEqual(rejected_by_growth, [])
+
+    def test_detection_output_uses_explicit_vertical_offset(self):
+        detections = pd.DataFrame({
+            "track_id": [1],
+            "frame": [10],
+            "depth_m": [2.0],
+        })
+        estimate = TrackSizeEstimate(
+            track_id=1,
+            class_name="Aurelia aurita",
+            real_size_mm=50.0,
+            real_size_cm=5.0,
+            distance_m=1.0,
+            object_depth_m=3.0,
+            measurement_frame=10,
+            measurement_size_pixels=100.0,
+            camera_depth_measurement=2.0,
+            k_mean=20.0,
+            k_std=0.0,
+            pixel_calibration=2.0,
+            confidence=1.0,
+            method="k_method",
+            n_points_used=1,
+            vertical_offset_m=1.0,
+        )
+
+        result = _assign_size_columns_to_detections(
+            detections,
+            {1: estimate},
+            CameraCalibration(),
+        )
+
+        self.assertEqual(result.loc[0, "vertical_offset_m"], 1.0)
+        self.assertEqual(result.loc[0, "distance_to_object_m"], 1.0)
+        self.assertEqual(result.loc[0, "object_depth_m"], 3.0)
+        self.assertEqual(set(result.columns), {
+            "track_id", "frame", "depth_m",
+            "estimated_size_mm", "estimated_size_cm",
+            "object_depth_m", "distance_to_object_m", "vertical_offset_m",
+            "size_confidence", "size_method",
+        })
 
 
 class LocalCalibrationDatasetTests(unittest.TestCase):

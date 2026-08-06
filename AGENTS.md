@@ -7,9 +7,12 @@ pip install -r requirements.txt
 python batch_app.py                    # GUI
 python src/detect_video.py --video ... --model ... --track --csv out.csv   # CLI
 python src/train.py --config train_config.yaml
+python -m unittest discover -s tests -v
 ```
 
-No test suite, no linter, no formatter, no CI.
+13 unittest-тестов для калибровки и геометрических расчётов. Линтера,
+форматтера и CI нет. Тесты baseline используют локальный `test_video/` и
+пропускаются, если каталог недоступен.
 
 ## Architecture
 
