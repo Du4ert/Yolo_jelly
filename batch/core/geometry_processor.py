@@ -72,6 +72,9 @@ class VolumeEstimationResult:
     depth_max_m: Optional[float] = None
     depth_traversed_m: Optional[float] = None
     detection_distance_m: Optional[float] = None
+    pleurobrachia_effective_distance_m: Optional[float] = None
+    pleurobrachia_cross_section_area_m2: Optional[float] = None
+    pleurobrachia_volume_m3: Optional[float] = None
     counts_by_class: Optional[Dict[str, int]] = None
     density_by_class: Optional[Dict[str, float]] = None
     error_message: Optional[str] = None
@@ -363,6 +366,7 @@ class VolumeEstimationProcessor:
         fov_vertical: float = 55.0,
         near_distance: float = 0.3,
         detection_distance: Optional[float] = None,
+        pleurobrachia_detection_distance: Optional[float] = None,
         depth_min: Optional[float] = None,
         depth_max: Optional[float] = None,
         duration: Optional[float] = None,
@@ -386,6 +390,8 @@ class VolumeEstimationProcessor:
             fov_vertical: Вертикальный угол обзора камеры (градусы).
             near_distance: Ближняя граница обнаружения (метры).
             detection_distance: Дистанция обнаружения (метры), None = авто.
+            pleurobrachia_detection_distance: Отдельная effective distance для
+                P. pileus; None = min_reliable_distance.
             depth_min: Минимальная глубина (метры).
             depth_max: Максимальная глубина (метры).
             duration: Длительность записи (секунды).
@@ -416,6 +422,7 @@ class VolumeEstimationProcessor:
                 fov_vertical=fov_vertical,
                 near_distance=near_distance,
                 detection_distance=detection_distance,
+                pleurobrachia_detection_distance=pleurobrachia_detection_distance,
                 depth_min=depth_min,
                 depth_max=depth_max,
                 total_duration=duration,
@@ -439,6 +446,13 @@ class VolumeEstimationProcessor:
                 depth_max_m=result.depth_range_m[1] if result.depth_range_m else None,
                 depth_traversed_m=result.depth_traversed_m,
                 detection_distance_m=result.detection_distance_m,
+                pleurobrachia_effective_distance_m=(
+                    result.pleurobrachia_effective_distance_m
+                ),
+                pleurobrachia_cross_section_area_m2=(
+                    result.pleurobrachia_cross_section_area_m2
+                ),
+                pleurobrachia_volume_m3=result.pleurobrachia_volume_m3,
                 counts_by_class=result.counts_by_class,
                 density_by_class=result.density_by_class
             )

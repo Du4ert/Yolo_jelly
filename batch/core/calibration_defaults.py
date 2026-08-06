@@ -40,12 +40,14 @@ def get_calibration_defaults(calibration_json: Optional[str] = None) -> dict:
 
     effective_distance_auto = True
     effective_distance = None
+    pleurobrachia_effective_distance = None
     try:
         from .config import get_config
         ui = get_config().ui
         if ui.effective_distance_auto is not None:
             effective_distance_auto = ui.effective_distance_auto
         effective_distance = ui.effective_distance
+        pleurobrachia_effective_distance = ui.pleurobrachia_effective_distance
     except Exception:
         pass
 
@@ -55,4 +57,8 @@ def get_calibration_defaults(calibration_json: Optional[str] = None) -> dict:
         "max_reliable_distance": calibration.max_reliable_distance,
         "effective_distance_auto": effective_distance_auto,
         "effective_distance": effective_distance,
+        "pleurobrachia_effective_distance": pleurobrachia_effective_distance,
+        "pleurobrachia_use_near_distance": (
+            pleurobrachia_effective_distance is None
+        ),
     }

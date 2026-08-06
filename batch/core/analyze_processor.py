@@ -73,6 +73,7 @@ class AnalyzeProcessor:
         ctd_path: Optional[str] = None,
         ctd_columns: Optional[List[int]] = None,
         cross_section_area_m2: Optional[float] = None,
+        pleurobrachia_cross_section_area_m2: Optional[float] = None,
         thermocline_threshold: float = 0.2,
         thermocline_mode: str = "threshold",
     ) -> AnalyzeResult:
@@ -204,6 +205,9 @@ class AnalyzeProcessor:
                         ctd_columns=ctd_columns,
                         depth_bin=depth_bin,
                         cross_section_area_m2=cross_section_area_m2,
+                        pleurobrachia_cross_section_area_m2=(
+                            pleurobrachia_cross_section_area_m2
+                        ),
                         thermocline_threshold=thermocline_threshold,
                         thermocline_mode=thermocline_mode,
                     )

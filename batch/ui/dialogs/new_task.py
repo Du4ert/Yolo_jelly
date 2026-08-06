@@ -457,6 +457,11 @@ class NewTaskDialog(QDialog):
                 config.ui.max_reliable_distance = self.pp_spin_max_reliable.value()
                 config.ui.effective_distance_auto = effective_distance_auto
                 config.ui.effective_distance = self.pp_spin_effective_distance.value()
+                config.ui.pleurobrachia_effective_distance = (
+                    None
+                    if self.pp_chk_pleurobrachia_use_near.isChecked()
+                    else self.pp_spin_pleurobrachia_effective_distance.value()
+                )
                 save_config()
             except Exception:
                 pass
@@ -478,6 +483,11 @@ class NewTaskDialog(QDialog):
                 "effective_distance_auto": effective_distance_auto,
                 "detection_distance": (
                     None if effective_distance_auto else self.pp_spin_effective_distance.value()
+                ),
+                "pleurobrachia_detection_distance": (
+                    None
+                    if self.pp_chk_pleurobrachia_use_near.isChecked()
+                    else self.pp_spin_pleurobrachia_effective_distance.value()
                 ),
                 "depth_bin": self.pp_spin_depth_bin.value(),
                 "ctd_columns": self.pp_edit_ctd_columns.text().strip() or "6,11,12,16",
@@ -728,6 +738,35 @@ class NewTaskDialog(QDialog):
         self.pp_spin_effective_distance.setToolTip("Ручная effective distance для площади основания эллипса цилиндра")
         params_form.addRow("Ручная effective distance:", self.pp_spin_effective_distance)
 
+        self.pp_chk_pleurobrachia_use_near = QCheckBox(
+            "Использовать ближнюю дистанцию"
+        )
+        self.pp_chk_pleurobrachia_use_near.setChecked(True)
+        self.pp_chk_pleurobrachia_use_near.toggled.connect(
+            self._on_pleurobrachia_use_near_toggled
+        )
+        params_form.addRow(
+            "P. pileus:", self.pp_chk_pleurobrachia_use_near
+        )
+
+        self.pp_spin_pleurobrachia_effective_distance = QDoubleSpinBox()
+        self.pp_spin_pleurobrachia_effective_distance.setRange(0.01, 20.0)
+        self.pp_spin_pleurobrachia_effective_distance.setValue(0.1)
+        self.pp_spin_pleurobrachia_effective_distance.setSingleStep(0.05)
+        self.pp_spin_pleurobrachia_effective_distance.setSuffix(" м")
+        self.pp_spin_pleurobrachia_effective_distance.setToolTip(
+            "Отдельная effective distance для P. pileus. "
+            "По умолчанию равна ближней дистанции."
+        )
+        params_form.addRow(
+            "Ручная distance P. pileus:",
+            self.pp_spin_pleurobrachia_effective_distance,
+        )
+        self.pp_spin_min_reliable.valueChanged.connect(
+            self._on_pleurobrachia_min_distance_changed
+        )
+        self._on_pleurobrachia_use_near_toggled(True)
+
         self.pp_spin_depth_bin = QDoubleSpinBox()
         self.pp_spin_depth_bin.setRange(0.5, 10.0)
         self.pp_spin_depth_bin.setValue(2.0)
@@ -752,10 +791,29 @@ class NewTaskDialog(QDialog):
         self.pp_chk_effective_distance_auto.setChecked(auto)
         if defaults.get("effective_distance") is not None:
             self.pp_spin_effective_distance.setValue(defaults["effective_distance"])
+        use_near = defaults["pleurobrachia_use_near_distance"]
+        self.pp_chk_pleurobrachia_use_near.setChecked(use_near)
+        self.pp_spin_pleurobrachia_effective_distance.setValue(
+            defaults["min_reliable_distance"]
+            if use_near
+            else defaults["pleurobrachia_effective_distance"]
+        )
+        self._on_pleurobrachia_use_near_toggled(use_near)
         self._on_effective_distance_auto_toggled(auto)
 
     def _on_effective_distance_auto_toggled(self, enabled: bool):
         self.pp_spin_effective_distance.setEnabled(not enabled)
+
+    def _on_pleurobrachia_use_near_toggled(self, enabled: bool):
+        self.pp_spin_pleurobrachia_effective_distance.setEnabled(not enabled)
+        if enabled:
+            self.pp_spin_pleurobrachia_effective_distance.setValue(
+                self.pp_spin_min_reliable.value()
+            )
+
+    def _on_pleurobrachia_min_distance_changed(self, value: float):
+        if self.pp_chk_pleurobrachia_use_near.isChecked():
+            self.pp_spin_pleurobrachia_effective_distance.setValue(value)
 
     def _on_thermocline_mode_changed(self, *args):
         mode = self.pp_combo_thermocline_mode.currentData()

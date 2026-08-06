@@ -47,6 +47,7 @@ class UISettings:
     max_reliable_distance: Optional[float] = None
     effective_distance_auto: Optional[bool] = None
     effective_distance: Optional[float] = None
+    pleurobrachia_effective_distance: Optional[float] = None
 
 
 @dataclass
@@ -122,6 +123,9 @@ class Config:
                 max_reliable_distance=ui_data.get("max_reliable_distance"),
                 effective_distance_auto=ui_data.get("effective_distance_auto"),
                 effective_distance=ui_data.get("effective_distance"),
+                pleurobrachia_effective_distance=ui_data.get(
+                    "pleurobrachia_effective_distance"
+                ),
             ),
         )
 

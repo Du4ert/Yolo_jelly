@@ -285,6 +285,32 @@ class PostProcessDialog(QDialog):
         self.spin_effective_distance.setSuffix(" м")
         self.spin_effective_distance.setEnabled(False)
         effective_layout.addRow("Фиксированная:", self.spin_effective_distance)
+
+        self.chk_pleurobrachia_use_near = QCheckBox(
+            "Использовать ближнюю дистанцию"
+        )
+        self.chk_pleurobrachia_use_near.setChecked(True)
+        self.chk_pleurobrachia_use_near.toggled.connect(
+            self._on_pleurobrachia_use_near_toggled
+        )
+        effective_layout.addRow("P. pileus:", self.chk_pleurobrachia_use_near)
+
+        self.spin_pleurobrachia_effective_distance = QDoubleSpinBox()
+        self.spin_pleurobrachia_effective_distance.setRange(0.01, 20.0)
+        self.spin_pleurobrachia_effective_distance.setValue(0.1)
+        self.spin_pleurobrachia_effective_distance.setSingleStep(0.05)
+        self.spin_pleurobrachia_effective_distance.setSuffix(" м")
+        self.spin_pleurobrachia_effective_distance.setToolTip(
+            "Отдельная effective distance для P. pileus. "
+            "По умолчанию равна ближней дистанции."
+        )
+        effective_layout.addRow(
+            "Ручная P. pileus:", self.spin_pleurobrachia_effective_distance
+        )
+        self.spin_min_reliable.valueChanged.connect(
+            self._on_pleurobrachia_min_distance_changed
+        )
+        self._on_pleurobrachia_use_near_toggled(True)
         params_layout.addRow(effective_group)
 
         self.spin_depth_bin = QDoubleSpinBox()
@@ -661,10 +687,29 @@ class PostProcessDialog(QDialog):
         self.chk_effective_distance_auto.setChecked(auto)
         if defaults.get("effective_distance") is not None:
             self.spin_effective_distance.setValue(defaults["effective_distance"])
+        use_near = defaults["pleurobrachia_use_near_distance"]
+        self.chk_pleurobrachia_use_near.setChecked(use_near)
+        self.spin_pleurobrachia_effective_distance.setValue(
+            defaults["min_reliable_distance"]
+            if use_near
+            else defaults["pleurobrachia_effective_distance"]
+        )
+        self._on_pleurobrachia_use_near_toggled(use_near)
         self._on_effective_distance_auto_toggled(auto)
 
     def _on_effective_distance_auto_toggled(self, enabled: bool):
         self.spin_effective_distance.setEnabled(not enabled)
+
+    def _on_pleurobrachia_use_near_toggled(self, enabled: bool):
+        self.spin_pleurobrachia_effective_distance.setEnabled(not enabled)
+        if enabled:
+            self.spin_pleurobrachia_effective_distance.setValue(
+                self.spin_min_reliable.value()
+            )
+
+    def _on_pleurobrachia_min_distance_changed(self, value: float):
+        if self.chk_pleurobrachia_use_near.isChecked():
+            self.spin_pleurobrachia_effective_distance.setValue(value)
 
     def _on_thermocline_mode_changed(self, *args):
         mode = self.combo_thermocline_mode.currentData()
@@ -767,6 +812,11 @@ class PostProcessDialog(QDialog):
             config.ui.max_reliable_distance = self.spin_max_reliable.value()
             config.ui.effective_distance_auto = effective_distance_auto
             config.ui.effective_distance = self.spin_effective_distance.value()
+            config.ui.pleurobrachia_effective_distance = (
+                None
+                if self.chk_pleurobrachia_use_near.isChecked()
+                else self.spin_pleurobrachia_effective_distance.value()
+            )
             save_config()
         except Exception:
             pass
@@ -779,6 +829,11 @@ class PostProcessDialog(QDialog):
             "effective_distance_auto": effective_distance_auto,
             "detection_distance": (
                 None if effective_distance_auto else self.spin_effective_distance.value()
+            ),
+            "pleurobrachia_detection_distance": (
+                None
+                if self.chk_pleurobrachia_use_near.isChecked()
+                else self.spin_pleurobrachia_effective_distance.value()
             ),
             "depth_bin": self.spin_depth_bin.value(),
             "ctd_columns": self.edit_ctd_columns.text().strip() or "6,11,12,16",

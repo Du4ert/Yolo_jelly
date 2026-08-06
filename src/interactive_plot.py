@@ -165,6 +165,7 @@ def create_interactive_depth_plot(
     ctd_columns: Optional[List[int]] = None,
     depth_bin: float = 1.0,
     cross_section_area_m2: Optional[float] = None,
+    pleurobrachia_cross_section_area_m2: Optional[float] = None,
     thermocline_threshold: float = 0.2,
     thermocline_mode: str = "threshold",
     title: str = "Распределение желетелых по глубине",
@@ -185,6 +186,7 @@ def create_interactive_depth_plot(
         ctd_columns: номера колонок CTD для отображения (0-based)
         depth_bin: шаг биннинга для расчёта средних (м)
         cross_section_area_m2: площадь сечения наблюдения для нормировки KDE (м²)
+        pleurobrachia_cross_section_area_m2: отдельная площадь сечения P. pileus (м²)
         thermocline_threshold: порог величины температурного градиента для термоклина (°C/м)
         thermocline_mode: режим термоклина (threshold, maximum, off)
         title: заголовок графика
@@ -292,15 +294,30 @@ def create_interactive_depth_plot(
     depth_grid = np.arange(depth_min, depth_max + grid_step, grid_step)
     df_depth['marker_size'] = normalize_marker_sizes(df_depth['real_size_cm'])
     area_m2 = float(cross_section_area_m2) if cross_section_area_m2 and cross_section_area_m2 > 0 else None
+    if (pleurobrachia_cross_section_area_m2
+            and pleurobrachia_cross_section_area_m2 > 0
+            and area_m2 is None):
+        raise ValueError(
+            "Отдельная площадь P. pileus требует общей площади сечения"
+        )
+    pileus_area_m2 = (
+        float(pleurobrachia_cross_section_area_m2)
+        if (pleurobrachia_cross_section_area_m2
+            and pleurobrachia_cross_section_area_m2 > 0)
+        else area_m2
+    )
     kde_axis_title = "экз./м²/м глубины" if area_m2 else "экз./м глубины"
 
     species_density = {}
     for species in species_list:
+        species_area_m2 = (
+            pileus_area_m2 if species == 'Pleurobrachia pileus' else area_m2
+        )
         sp_depths = df_depth.loc[df_depth['class_name'] == species, 'object_depth_m'].values
         if len(sp_depths) >= 2:
             density = calculate_kde(sp_depths, depth_grid) * len(sp_depths)
-            if area_m2:
-                density = density / area_m2
+            if species_area_m2:
+                density = density / species_area_m2
         else:
             density = np.zeros_like(depth_grid)
         species_density[species] = density
@@ -877,6 +894,8 @@ def main():
     parser.add_argument("--ctd", help="CSV с данными CTD")
     parser.add_argument("--ctd-columns", type=str, default="6,11,12,16", help="Колонки CTD (0-based): 6,11,12,16")
     parser.add_argument("--cross-section-area", type=float, default=None, help="Площадь сечения наблюдения, м²")
+    parser.add_argument("--pleurobrachia-cross-section-area", type=float, default=None,
+                        help="Отдельная площадь сечения P. pileus, м²")
     parser.add_argument("--thermocline-threshold", type=float, default=0.2, help="Порог термоклина, °C/м")
     parser.add_argument("--thermocline-mode", choices=["threshold", "maximum", "off"], default="threshold", help="Режим термоклина")
     parser.add_argument("--list-ctd-columns", action="store_true", help="Показать колонки CTD")
@@ -911,6 +930,9 @@ def main():
             ctd_columns=parse_ctd_columns(args.ctd_columns) or None,
             depth_bin=args.depth_bin,
             cross_section_area_m2=args.cross_section_area,
+            pleurobrachia_cross_section_area_m2=(
+                args.pleurobrachia_cross_section_area
+            ),
             thermocline_threshold=args.thermocline_threshold,
             thermocline_mode=args.thermocline_mode,
             title=args.title,

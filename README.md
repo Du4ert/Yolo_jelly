@@ -463,7 +463,8 @@ python src/camera_geometry.py volume \
     --tracks output/track_sizes.csv \
     --ctd ctd_data.csv \
     --output output/volume.csv \
-    --fov 156 \
+    --fov-horizontal 95 \
+    --fov-vertical 55 \
     --percentile 90
 ```
 
@@ -473,9 +474,14 @@ python src/camera_geometry.py volume \
 | `--tracks`, `-t` | None | CSV со статистикой треков с колонкой `max_detection_distance_m`. |
 | `--ctd`, `-c` | None | CSV с данными CTD (для полного диапазона глубин). |
 | `--output`, `-o` | auto | Выходной CSV |
-| `--fov` | 156.0 | Горизонтальный FOV камеры (°) |
+| `--fov-horizontal` | 95.0 | Горизонтальный FOV камеры (°) |
+| `--fov-vertical` | 55.0 | Вертикальный FOV камеры (°) |
 | `--percentile` | 90.0 | Перцентиль дальних дистанций обнаружения треков для эффективной дистанции d_eff (0–100) |
 | `--detection-distance` | None | Ручное значение d_eff (м). None = автоматически по перцентилю. |
+| `--pleurobrachia-detection-distance` | None | Отдельная effective distance P. pileus (м). None = минимальная надёжная дистанция. |
+| `--calibration` | None | JSON-файл калибровки камеры. |
+| `--min-reliable-distance` | Из калибровки | Минимальная надёжная дистанция и fallback для P. pileus. |
+| `--max-reliable-distance` | Из калибровки | Максимальная дистанция общей автооценки. |
 | `--near-distance` | 0.1 | Устарел, игнорируется (оставлен для совместимости CLI). |
 | `--depth-min` | None | Минимальная глубина (м) |
 | `--depth-max` | None | Максимальная глубина (м) |
@@ -499,6 +505,12 @@ d_eff = clamp(P_percentile(max_detection_distance_m), min_reliable, max_reliable
 дальних дистанций обнаружения треков. В `track_sizes.csv` это колонка `max_detection_distance_m`,
 рассчитанная как P95 покадрового `distance_to_object_m` внутри трека. Если `--tracks` без этой колонки,
 дистанции агрегируются из детекций по `track_id`; затем используется типичная дистанция вида.
+Треки `P. pileus` из этой автооценки исключаются.
+
+Для `P. pileus` площадь и объём рассчитываются отдельно по тем же формулам.
+Её effective distance не вычисляется по трекам: используется явно заданное
+`--pleurobrachia-detection-distance`, а при отсутствии параметра —
+`min_reliable_distance`.
 
 **Важно:** объём считается по ВСЕМУ диапазону погружения. Пустая вода учитывается для правильного расчёта плотности.
 
@@ -507,6 +519,10 @@ d_eff = clamp(P_percentile(max_detection_distance_m), min_reliable, max_reliable
 - `effective_distance_m` — эффективная дистанция d_eff (м)
 - `cylinder_height_m` — высота цилиндра H = depth_traversed + d_eff (м)
 - `cross_section_area_m2` — площадь эллиптического сечения A_eff (м²)
+- `pleurobrachia_volume_m3` — отдельный осмотренный объём для P. pileus (м³)
+- `pleurobrachia_effective_distance_m` — effective distance P. pileus (м)
+- `pleurobrachia_cylinder_height_m` — высота цилиндра P. pileus (м)
+- `pleurobrachia_cross_section_area_m2` — площадь сечения P. pileus (м²)
 - `depth_min_m`, `depth_max_m`, `depth_traversed_m` — диапазон глубин
 - `fov_horizontal_deg`, `fov_vertical_deg` — углы обзора
 - `duration_s`, `descent_rate_m_s` — длительность и скорость погружения

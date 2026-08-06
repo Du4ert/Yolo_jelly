@@ -2122,7 +2122,12 @@ class VolumeEstimate:
     duration_s: float
     descent_rate_m_s: float
     density_by_class: Dict[str, float]
+    density_per_m2_by_class: Dict[str, float]
     counts_by_class: Dict[str, int]
+    pleurobrachia_effective_distance_m: float
+    pleurobrachia_cylinder_height_m: float
+    pleurobrachia_cross_section_area_m2: float
+    pleurobrachia_volume_m3: float
 
 
 DEFAULT_DETECTION_DISTANCES = {
@@ -2130,7 +2135,6 @@ DEFAULT_DETECTION_DISTANCES = {
     'Rhizostoma pulmo': 2.5,
     'Mnemiopsis leidyi': 1.0,
     'Beroe ovata': 1.2,
-    'Pleurobrachia pileus': 0.5
 }
 
 
@@ -2173,6 +2177,15 @@ def estimate_effective_distance(
     d_max = calibration.max_reliable_distance
     # Верхний барьер для отсева явных выбросов перед перцентилем.
     outlier_cap = d_max * 2.0
+
+    # P. pileus использует отдельный объём и не имеет независимо измеренной
+    # дистанции, поэтому её fixed-оценки не должны влиять на общий d_eff.
+    if tracks_df is not None and 'class_name' in tracks_df.columns:
+        tracks_df = tracks_df[tracks_df['class_name'] != 'Pleurobrachia pileus']
+    if detections_df is not None and 'class_name' in detections_df.columns:
+        detections_df = detections_df[
+            detections_df['class_name'] != 'Pleurobrachia pileus'
+        ]
 
     # Источник 1: дальняя дистанция обнаружения из track_sizes.csv
     if (tracks_df is not None and len(tracks_df) > 0
@@ -2221,6 +2234,7 @@ def calculate_surveyed_volume(
     fov_vertical_deg: float = 55.0,
     near_distance_m: float = 0.3,
     detection_distance_m: Optional[float] = None,
+    pleurobrachia_detection_distance_m: Optional[float] = None,
     depth_range: Optional[Tuple[float, float]] = None,
     total_duration_s: Optional[float] = None,
     fps: float = 60.0,
@@ -2237,6 +2251,10 @@ def calculate_surveyed_volume(
     d_eff — эмпирический P-перцентиль дальних дистанций обнаружения треков
     (по умолчанию P90) с clamp'ом в диапазон надёжных дистанций калибровки.
     Если detection_distance_m задан вручную, он используется напрямую.
+
+    Для P. pileus объём рассчитывается отдельно. Её effective distance не
+    оценивается по трекам: по умолчанию используется min_reliable_distance,
+    а положительное pleurobrachia_detection_distance_m переопределяет её.
 
     Параметр `near_distance_m` устарел: в цилиндрической модели он не используется,
     оставлен в сигнатуре для обратной совместимости вызовов.
@@ -2306,6 +2324,21 @@ def calculate_surveyed_volume(
                                     #               просматриваются на d_eff ниже
     V_total = A_eff * H
 
+    if pleurobrachia_detection_distance_m is None:
+        d_pileus = float(calibration.min_reliable_distance)
+        d_pileus_source = "ближняя дистанция"
+    else:
+        if pleurobrachia_detection_distance_m <= 0:
+            raise ValueError(
+                "Effective distance P. pileus должна быть больше 0"
+            )
+        d_pileus = float(pleurobrachia_detection_distance_m)
+        d_pileus_source = "явно задана"
+
+    area_pileus = calculate_ellipse_area(d_pileus, fov_h_rad, fov_v_rad)
+    height_pileus = depth_traversed + d_pileus
+    volume_pileus = area_pileus * height_pileus
+
     if verbose:
         print(f"=== РАСЧЁТ ОСМОТРЕННОГО ОБЪЁМА (цилиндр) ===")
         print(f"Источник глубины:      {source}")
@@ -2314,16 +2347,35 @@ def calculate_surveyed_volume(
         print(f"Сечение A_eff (эллипс): {A_eff:.2f} м²")
         print(f"Высота цилиндра H:    {H:.2f} м ({depth_traversed:.2f} + {d_eff:.2f})")
         print(f"ИТОГО объём:          {V_total:.2f} м³")
+        print(
+            f"P. pileus d_eff ({d_pileus_source}): {d_pileus:.2f} м; "
+            f"площадь: {area_pileus:.2f} м²; объём: {volume_pileus:.2f} м³"
+        )
 
     counts_by_class = _calculate_counts_by_class(
         detections_df=detections_df,
         count_tracks_df=count_tracks_df,
         tracks_df=tracks_df,
     )
-    density_by_class = {
-        class_name: count / V_total if V_total > 0 else 0
-        for class_name, count in counts_by_class.items()
-    }
+    density_by_class = {}
+    density_per_m2_by_class = {}
+    for class_name, count in counts_by_class.items():
+        class_volume = (
+            volume_pileus
+            if class_name == 'Pleurobrachia pileus'
+            else V_total
+        )
+        density_by_class[class_name] = (
+            count / class_volume if class_volume > 0 else 0
+        )
+        class_area = (
+            area_pileus
+            if class_name == 'Pleurobrachia pileus'
+            else A_eff
+        )
+        density_per_m2_by_class[class_name] = (
+            count / class_area if class_area > 0 else 0
+        )
 
     d_eff_rounded = round(d_eff, 2)
     return VolumeEstimate(
@@ -2339,7 +2391,12 @@ def calculate_surveyed_volume(
         duration_s=round(duration, 1),
         descent_rate_m_s=round(descent_rate, 3),
         density_by_class=density_by_class,
-        counts_by_class=counts_by_class
+        density_per_m2_by_class=density_per_m2_by_class,
+        counts_by_class=counts_by_class,
+        pleurobrachia_effective_distance_m=d_pileus,
+        pleurobrachia_cylinder_height_m=height_pileus,
+        pleurobrachia_cross_section_area_m2=area_pileus,
+        pleurobrachia_volume_m3=volume_pileus,
     )
 
 
@@ -2422,6 +2479,7 @@ def process_volume_estimation(
     fov_vertical: float = 55.0,
     near_distance: float = 0.3,
     detection_distance: Optional[float] = None,
+    pleurobrachia_detection_distance: Optional[float] = None,
     depth_min: Optional[float] = None,
     depth_max: Optional[float] = None,
     total_duration: Optional[float] = None,
@@ -2488,6 +2546,7 @@ def process_volume_estimation(
         fov_vertical_deg=fov_vertical,
         near_distance_m=near_distance,
         detection_distance_m=detection_distance,
+        pleurobrachia_detection_distance_m=pleurobrachia_detection_distance,
         depth_range=depth_range,
         total_duration_s=total_duration,
         fps=fps,
@@ -2501,16 +2560,24 @@ def process_volume_estimation(
             'parameter': [
                 'total_volume_m3',
                 'effective_distance_m', 'cylinder_height_m',
+                'pleurobrachia_volume_m3',
+                'pleurobrachia_effective_distance_m',
+                'pleurobrachia_cylinder_height_m',
                 'depth_min_m', 'depth_max_m', 'depth_traversed_m',
                 'cross_section_area_m2',
+                'pleurobrachia_cross_section_area_m2',
                 'fov_horizontal_deg', 'fov_vertical_deg',
                 'duration_s', 'descent_rate_m_s'
             ],
             'value': [
                 result.total_volume_m3,
                 result.effective_distance_m, result.cylinder_height_m,
+                result.pleurobrachia_volume_m3,
+                result.pleurobrachia_effective_distance_m,
+                result.pleurobrachia_cylinder_height_m,
                 result.depth_range_m[0], result.depth_range_m[1], result.depth_traversed_m,
                 result.cross_section_area_m2,
+                result.pleurobrachia_cross_section_area_m2,
                 result.fov_horizontal_deg, result.fov_vertical_deg,
                 result.duration_s, result.descent_rate_m_s
             ]
@@ -2518,7 +2585,7 @@ def process_volume_estimation(
         
         for class_name, count in result.counts_by_class.items():
             class_key = class_name.replace(" ", "_")
-            density_per_m2 = count / result.cross_section_area_m2 if result.cross_section_area_m2 > 0 else 0
+            density_per_m2 = result.density_per_m2_by_class[class_name]
             median_size_cm, std_size_cm = size_stats_by_class.get(class_name, ("", ""))
 
             output_data['parameter'].append(f'count_{class_key}')
@@ -3630,6 +3697,15 @@ def main():
     vol.add_argument('--detection-distance', type=float,
                      help='Ручное значение d_eff в метрах, используется напрямую. Если не задано, '
                           'оценивается эмпирически как P-перцентиль фактических дистанций.')
+    vol.add_argument('--pleurobrachia-detection-distance', type=float,
+                     help='Отдельная effective distance P. pileus в метрах. Если не задана, '
+                          'используется минимальная надёжная дистанция.')
+    vol.add_argument('--calibration',
+                     help='JSON-файл калибровки камеры.')
+    vol.add_argument('--min-reliable-distance', type=float,
+                     help='Минимальная надёжная дистанция и fallback для P. pileus.')
+    vol.add_argument('--max-reliable-distance', type=float,
+                     help='Максимальная надёжная дистанция для общей автооценки.')
     vol.add_argument('--percentile', type=float, default=90.0,
                      help='Перцентиль (0–100) дальних дистанций обнаружения треков для d_eff '
                           '(по умолчанию 90).')
@@ -3697,12 +3773,18 @@ def main():
             fov_vertical=args.fov_vertical,
             near_distance=args.near_distance,
             detection_distance=args.detection_distance,
+            pleurobrachia_detection_distance=(
+                args.pleurobrachia_detection_distance
+            ),
             depth_min=args.depth_min,
             depth_max=args.depth_max,
             total_duration=args.duration,
             fps=args.fps,
             frame_width=args.width,
             frame_height=args.height,
+            calibration_json=args.calibration,
+            min_reliable_distance=args.min_reliable_distance,
+            max_reliable_distance=args.max_reliable_distance,
             percentile=args.percentile
         )
     

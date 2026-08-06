@@ -531,6 +531,9 @@ class Worker(QThread):
             fov_vertical=fov_vertical,
             near_distance=params.get("min_reliable_distance", 0.1),
             detection_distance=detection_distance,
+            pleurobrachia_detection_distance=params.get(
+                "pleurobrachia_detection_distance"
+            ),
             fps=video.fps or 60.0,
             frame_width=video.width or 1920,
             frame_height=video.height or 1080,
@@ -565,10 +568,13 @@ class Worker(QThread):
                 vol_df = pd.read_csv(volume_csv)
                 density = {}
                 cross_section_area_m2 = None
+                pleurobrachia_cross_section_area_m2 = None
                 for _, row in vol_df.iterrows():
                     param = str(row['parameter'])
                     if param == 'cross_section_area_m2':
                         cross_section_area_m2 = float(row['value'])
+                    if param == 'pleurobrachia_cross_section_area_m2':
+                        pleurobrachia_cross_section_area_m2 = float(row['value'])
                     if param.startswith('density_') and param.endswith('_per_m3'):
                         species_key = param[len('density_'):-len('_per_m3')].replace('_', ' ')
                         density[species_key] = float(row['value'])
@@ -576,6 +582,11 @@ class Worker(QThread):
                     processing_info['volume_density'] = density
                 if cross_section_area_m2 and cross_section_area_m2 > 0:
                     processing_info['cross_section_area_m2'] = cross_section_area_m2
+                if (pleurobrachia_cross_section_area_m2
+                        and pleurobrachia_cross_section_area_m2 > 0):
+                    processing_info['pleurobrachia_cross_section_area_m2'] = (
+                        pleurobrachia_cross_section_area_m2
+                    )
             except Exception as e:
                 print(f"Не удалось прочитать данные объёма: {e}")
 
@@ -608,6 +619,9 @@ class Worker(QThread):
             ctd_path=ctd_path,
             ctd_columns=ctd_columns if ctd_path else None,
             cross_section_area_m2=processing_info.get('cross_section_area_m2'),
+            pleurobrachia_cross_section_area_m2=processing_info.get(
+                'pleurobrachia_cross_section_area_m2'
+            ),
             thermocline_threshold=params.get("thermocline_threshold", 0.2),
             thermocline_mode=params.get("thermocline_mode", "threshold"),
         )
@@ -959,6 +973,9 @@ class Worker(QThread):
             ),
             "detection_distance": params.get(
                 "detection_distance", defaults.get("effective_distance")
+            ),
+            "pleurobrachia_detection_distance": params.get(
+                "pleurobrachia_detection_distance"
             ),
             "depth_bin": params.get("depth_bin", 2.0),
             "thermocline_threshold": params.get("thermocline_threshold", 0.2),
