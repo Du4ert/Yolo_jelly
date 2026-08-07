@@ -19,7 +19,7 @@ import cv2
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import Optional, Tuple, Dict, List
+from typing import Any, Optional, Tuple, Dict, List
 from dataclasses import dataclass, field
 from scipy.optimize import minimize
 import argparse
@@ -53,6 +53,39 @@ TYPICAL_SIZES_CM = {
     'Beroe ovata': {'mean': 5.0, 'std': 3.0, 'min': 3.0, 'max': 15.0},
     'Rhizostoma pulmo': {'mean': 30.0, 'std': 15.0, 'min': 10.0, 'max': 60.0},
 }
+
+# ===== Пороги выбора метода оценки размера =====
+# k-метод предполагает сближение камеры с объектом вдоль оптической оси.
+# При наклоне оси коррекция k / cos(θ) растёт нелинейно, а достоверность
+# самой оценки наклона падает, поэтому уверенность k-метода снижается с углом.
+K_TILT_FULL_CONF_DEG = 20.0   # до этого угла k-метод не штрафуется
+K_TILT_REJECT_DEG = 60.0      # выше — пара кадров отбраковывается
+K_TILT_MIN_FACTOR = 0.5       # значение tilt-фактора при K_TILT_REJECT_DEG
+
+# Нижний порог приёмки оценки дистанции параллакс-методом.
+MIN_DISTANCE_CONFIDENCE = 0.4
+
+# Разброс направлений потока, при котором параллакс считается применимым.
+# Строже, чем max_parallel_direction_std=45° в _classify_flow_regime:
+# классификатор лишь маркирует режим, здесь же от согласованности потока
+# напрямую зависит корректность отношения скоростей v_ref / v_obj.
+PARALLAX_MAX_DIRECTION_STD_DEG = 30.0
+
+
+def _tilt_confidence_factor(tilt_deg: float) -> float:
+    """Множитель уверенности k-метода в зависимости от наклона камеры.
+
+    1.0 при θ ≤ K_TILT_FULL_CONF_DEG, линейный спад до K_TILT_MIN_FACTOR
+    на K_TILT_REJECT_DEG, 0.0 выше. Пороги подобраны так, что условия
+    «фактор < K_TILT_MIN_FACTOR» и «θ > K_TILT_REJECT_DEG» совпадают.
+    """
+    if not np.isfinite(tilt_deg) or tilt_deg <= K_TILT_FULL_CONF_DEG:
+        return 1.0
+    if tilt_deg > K_TILT_REJECT_DEG:
+        return 0.0
+    span = K_TILT_REJECT_DEG - K_TILT_FULL_CONF_DEG
+    progress = (tilt_deg - K_TILT_FULL_CONF_DEG) / span
+    return 1.0 - (1.0 - K_TILT_MIN_FACTOR) * progress
 
 
 @dataclass
@@ -534,14 +567,20 @@ def _find_size_pairs(
     Жадно ищет пары кадров с достаточным приростом размера.
     Для каждой пары вычисляет k, distance, size_mm и object_depth.
 
+    Пары, для которых локальный наклон камеры превышает K_TILT_REJECT_DEG,
+    отбраковываются: при таком наклоне прирост видимого размера уже не связан
+    с изменением глубины камеры так, как предполагает k-метод.
+
     Возвращает:
-        pair_data: список словарей с данными каждой пары
+        pair_data: список словарей с данными принятых пар
         tilt_correction_applied: была ли применена коррекция наклона
-        avg_tilt_deg: максимальный угол наклона среди пар
+        max_tilt_deg: максимальный угол наклона среди рассмотренных пар,
+            включая отбракованные по наклону
     """
     pair_data = []
     tilt_correction_applied = False
     avg_tilt_deg = 0.0
+    max_rejected_tilt_deg = 0.0
 
     # Извлекаем массивы для быстрого поиска (numpy вместо iloc)
     sizes_arr = valid_df['size_pix'].values
@@ -627,10 +666,17 @@ def _find_size_pairs(
 
         cos_tilt = 1.0
         tilt_deg_pair = 0.0
+        tilt_is_local = False
         if apply_tilt_correction and geometry_df is not None:
-            cos_tilt, tilt_deg_pair = get_average_tilt_for_range(
+            cos_tilt, tilt_deg_pair, tilt_is_local = get_average_tilt_for_range(
                 int(frame1), int(frame2), geometry_df
             )
+            if tilt_deg_pair > K_TILT_REJECT_DEG:
+                # Наклон вне области применимости k-метода: геометрия пары
+                # не позволяет связать прирост размера с изменением глубины.
+                max_rejected_tilt_deg = max(max_rejected_tilt_deg, tilt_deg_pair)
+                i = found_j
+                continue
             if cos_tilt < 1.0:
                 tilt_correction_applied = True
                 avg_tilt_deg = max(avg_tilt_deg, tilt_deg_pair)
@@ -668,11 +714,31 @@ def _find_size_pairs(
                 'object_depth': object_depth,
                 'size_change_pct': (pixels2 / pixels1 - 1) * 100,
                 'clamped_to_min': clamped,
+                'tilt_is_local': tilt_is_local,
             })
 
         i = found_j
 
-    return pair_data, tilt_correction_applied, avg_tilt_deg
+    return pair_data, tilt_correction_applied, max(avg_tilt_deg, max_rejected_tilt_deg)
+
+
+def _median_pair_tilt(pair_data: List[dict]) -> float:
+    """Характерный наклон камеры по набору пар — медиана, а не максимум.
+
+    Медиана устойчива к отдельным интервалам геометрии с шумной оценкой FOE,
+    поэтому именно она определяет tilt-фактор уверенности трека.
+    """
+    if not pair_data:
+        return 0.0
+    return float(np.median([p.get('tilt_deg', 0.0) for p in pair_data]))
+
+
+def _fraction_pairs_without_local_tilt(pair_data: List[dict]) -> float:
+    """Доля пар, для которых наклон взят из среднего по видео, а не локально."""
+    if not pair_data:
+        return 0.0
+    n_nonlocal = sum(1 for p in pair_data if not p.get('tilt_is_local'))
+    return n_nonlocal / len(pair_data)
 
 
 def _filter_pairs_by_mad(pair_data: List[dict]) -> List[dict]:
@@ -819,10 +885,10 @@ def estimate_size_by_k_method(
     geometry_df: Optional[pd.DataFrame] = None,
     apply_tilt_correction: bool = True,
     smoothing_window: int = 3
-) -> Optional[TrackSizeEstimate]:
+) -> Tuple[Optional[TrackSizeEstimate], List[str]]:
     """
     Оценивает размер объекта методом удельного прироста k.
-    
+
     Алгоритм:
     1. Берём пары точек, где размер изменился минимум на 10%
     2. Для каждой пары вычисляем:
@@ -845,6 +911,10 @@ def estimate_size_by_k_method(
         geometry_df: DataFrame с данными геометрии (наклон камеры)
         apply_tilt_correction: применять коррекцию наклона камеры
         smoothing_window: размер окна для сглаживания медианой
+
+    Returns:
+        (estimate, reasons) — оценка либо None, если метод неприменим,
+        и список причин отказа/деградации для колонки warnings.
     """
     if min_track_depth_span_m <= 0:
         raise ValueError("min_track_depth_span_m должен быть больше 0")
@@ -858,16 +928,16 @@ def estimate_size_by_k_method(
     
     # Пропускаем классы с фиксированным размером
     if class_name in FIXED_SIZE_CLASSES:
-        return None
-    
+        return None, []
+
     if 'depth_m' not in track_df.columns or track_df['depth_m'].isna().all():
-        return None
-    
+        return None, []
+
     valid_df = track_df[track_df['depth_m'].notna()].copy()
-    
+
     if len(valid_df) < min_points:
-        return None
-    
+        return None, []
+
     frame_width = calibration.frame_width
     frame_height = calibration.frame_height
     
@@ -879,17 +949,20 @@ def estimate_size_by_k_method(
     # Проверяем достаточное изменение глубины
     depth_change = valid_df['depth_m'].max() - valid_df['depth_m'].min()
     if depth_change < min_track_depth_span_m:
-        return None
-    
+        return None, []
+
     min_change_ratio = 1.0 + min_size_change_pct / 100.0
-    pair_data, tilt_correction_applied, avg_tilt_deg = _find_size_pairs(
+    pair_data, tilt_correction_applied, max_tilt_deg = _find_size_pairs(
         valid_df, min_change_ratio, min_pair_depth_change_m,
         apply_tilt_correction, geometry_df, calibration
     )
 
     if len(pair_data) == 0:
-        return None
-    
+        if max_tilt_deg > K_TILT_REJECT_DEG:
+            # Все пары отбракованы по наклону — трек уходит на параллакс/typical
+            return None, [f"k_rejected_high_tilt_{max_tilt_deg:.0f}deg"]
+        return None, []
+
     # ===== Фильтрация выбросов и сглаживание =====
     pair_data_filtered = _filter_pairs_by_mad(pair_data)
     _apply_moving_median(pair_data_filtered, smoothing_window)
@@ -912,7 +985,13 @@ def estimate_size_by_k_method(
             # Оценка качества k и наклона для peak-frame fallback
             k_vals = np.array([p['k_percent'] for p in pair_data_filtered])
             k_cv_now = float(np.std(k_vals) / np.mean(k_vals)) if np.mean(k_vals) > 0 else 999.0
-            tilt_stable = (tilt_correction_applied and avg_tilt_deg < 20.0)
+            # Геометрия должна быть известна и наклон — малым. Проверять
+            # tilt_correction_applied нельзя: при строго вертикальной камере
+            # коррекция не срабатывает (cos_tilt == 1.0), хотя это лучший случай.
+            tilt_stable = (
+                geometry_df is not None
+                and _median_pair_tilt(pair_data_filtered) < K_TILT_FULL_CONF_DEG
+            )
 
             if k_cv_now < 0.3 and tilt_stable:
                 # Путь 2: пик-кадр на min_reliable_distance
@@ -929,7 +1008,7 @@ def estimate_size_by_k_method(
 
                 extra_warnings = ["all_pairs_clamped", "peak_frame_estimate"]
                 if tilt_correction_applied:
-                    extra_warnings.append(f"tilt_corrected_{avg_tilt_deg:.0f}deg")
+                    extra_warnings.append(f"tilt_corrected_{max_tilt_deg:.0f}deg")
                 n_flt_peak = len(pair_data) - len(pair_data_filtered)
                 if n_flt_peak > 0:
                     extra_warnings.append(f"outliers_filtered_{n_flt_peak}")
@@ -952,10 +1031,10 @@ def estimate_size_by_k_method(
                     n_points_used=len(pair_data_filtered),
                     warnings=extra_warnings,
                     frame_data={peak_frame: round(peak_size_mm, 1)}
-                )
+                ), []
             else:
                 # Путь 3: отказ — уходим на estimate_size_from_typical
-                return None
+                return None, []
 
     smoothed_sizes = [p['size_mm_smoothed'] for p in pair_data_filtered]
     final_size_mm, final_idx = _select_final_size(smoothed_sizes, pair_data_filtered)
@@ -1023,10 +1102,29 @@ def estimate_size_by_k_method(
         warnings_list.append("size_too_small")
     if size_mm > 1000:
         warnings_list.append("size_too_large")
-    
+
+    # ===== Наклон камеры как полноправный вход в уверенность =====
+    # Характерный наклон трека — медиана по парам, оставшимся после MAD.
+    # Пары выше K_TILT_REJECT_DEG уже отброшены в _find_size_pairs, поэтому
+    # tilt_factor здесь всегда >= K_TILT_MIN_FACTOR.
+    tilt_deg_eff = _median_pair_tilt(pair_data_filtered)
+    tilt_factor = _tilt_confidence_factor(tilt_deg_eff)
+    if tilt_factor < 1.0:
+        confidence *= tilt_factor
+        warnings_list.append(f"k_tilt_penalized_{tilt_deg_eff:.0f}deg")
+
+    # Наклон, взятый из среднего по всему видео, а не по локальным интервалам,
+    # хуже характеризует геометрию конкретной пары кадров. Проверяем только
+    # когда геометрия вообще есть — иначе это не деградация, а штатный режим
+    # работы без коррекции наклона.
+    geometry_available = apply_tilt_correction and geometry_df is not None
+    if geometry_available and _fraction_pairs_without_local_tilt(pair_data_filtered) > 0.5:
+        confidence *= 0.9
+        warnings_list.append("tilt_geometry_nonlocal")
+
     if tilt_correction_applied:
-        warnings_list.append(f"tilt_corrected_{avg_tilt_deg:.0f}deg")
-    
+        warnings_list.append(f"tilt_corrected_{max_tilt_deg:.0f}deg")
+
     # Информация о сглаживании
     n_filtered = len(pair_data) - len(pair_data_filtered)
     if n_filtered > 0:
@@ -1078,7 +1176,7 @@ def estimate_size_by_k_method(
         warnings=warnings_list,
         frame_data=frame_sizes,
         vertical_offset_m=round(distance_final, 3),
-    )
+    ), []
 
 
 def estimate_size_fixed(
@@ -1221,6 +1319,55 @@ def estimate_size_from_typical(
     )
 
 
+def _select_parallax_intervals(
+    geometry_df: pd.DataFrame,
+    track_start: int,
+    track_end: int,
+) -> pd.DataFrame:
+    """Отбирает интервалы геометрии, пригодные для параллакс-метода.
+
+    Требуется согласованное направление потока (разброс не выше
+    PARALLAX_MAX_DIRECTION_STD_DEG) и один из двух режимов:
+
+    - `parallel` — штатный случай бокового сноса;
+    - `radial` при наклоне выше K_TILT_REJECT_DEG — при большом наклоне FOE
+      уходит далеко за пределы кадра, и поток локально выглядит параллельным,
+      но `_classify_flow_regime` помечает интервал как radial первым же
+      условием (по уверенности FOE). Именно эти интервалы остаются
+      единственным источником дистанции после отказа k-метода по наклону.
+
+    Уверенность FOE (`confidence`) здесь намеренно НЕ проверяется: режим
+    `parallel` присваивается как раз при `foe_confidence < 0.5`, и такой
+    фильтр отключил бы параллакс полностью.
+    """
+    required = {'flow_regime', 'frame_start', 'frame_end'}
+    if geometry_df is None or not required.issubset(geometry_df.columns):
+        return geometry_df.iloc[0:0] if geometry_df is not None else pd.DataFrame()
+
+    # Перекрытие с треком — включительное, как в get_average_tilt_for_range
+    overlaps = ((geometry_df['frame_start'] <= track_end)
+                & (geometry_df['frame_end'] >= track_start))
+
+    if 'flow_direction_std_deg' in geometry_df.columns:
+        coherent = (geometry_df['flow_direction_std_deg']
+                    <= PARALLAX_MAX_DIRECTION_STD_DEG)
+    else:
+        coherent = pd.Series(True, index=geometry_df.index)
+
+    is_parallel = geometry_df['flow_regime'] == 'parallel'
+
+    tilt_cols = {'tilt_horizontal_deg', 'tilt_vertical_deg'}
+    if tilt_cols.issubset(geometry_df.columns):
+        interval_tilt = np.sqrt(geometry_df['tilt_horizontal_deg'] ** 2
+                                + geometry_df['tilt_vertical_deg'] ** 2)
+        is_tilted_radial = ((geometry_df['flow_regime'] == 'radial')
+                            & (interval_tilt > K_TILT_REJECT_DEG))
+    else:
+        is_tilted_radial = pd.Series(False, index=geometry_df.index)
+
+    return geometry_df[overlaps & coherent & (is_parallel | is_tilted_radial)]
+
+
 def estimate_size_by_parallax(
     track_df: pd.DataFrame,
     calibration: CameraCalibration,
@@ -1228,40 +1375,41 @@ def estimate_size_by_parallax(
     frame_width: int = 3840,
     frame_height: int = 2160,
     min_track_points: int = 3,
-) -> Optional[TrackSizeEstimate]:
+) -> Tuple[Optional[TrackSizeEstimate], List[str]]:
     """Оценивает размер объекта по параллаксу движения.
 
     При боковом потоке (параллельном режиме) ближние объекты движутся быстрее.
     Скорость ближнего снега (P95) на известной дистанции даёт масштаб:
         d_obj = d_ref × (v_ref / v_obj)
+
+    Returns:
+        (estimate, reasons) — оценка либо None, если метод неприменим,
+        и список причин отказа для колонки warnings.
     """
     track_id = track_df['track_id'].iloc[0]
     class_name = track_df['class_name'].iloc[0]
 
     if class_name in FIXED_SIZE_CLASSES:
-        return None
+        return None, []
 
     valid_df = track_df.sort_values('frame').reset_index(drop=True)
     if len(valid_df) < min_track_points:
-        return None
+        return None, []
 
-    # Найти параллельные интервалы, пересекающиеся с треком
+    # Найти пригодные интервалы, пересекающиеся с треком
     track_start = int(valid_df['frame'].iloc[0])
     track_end = int(valid_df['frame'].iloc[-1])
 
-    parallel_intervals = geometry_df[
-        (geometry_df['flow_regime'] == 'parallel')
-        & (geometry_df['frame_start'] < track_end)
-        & (geometry_df['frame_end'] > track_start)
-    ]
+    parallel_intervals = _select_parallax_intervals(
+        geometry_df, track_start, track_end)
 
     if len(parallel_intervals) == 0:
-        return None
+        return None, ["parallax_no_usable_interval"]
 
     # Средняя скорость фона (P95) по параллельным интервалам
     v_ref = float(parallel_intervals['flow_p95_speed'].median())
     if v_ref < 1.0:
-        return None
+        return None, ["parallax_background_flow_too_slow"]
 
     # Скорость объекта: медиана покадровых смещений центра bbox
     x_px = valid_df['x_center'].values * frame_width
@@ -1277,13 +1425,17 @@ def estimate_size_by_parallax(
     v_obj = float(np.median(speeds))
 
     if v_obj < 0.5:
-        return None  # объект почти неподвижен — дистанция неопределима
+        # объект почти неподвижен — отношение скоростей неустойчиво
+        return None, ["parallax_object_too_slow"]
 
-    # Дистанция по параллаксу
+    # Дистанция по параллаксу. Результат вне надёжного диапазона калибровки
+    # не «подрезаем»: подрезка превратила бы промах модели в правдоподобное
+    # на вид число. Такой трек уходит на резервную оценку.
     d_ref = calibration.min_reliable_distance
-    d_obj = d_ref * (v_ref / v_obj)
-    d_obj = float(np.clip(d_obj, calibration.min_reliable_distance,
-                          calibration.max_reliable_distance))
+    d_obj = float(d_ref * (v_ref / v_obj))
+    if not (calibration.min_reliable_distance
+            <= d_obj <= calibration.max_reliable_distance):
+        return None, [f"parallax_rejected_distance_out_of_range_{d_obj:.2f}m"]
 
     # Размер через стандартную калибровку
     _, max_row, max_size_pix = _find_max_size_frame(
@@ -1315,21 +1467,16 @@ def estimate_size_by_parallax(
         confidence *= 0.9
         warnings.append("single_parallel_interval")
 
-    # Дистанция на границе надёжного диапазона
-    if d_obj >= calibration.max_reliable_distance:
-        confidence *= 0.5
-        warnings.append("distance_above_reliable")
-    elif d_obj <= calibration.min_reliable_distance:
-        confidence *= 0.8
-        warnings.append("distance_too_close")
-
-    # Проверка по типичным размерам вида
+    # Проверка по типичным размерам вида (порог общий с k-методом)
     if class_name in TYPICAL_SIZES_CM:
         typical = TYPICAL_SIZES_CM[class_name]
         size_cm = size_mm / 10.0
-        if size_cm < typical['min'] / 3 or size_cm > typical['max'] * 3:
+        if size_cm < typical['min'] * 0.3 or size_cm > typical['max'] * 3:
             confidence *= 0.5
             warnings.append("size_outside_typical")
+
+    if confidence < MIN_DISTANCE_CONFIDENCE:
+        return None, [f"parallax_rejected_low_confidence_{confidence:.2f}"]
 
     return TrackSizeEstimate(
         track_id=track_id,
@@ -1348,7 +1495,7 @@ def estimate_size_by_parallax(
         method="parallax",
         n_points_used=len(valid_df),
         warnings=warnings,
-    )
+    ), []
 
 
 # =============================================================================
@@ -1428,43 +1575,46 @@ def get_average_tilt_for_range(
     frame_end: int,
     geometry_df: Optional[pd.DataFrame],
     min_confidence: float = 0.5
-) -> Tuple[float, float]:
+) -> Tuple[float, float, bool]:
     """
     Вычисляет средний наклон камеры для диапазона кадров.
-    
+
     Returns:
-        (cos_tilt, tilt_deg) - коэффициент коррекции и угол в градусах
+        (cos_tilt, tilt_deg, is_local) - коэффициент коррекции, угол в градусах
+        и признак того, что угол получен по интервалам, реально перекрывающим
+        диапазон кадров (а не по среднему за всё видео).
     """
     if geometry_df is None or len(geometry_df) == 0:
-        return 1.0, 0.0
-    
+        return 1.0, 0.0, False
+
     # Фильтруем по уверенности
     if 'confidence' in geometry_df.columns:
         valid_df = geometry_df[geometry_df['confidence'] >= min_confidence].copy()
     else:
         valid_df = geometry_df.copy()
-    
+
     if len(valid_df) == 0:
-        return 1.0, 0.0
-    
+        return 1.0, 0.0, False
+
     # Находим интервалы, пересекающиеся с диапазоном
     mask = (valid_df['frame_end'] >= frame_start) & (valid_df['frame_start'] <= frame_end)
     overlapping = valid_df[mask]
-    
-    if len(overlapping) == 0:
+    is_local = len(overlapping) > 0
+
+    if not is_local:
         # Берём все данные если нет пересечений
         overlapping = valid_df
-    
+
     # Вычисляем средний наклон
     tilt_h = overlapping['tilt_horizontal_deg'].mean()
     tilt_v = overlapping['tilt_vertical_deg'].mean()
     
     total_tilt_deg = np.sqrt(tilt_h**2 + tilt_v**2)
     total_tilt_deg = min(total_tilt_deg, 80.0)
-    
+
     cos_tilt = np.cos(np.radians(total_tilt_deg))
-    
-    return cos_tilt, total_tilt_deg
+
+    return cos_tilt, total_tilt_deg, is_local
 
 
 # =============================================================================
@@ -1830,16 +1980,22 @@ def process_detections_with_size(
     k_method_estimates = []
     max_workers = min(os.cpu_count() or 4, len(tracks_for_k_method) or 1)
 
+    # Причины отказа методов копим по трекам и дописываем в warnings итоговой
+    # оценки: сам отклонённый метод возвращает None и своих warnings не имеет.
+    fallback_reasons: Dict[Any, List[str]] = {}
+
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_process_track_k_method, tdf): tdf
                    for tdf in tracks_for_k_method}
         for future in as_completed(futures):
-            estimate = future.result()
+            estimate, reasons = future.result()
+            tdf = futures[future]
+            track_id = tdf['track_id'].iloc[0]
+            if reasons:
+                fallback_reasons.setdefault(track_id, []).extend(reasons)
             if estimate is not None:
                 k_method_estimates.append(estimate)
             else:
-                tdf = futures[future]
-                track_id = tdf['track_id'].iloc[0]
                 tracks_after_k.append((track_id, tdf))
 
     if verbose:
@@ -1855,11 +2011,13 @@ def process_detections_with_size(
 
     if has_parallax_data:
         for track_id, track_df in tracks_after_k:
-            estimate = estimate_size_by_parallax(
+            estimate, reasons = estimate_size_by_parallax(
                 track_df, calibration, geometry_df,
                 frame_width=frame_width, frame_height=frame_height,
                 min_track_points=min_track_points,
             )
+            if reasons:
+                fallback_reasons.setdefault(track_id, []).extend(reasons)
             if estimate is not None:
                 parallax_estimates.append(estimate)
             else:
@@ -1885,7 +2043,13 @@ def process_detections_with_size(
     # Объединяем все оценки
     all_estimates = (fixed_estimates + k_method_estimates
                      + parallax_estimates + typical_estimates)
-    
+
+    # Дописываем причины отказа предыдущих методов в warnings итоговой оценки
+    for estimate in all_estimates:
+        reasons = fallback_reasons.get(estimate.track_id)
+        if reasons:
+            estimate.warnings = list(estimate.warnings) + reasons
+
     if verbose:
         print(f"\nВсего треков с оценкой: {len(all_estimates)}")
     
