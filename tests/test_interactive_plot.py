@@ -67,6 +67,20 @@ class InteractivePlotTests(unittest.TestCase):
         self.assertEqual(figure.layout.yaxis.minor.tick0, 0)
         self.assertEqual(figure.layout.yaxis.minor.dtick, 10)
 
+    def test_depth_axis_starts_at_lower_multiple_of_ten(self):
+        with patch.object(
+            interactive_plot.go.Figure, "write_html", autospec=True
+        ) as write_html:
+            interactive_plot.create_interactive_depth_plot(
+                track_sizes_path=str(self.track_path),
+                output_path=str(self.output_path),
+            )
+
+        figure = write_html.call_args.args[0]
+        self.assertEqual(tuple(figure.layout.yaxis.range), (50.0, 10.0))
+        self.assertEqual(figure.layout.yaxis.dtick, 10)
+        self.assertEqual(figure.layout.yaxis.minor.dtick, 5)
+
     def test_ctd_axis_visibility_is_linked_to_legend_trace(self):
         figure, options = self._create_plot()
         ctd_trace = next(trace for trace in figure.data if trace.meta["role"] == "ctd")

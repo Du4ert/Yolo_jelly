@@ -290,8 +290,10 @@ def create_interactive_depth_plot(
         column_widths=col_widths,
     )
 
-    depth_min = 0.0
+    depth_min = float(np.floor(depth_min / 10.0) * 10.0)
     depth_max = float(np.ceil(max(depth_max, depth_bin, 10.0) / 10.0) * 10.0)
+    depth_major_tick = 10 if depth_max - depth_min < 60 else 20
+    depth_minor_tick = depth_major_tick / 2
     grid_step = max((depth_max - depth_min) / 400, 0.05)
     depth_grid = np.arange(depth_min, depth_max + grid_step, grid_step)
     df_depth['marker_size'] = normalize_marker_sizes(df_depth['real_size_cm'])
@@ -673,10 +675,10 @@ def create_interactive_depth_plot(
         ticks='outside',
         tickmode='linear',
         tick0=0,
-        dtick=20,
+        dtick=depth_major_tick,
         minor=dict(
             tick0=0,
-            dtick=10,
+            dtick=depth_minor_tick,
             ticks='outside',
             ticklen=4,
             showgrid=False,
@@ -702,8 +704,8 @@ def create_interactive_depth_plot(
             ticks='',
             tickmode='linear',
             tick0=0,
-            dtick=20,
-            minor=dict(tick0=0, dtick=10, ticks='', showgrid=False),
+            dtick=depth_major_tick,
+            minor=dict(tick0=0, dtick=depth_minor_tick, ticks='', showgrid=False),
             showspikes=False,
             row=1,
             col=col,
