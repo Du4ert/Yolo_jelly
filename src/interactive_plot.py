@@ -8,6 +8,7 @@
 """
 
 import argparse
+import json
 import sys
 import pandas as pd
 import numpy as np
@@ -252,8 +253,8 @@ def create_interactive_depth_plot(
                     ctd_df[ctd_depth_col] = to_numeric_series(ctd_df[ctd_depth_col])
                     ctd_depth_values = ctd_df[ctd_depth_col].dropna()
                     if len(ctd_depth_values) > 0:
-                        depth_max = float(ctd_depth_values.max())
-                        depth_min = float(ctd_depth_values.min())
+                        depth_max = max(depth_max, float(ctd_depth_values.max()))
+                        depth_min = min(depth_min, float(ctd_depth_values.min()))
                         print(f"CTD колонки: {ctd_col_names}")
                         if ctd_temperature_col:
                             thermocline = calculate_thermocline_depth(
@@ -289,7 +290,8 @@ def create_interactive_depth_plot(
         column_widths=col_widths,
     )
 
-    depth_max = max(depth_max, depth_min + depth_bin)
+    depth_min = 0.0
+    depth_max = float(np.ceil(max(depth_max, depth_bin, 10.0) / 10.0) * 10.0)
     grid_step = max((depth_max - depth_min) / 400, 0.05)
     depth_grid = np.arange(depth_min, depth_max + grid_step, grid_step)
     df_depth['marker_size'] = normalize_marker_sizes(df_depth['real_size_cm'])
@@ -358,8 +360,8 @@ def create_interactive_depth_plot(
     current_col = 1
     plot_domain_bottom = 0.0
     ctd_trace_count = 0
+    ctd_visibility_configs = []
     thermocline_trace_indices = []
-    temperature_trace_index = None
     thermocline_color = 'rgba(0,0,0,0.65)'
     if has_ctd_panel:
         first_ctd_trace = True
@@ -391,6 +393,7 @@ def create_interactive_depth_plot(
                 tickvals = [value_min]
             axis_num = None if i == 0 else n_panels + i
             trace_axis = None if axis_num is None else f"x{axis_num}"
+            axis_layout_key = "xaxis" if axis_num is None else f"xaxis{axis_num}"
             hover_text = [
                 f"<b>{col_name}</b><br>Глубина: {d:.2f} м<br>Значение: {v:.3f}"
                 for d, v in zip(depths, values)
@@ -407,7 +410,10 @@ def create_interactive_depth_plot(
                 hovertemplate="%{text}<extra></extra>",
                 text=hover_text,
                 showlegend=True,
-                meta=dict(role='temperature_ctd') if col_name == ctd_temperature_col else None,
+                meta=dict(
+                    role='ctd',
+                    axis_layout_key=axis_layout_key,
+                ),
             )
             if trace_axis:
                 trace.update(xaxis=trace_axis, yaxis='y')
@@ -415,7 +421,6 @@ def create_interactive_depth_plot(
             else:
                 fig.add_trace(trace, row=1, col=current_col)
             if col_name == ctd_temperature_col:
-                temperature_trace_index = len(fig.data) - 1
                 thermocline_color = CTD_COLORS[i % len(CTD_COLORS)]
 
             ctd_axis_configs.append({
@@ -425,6 +430,8 @@ def create_interactive_depth_plot(
                 'range': axis_range,
                 'tickvals': tickvals,
                 'ticktext': [f"{v:.2g}" for v in tickvals],
+                'trace_index': len(fig.data) - 1,
+                'axis_layout_key': axis_layout_key,
             })
             first_ctd_trace = False
             ctd_trace_count += 1
@@ -443,7 +450,7 @@ def create_interactive_depth_plot(
                     f"Режим: {'максимальный' if thermocline_mode == 'maximum' else 'порог'}<br>"
                     f"Порог: {thermocline_threshold:.2f} °C/м<extra></extra>"
                 ),
-                showlegend=False,
+                showlegend=True,
                 meta=dict(role='thermocline'),
             ), row=1, col=current_col)
             thermocline_trace_indices.append(len(fig.data) - 1)
@@ -487,6 +494,7 @@ def create_interactive_depth_plot(
                 side='bottom',
                 position=axis_position,
             )
+            annotation_index = len(annotations)
             annotations.append(dict(
                 x=0,
                 y=axis_position,
@@ -499,6 +507,11 @@ def create_interactive_depth_plot(
                 font=dict(size=9, color=axis_config['color']),
                 xshift=-6,
             ))
+            ctd_visibility_configs.append({
+                'traceIndex': axis_config['trace_index'],
+                'axisKey': axis_config['axis_layout_key'],
+                'annotationIndex': annotation_index,
+            })
             if axis_config['axis_num'] is None:
                 fig.update_xaxes(axis_layout, row=1, col=current_col)
             else:
@@ -658,8 +671,16 @@ def create_interactive_depth_plot(
         showline=True,
         linecolor='black',
         ticks='outside',
-        tickmode='array',
-        tickvals=axis_ticks(depth_min, depth_max, 6),
+        tickmode='linear',
+        tick0=0,
+        dtick=20,
+        minor=dict(
+            tick0=0,
+            dtick=10,
+            ticks='outside',
+            ticklen=4,
+            showgrid=False,
+        ),
         showspikes=True,
         spikemode='across',
         spikesnap='cursor',
@@ -679,6 +700,10 @@ def create_interactive_depth_plot(
             title_text='',
             showline=False,
             ticks='',
+            tickmode='linear',
+            tick0=0,
+            dtick=20,
+            minor=dict(tick0=0, dtick=10, ticks='', showgrid=False),
             showspikes=False,
             row=1,
             col=col,
@@ -722,8 +747,9 @@ def create_interactive_depth_plot(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     hoverline_post_script = """
     var plot = document.getElementById('{plot_id}');
-    var temperatureTraceIndex = __TEMPERATURE_TRACE_INDEX__;
+    var ctdVisibilityConfigs = __CTD_VISIBILITY_CONFIGS__;
     var thermoclineTraceIndices = __THERMOCLINE_TRACE_INDICES__;
+    var syncingThermocline = false;
     var horizontalHoverLine = {
         type: 'line',
         xref: 'paper',
@@ -767,32 +793,83 @@ def create_interactive_depth_plot(
     plot.on('plotly_unhover', function() {
         Plotly.relayout(plot, {shapes: []});
     });
-    function syncThermoclineVisibility() {
-        if (temperatureTraceIndex === null || thermoclineTraceIndices.length === 0) {
-            return;
-        }
-        var tempTrace = plot.data[temperatureTraceIndex];
-        var visible = !(tempTrace && (tempTrace.visible === false || tempTrace.visible === 'legendonly'));
-        thermoclineTraceIndices.forEach(function(traceIndex) {
-            var trace = plot.data[traceIndex];
-            if (!trace) {
+    function traceIsVisible(trace) {
+        return !(trace && (trace.visible === false || trace.visible === 'legendonly'));
+    }
+    function syncCtdAxes(traceIndices) {
+        var layoutUpdate = {};
+        ctdVisibilityConfigs.forEach(function(config) {
+            if (traceIndices && traceIndices.indexOf(config.traceIndex) === -1) {
                 return;
             }
-            var targetVisible = visible ? true : 'legendonly';
-            if (trace.visible !== targetVisible) {
-                Plotly.restyle(plot, {visible: targetVisible}, [traceIndex]);
-            }
+            var visible = traceIsVisible(plot.data[config.traceIndex]);
+            layoutUpdate[config.axisKey + '.visible'] = visible;
+            layoutUpdate['annotations[' + config.annotationIndex + '].visible'] = visible;
+        });
+        if (Object.keys(layoutUpdate).length) {
+            Plotly.relayout(plot, layoutUpdate);
+        }
+    }
+    function syncThermoclineVisibility(traceIndices) {
+        if (syncingThermocline || thermoclineTraceIndices.length === 0) {
+            return;
+        }
+        var sourceIndex = thermoclineTraceIndices.find(function(traceIndex) {
+            return traceIndices && traceIndices.indexOf(traceIndex) !== -1;
+        });
+        if (sourceIndex === undefined) {
+            return;
+        }
+        var targetVisible = traceIsVisible(plot.data[sourceIndex]) ? true : 'legendonly';
+        var targetIndices = thermoclineTraceIndices.filter(function(traceIndex) {
+            return traceIndex !== sourceIndex && plot.data[traceIndex].visible !== targetVisible;
+        });
+        if (!targetIndices.length) {
+            return;
+        }
+        syncingThermocline = true;
+        Plotly.restyle(plot, {visible: targetVisible}, targetIndices).then(function() {
+            syncingThermocline = false;
         });
     }
-    plot.on('plotly_restyle', function() {
-        window.setTimeout(syncThermoclineVisibility, 0);
+    plot.on('plotly_restyle', function(eventData, emittedTraceIndices) {
+        var traceIndices = emittedTraceIndices;
+        if (!Array.isArray(traceIndices) && Array.isArray(eventData)) {
+            traceIndices = eventData[1];
+        }
+        if (!Array.isArray(traceIndices)) {
+            traceIndices = [];
+        }
+        window.setTimeout(function() {
+            syncCtdAxes(traceIndices);
+            syncThermoclineVisibility(traceIndices);
+        }, 0);
     });
-    syncThermoclineVisibility();
+    syncCtdAxes(null);
+
+    var printStyle = document.createElement('style');
+    printStyle.textContent = '@media print {' +
+        '.plotly-pdf-button, .modebar-container { display: none !important; }' +
+        'body { margin: 0; }' +
+        '}';
+    document.head.appendChild(printStyle);
+    var pdfButton = document.createElement('button');
+    pdfButton.type = 'button';
+    pdfButton.className = 'plotly-pdf-button';
+    pdfButton.textContent = 'PDF';
+    pdfButton.title = 'Печать или сохранение в PDF';
+    pdfButton.style.cssText = 'position:fixed;top:48px;right:12px;z-index:1000;' +
+        'padding:6px 12px;border:1px solid #777;border-radius:3px;' +
+        'background:white;color:#222;font:12px Arial,sans-serif;cursor:pointer;';
+    pdfButton.addEventListener('click', function() {
+        window.print();
+    });
+    document.body.appendChild(pdfButton);
     """
     hoverline_post_script = hoverline_post_script.replace(
-        "__TEMPERATURE_TRACE_INDEX__",
-        "null" if temperature_trace_index is None else str(temperature_trace_index),
-    ).replace("__THERMOCLINE_TRACE_INDICES__", str(thermocline_trace_indices))
+        "__CTD_VISIBILITY_CONFIGS__",
+        json.dumps(ctd_visibility_configs),
+    ).replace("__THERMOCLINE_TRACE_INDICES__", json.dumps(thermocline_trace_indices))
     
     if export_format == "html":
         fig.write_html(
