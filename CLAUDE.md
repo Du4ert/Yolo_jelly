@@ -367,7 +367,14 @@ GoPro Wide 156° FOV introduces radial distortion (objects appear larger at fram
 
 ## Testing & Quality Control
 
-**No formal test suite** - validation via:
+**Automated testing policy:**
+- Existing unittest tests are retained, but must not be created, modified, or
+  run unless the user explicitly requests it.
+- When requested, run only the smallest relevant test subset. Run the full
+  suite only when separately and explicitly requested.
+- For normal changes, inspect the code and diff without running tests.
+
+Manual and model validation uses:
 1. Training metrics: `runs/train/<name>/results.png` (mAP, precision, recall)
 2. Visual QC: Output videos with bounding boxes + track IDs
 3. Size validation: Compare `track_sizes.csv` against manual measurements
