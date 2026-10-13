@@ -851,16 +851,32 @@ def create_interactive_depth_plot(
 
     var printStyle = document.createElement('style');
     printStyle.textContent = '@media print {' +
-        '.plotly-pdf-button, .modebar-container { display: none !important; }' +
+        '.plotly-export-button, .modebar-container { display: none !important; }' +
         'body { margin: 0; }' +
         '}';
     document.head.appendChild(printStyle);
+    var pngButton = document.createElement('button');
+    pngButton.type = 'button';
+    pngButton.className = 'plotly-export-button';
+    pngButton.textContent = 'PNG';
+    pngButton.title = 'Сохранить текущее состояние графика в PNG';
+    pngButton.style.cssText = 'position:fixed;top:48px;right:12px;z-index:1000;' +
+        'padding:6px 12px;border:1px solid #777;border-radius:3px;' +
+        'background:white;color:#222;font:12px Arial,sans-serif;cursor:pointer;';
+    pngButton.addEventListener('click', function() {
+        Plotly.downloadImage(plot, {
+            format: 'png',
+            filename: __PNG_FILENAME__,
+            scale: 2
+        });
+    });
+    document.body.appendChild(pngButton);
     var pdfButton = document.createElement('button');
     pdfButton.type = 'button';
-    pdfButton.className = 'plotly-pdf-button';
+    pdfButton.className = 'plotly-export-button';
     pdfButton.textContent = 'PDF';
     pdfButton.title = 'Печать или сохранение в PDF';
-    pdfButton.style.cssText = 'position:fixed;top:48px;right:12px;z-index:1000;' +
+    pdfButton.style.cssText = 'position:fixed;top:84px;right:12px;z-index:1000;' +
         'padding:6px 12px;border:1px solid #777;border-radius:3px;' +
         'background:white;color:#222;font:12px Arial,sans-serif;cursor:pointer;';
     pdfButton.addEventListener('click', function() {
@@ -871,7 +887,10 @@ def create_interactive_depth_plot(
     hoverline_post_script = hoverline_post_script.replace(
         "__CTD_VISIBILITY_CONFIGS__",
         json.dumps(ctd_visibility_configs),
-    ).replace("__THERMOCLINE_TRACE_INDICES__", json.dumps(thermocline_trace_indices))
+    ).replace(
+        "__THERMOCLINE_TRACE_INDICES__",
+        json.dumps(thermocline_trace_indices),
+    ).replace("__PNG_FILENAME__", json.dumps(output_path.stem))
     
     if export_format == "html":
         fig.write_html(

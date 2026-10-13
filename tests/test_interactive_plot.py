@@ -104,10 +104,14 @@ class InteractivePlotTests(unittest.TestCase):
         self.assertIn("traceIndices = eventData[1]", options["post_script"])
         self.assertNotIn("temperatureTraceIndex", options["post_script"])
 
-    def test_html_has_svg_export_and_pdf_print_button(self):
+    def test_html_has_svg_png_and_pdf_exports(self):
         _, options = self._create_plot()
 
         self.assertEqual(options["config"]["toImageButtonOptions"]["format"], "svg")
+        self.assertIn("pngButton.textContent = 'PNG'", options["post_script"])
+        self.assertIn("Plotly.downloadImage(plot", options["post_script"])
+        self.assertIn("format: 'png'", options["post_script"])
+        self.assertIn('filename: "depth_plot"', options["post_script"])
         self.assertIn("pdfButton.textContent = 'PDF'", options["post_script"])
         self.assertIn("window.print()", options["post_script"])
 
