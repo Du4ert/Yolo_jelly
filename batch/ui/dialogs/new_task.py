@@ -493,6 +493,7 @@ class NewTaskDialog(QDialog):
                 "ctd_columns": self.pp_edit_ctd_columns.text().strip() or "6,11,12,16",
                 "thermocline_threshold": self.pp_spin_thermocline_threshold.value(),
                 "thermocline_mode": self.pp_combo_thermocline_mode.currentData(),
+                "density_levels": self.pp_edit_density_levels.text().strip(),
                 "frame_step": self.pp_spin_frame_step.value(),
             }
             try:
@@ -683,6 +684,20 @@ class NewTaskDialog(QDialog):
         thermocline_indent_layout.addStretch()
         layout.addWidget(thermocline_indent)
         self._on_thermocline_mode_changed()
+
+        density_indent = QWidget()
+        density_indent_layout = QHBoxLayout(density_indent)
+        density_indent_layout.setContentsMargins(20, 0, 0, 0)
+        density_indent_layout.addWidget(QLabel("Слои плотности SigmaT:"))
+        self.pp_edit_density_levels = QLineEdit("14.5, 15.5, 16.2")
+        self.pp_edit_density_levels.setMaximumWidth(180)
+        self.pp_edit_density_levels.setToolTip(
+            "Значения SigmaT через запятую. Глубины определяются по CTD-колонке 11.\n"
+            "Пустое поле отключает слои плотности."
+        )
+        density_indent_layout.addWidget(self.pp_edit_density_levels)
+        density_indent_layout.addStretch()
+        layout.addWidget(density_indent)
 
         # === Параметры ===
         params_label = QLabel("Параметры:")

@@ -159,6 +159,41 @@ def calculate_thermocline_depth(
     return float(segment_depths[strongest]), float(gradient_abs[strongest])
 
 
+def calculate_density_layer_depths(
+    ctd_df: pd.DataFrame,
+    depth_col: str,
+    sigma_t_col: str,
+    levels: List[float],
+) -> List[Tuple[float, float]]:
+    """Возвращает первое при погружении пересечение каждого уровня SigmaT."""
+    profile = ctd_df[[depth_col, sigma_t_col]].copy()
+    profile[depth_col] = to_numeric_series(profile[depth_col])
+    profile[sigma_t_col] = to_numeric_series(profile[sigma_t_col])
+    profile = profile.dropna().sort_values(depth_col)
+
+    depths = profile[depth_col].to_numpy(dtype=float)
+    sigma_t = profile[sigma_t_col].to_numpy(dtype=float)
+    if len(depths) == 0:
+        return []
+
+    layers = []
+    for level in dict.fromkeys(float(value) for value in levels if np.isfinite(value)):
+        exact = np.where(sigma_t == level)[0]
+        if len(exact) > 0:
+            layers.append((level, float(depths[exact[0]])))
+            continue
+
+        crossings = np.where((sigma_t[:-1] - level) * (sigma_t[1:] - level) < 0)[0]
+        if len(crossings) == 0:
+            continue
+
+        index = int(crossings[0])
+        fraction = (level - sigma_t[index]) / (sigma_t[index + 1] - sigma_t[index])
+        depth = depths[index] + fraction * (depths[index + 1] - depths[index])
+        layers.append((level, float(depth)))
+    return layers
+
+
 def create_interactive_depth_plot(
     track_sizes_path: str,
     output_path: str,
@@ -169,6 +204,7 @@ def create_interactive_depth_plot(
     pleurobrachia_cross_section_area_m2: Optional[float] = None,
     thermocline_threshold: float = 0.2,
     thermocline_mode: str = "threshold",
+    density_levels: Optional[List[float]] = None,
     title: str = "Распределение желетелых по глубине",
     export_format: str = "html"
 ):
@@ -190,6 +226,7 @@ def create_interactive_depth_plot(
         pleurobrachia_cross_section_area_m2: отдельная площадь сечения P. pileus (м²)
         thermocline_threshold: порог величины температурного градиента для термоклина (°C/м)
         thermocline_mode: режим термоклина (threshold, maximum, off)
+        density_levels: значения SigmaT для отметки слоёв плотности
         title: заголовок графика
         export_format: формат экспорта (html, svg, pdf, png)
     """
@@ -233,28 +270,35 @@ def create_interactive_depth_plot(
     ctd_depth_col = None
     ctd_depth_values = pd.Series(dtype=float)
     ctd_temperature_col = None
+    ctd_sigma_t_col = None
     thermocline_depth = None
     thermocline_gradient = None
+    density_layers = []
+    density_levels = [14.5, 15.5, 16.2] if density_levels is None else density_levels
     
-    if ctd_path and ctd_columns:
+    if ctd_path:
         try:
             ctd_df = load_ctd_data(ctd_path)
             ctd_depth_col = find_depth_column(ctd_df)
             
             if ctd_depth_col:
                 all_cols = list(ctd_df.columns)
-                for idx in ctd_columns:
+                if len(all_cols) > 11:
+                    ctd_sigma_t_col = all_cols[11]
+                for idx in ctd_columns or []:
                     if 0 <= idx < len(all_cols):
                         ctd_col_names.append(all_cols[idx])
                         if idx == 6:
                             ctd_temperature_col = all_cols[idx]
-                
+
+                ctd_df[ctd_depth_col] = to_numeric_series(ctd_df[ctd_depth_col])
+                ctd_depth_values = ctd_df[ctd_depth_col].dropna()
+                if len(ctd_depth_values) > 0:
+                    depth_max = max(depth_max, float(ctd_depth_values.max()))
+                    depth_min = min(depth_min, float(ctd_depth_values.min()))
+
                 if ctd_col_names:
-                    ctd_df[ctd_depth_col] = to_numeric_series(ctd_df[ctd_depth_col])
-                    ctd_depth_values = ctd_df[ctd_depth_col].dropna()
                     if len(ctd_depth_values) > 0:
-                        depth_max = max(depth_max, float(ctd_depth_values.max()))
-                        depth_min = min(depth_min, float(ctd_depth_values.min()))
                         print(f"CTD колонки: {ctd_col_names}")
                         if ctd_temperature_col:
                             thermocline = calculate_thermocline_depth(
@@ -273,6 +317,15 @@ def create_interactive_depth_plot(
                                 )
                     else:
                         ctd_col_names = []
+                if density_levels and ctd_sigma_t_col:
+                    density_layers = calculate_density_layer_depths(
+                        ctd_df,
+                        ctd_depth_col,
+                        ctd_sigma_t_col,
+                        density_levels,
+                    )
+                    for level, depth in density_layers:
+                        print(f"Слой SigmaT {level:g}: {depth:.2f} м")
         except Exception as e:
             print(f"Предупреждение: не удалось загрузить CTD: {e}")
             ctd_df = None
@@ -364,7 +417,11 @@ def create_interactive_depth_plot(
     ctd_trace_count = 0
     ctd_visibility_configs = []
     thermocline_trace_indices = []
+    density_layer_trace_groups = [[] for _ in density_layers]
+    density_layer_annotation_indices = []
+    density_layer_legend_shown = [False] * len(density_layers)
     thermocline_color = 'rgba(0,0,0,0.65)'
+    density_layer_color = CTD_COLORS[1]
     if has_ctd_panel:
         first_ctd_trace = True
         ctd_axis_configs = []
@@ -424,6 +481,8 @@ def create_interactive_depth_plot(
                 fig.add_trace(trace, row=1, col=current_col)
             if col_name == ctd_temperature_col:
                 thermocline_color = CTD_COLORS[i % len(CTD_COLORS)]
+            if col_name == ctd_sigma_t_col:
+                density_layer_color = CTD_COLORS[i % len(CTD_COLORS)]
 
             ctd_axis_configs.append({
                 'axis_num': axis_num,
@@ -456,6 +515,25 @@ def create_interactive_depth_plot(
                 meta=dict(role='thermocline'),
             ), row=1, col=current_col)
             thermocline_trace_indices.append(len(fig.data) - 1)
+
+        if ctd_axis_configs:
+            for layer_index, (level, layer_depth) in enumerate(density_layers):
+                fig.add_trace(go.Scatter(
+                    x=ctd_axis_configs[0]['range'],
+                    y=[layer_depth, layer_depth],
+                    mode='lines',
+                    name=f"SigmaT {level:g}: {layer_depth:.2f} м",
+                    legendgroup=f"density-layer-{layer_index}",
+                    line=dict(color=density_layer_color, width=1.5, dash='dot'),
+                    hovertemplate=(
+                        f"Слой плотности<br>SigmaT: {level:g}<br>"
+                        f"Глубина: {layer_depth:.2f} м<extra></extra>"
+                    ),
+                    showlegend=True,
+                    meta=dict(role='density_layer', level=level),
+                ), row=1, col=current_col)
+                density_layer_trace_groups[layer_index].append(len(fig.data) - 1)
+                density_layer_legend_shown[layer_index] = True
 
         if ctd_trace_count == 0:
             annotations.append(dict(
@@ -520,6 +598,25 @@ def create_interactive_depth_plot(
                 axis_layout.update(domain=ctd_domain, overlaying='x')
                 fig.update_layout({f"xaxis{axis_config['axis_num']}": axis_layout})
         current_col += 1
+
+    for level, layer_depth in density_layers:
+        density_layer_annotation_indices.append(len(annotations))
+        annotations.append(dict(
+            x=0,
+            y=layer_depth,
+            xref='paper',
+            yref='y',
+            text=f"<b>{layer_depth:.2f} м | SigmaT {level:g}</b>",
+            showarrow=False,
+            xanchor='left',
+            yanchor='middle',
+            xshift=5,
+            font=dict(size=9, color=density_layer_color),
+            bgcolor='rgba(255,255,255,0.78)',
+            bordercolor=density_layer_color,
+            borderwidth=1,
+            borderpad=2,
+        ))
 
     np.random.seed(42)
     for species in species_list:
@@ -630,6 +727,24 @@ def create_interactive_depth_plot(
                 meta=dict(role='thermocline'),
             ), row=1, col=current_col)
             thermocline_trace_indices.append(len(fig.data) - 1)
+
+        for layer_index, (level, layer_depth) in enumerate(density_layers):
+            fig.add_trace(go.Scatter(
+                x=[-density_max * 0.62, density_max * 0.62],
+                y=[layer_depth, layer_depth],
+                mode='lines',
+                name=f"SigmaT {level:g}: {layer_depth:.2f} м",
+                legendgroup=f"density-layer-{layer_index}",
+                line=dict(color=density_layer_color, width=1.5, dash='dot'),
+                hovertemplate=(
+                    f"Слой плотности<br>SigmaT: {level:g}<br>"
+                    f"Глубина: {layer_depth:.2f} м<extra></extra>"
+                ),
+                showlegend=not density_layer_legend_shown[layer_index],
+                meta=dict(role='density_layer', level=level),
+            ), row=1, col=current_col)
+            density_layer_trace_groups[layer_index].append(len(fig.data) - 1)
+            density_layer_legend_shown[layer_index] = True
 
         fig.update_xaxes(
             title_text=kde_axis_title,
@@ -751,7 +866,10 @@ def create_interactive_depth_plot(
     var plot = document.getElementById('{plot_id}');
     var ctdVisibilityConfigs = __CTD_VISIBILITY_CONFIGS__;
     var thermoclineTraceIndices = __THERMOCLINE_TRACE_INDICES__;
+    var densityLayerTraceGroups = __DENSITY_LAYER_TRACE_GROUPS__;
+    var densityLayerAnnotationIndices = __DENSITY_LAYER_ANNOTATION_INDICES__;
     var syncingThermocline = false;
+    var syncingDensityLayers = false;
     var horizontalHoverLine = {
         type: 'line',
         xref: 'paper',
@@ -834,6 +952,36 @@ def create_interactive_depth_plot(
             syncingThermocline = false;
         });
     }
+    function syncDensityLayerVisibility(traceIndices) {
+        if (syncingDensityLayers) {
+            return;
+        }
+        densityLayerTraceGroups.some(function(group, groupIndex) {
+            var sourceIndex = group.find(function(traceIndex) {
+                return traceIndices && traceIndices.indexOf(traceIndex) !== -1;
+            });
+            if (sourceIndex === undefined) {
+                return false;
+            }
+            var targetVisible = traceIsVisible(plot.data[sourceIndex]) ? true : 'legendonly';
+            var annotationIndex = densityLayerAnnotationIndices[groupIndex];
+            if (annotationIndex !== undefined) {
+                var annotationUpdate = {};
+                annotationUpdate['annotations[' + annotationIndex + '].visible'] = targetVisible === true;
+                Plotly.relayout(plot, annotationUpdate);
+            }
+            var targetIndices = group.filter(function(traceIndex) {
+                return traceIndex !== sourceIndex && plot.data[traceIndex].visible !== targetVisible;
+            });
+            if (targetIndices.length) {
+                syncingDensityLayers = true;
+                Plotly.restyle(plot, {visible: targetVisible}, targetIndices).then(function() {
+                    syncingDensityLayers = false;
+                });
+            }
+            return true;
+        });
+    }
     plot.on('plotly_restyle', function(eventData, emittedTraceIndices) {
         var traceIndices = emittedTraceIndices;
         if (!Array.isArray(traceIndices) && Array.isArray(eventData)) {
@@ -845,6 +993,7 @@ def create_interactive_depth_plot(
         window.setTimeout(function() {
             syncCtdAxes(traceIndices);
             syncThermoclineVisibility(traceIndices);
+            syncDensityLayerVisibility(traceIndices);
         }, 0);
     });
     syncCtdAxes(null);
@@ -890,6 +1039,12 @@ def create_interactive_depth_plot(
     ).replace(
         "__THERMOCLINE_TRACE_INDICES__",
         json.dumps(thermocline_trace_indices),
+    ).replace(
+        "__DENSITY_LAYER_TRACE_GROUPS__",
+        json.dumps(density_layer_trace_groups),
+    ).replace(
+        "__DENSITY_LAYER_ANNOTATION_INDICES__",
+        json.dumps(density_layer_annotation_indices),
     ).replace("__PNG_FILENAME__", json.dumps(output_path.stem))
     
     if export_format == "html":
@@ -950,6 +1105,17 @@ def parse_ctd_columns(value: str) -> List[int]:
     return [int(p.strip()) for p in value.split(',') if p.strip().isdigit()]
 
 
+def parse_density_levels(value: str) -> List[float]:
+    """Парсит строку со значениями SigmaT, пропуская некорректные элементы."""
+    levels = []
+    for part in (value or '').split(','):
+        try:
+            levels.append(float(part.strip()))
+        except ValueError:
+            continue
+    return levels
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Интерактивная визуализация распределения желетелых по глубине",
@@ -996,6 +1162,7 @@ def main():
                         help="Отдельная площадь сечения P. pileus, м²")
     parser.add_argument("--thermocline-threshold", type=float, default=0.2, help="Порог термоклина, °C/м")
     parser.add_argument("--thermocline-mode", choices=["threshold", "maximum", "off"], default="threshold", help="Режим термоклина")
+    parser.add_argument("--density-levels", default="14.5,15.5,16.2", help="Уровни SigmaT через запятую")
     parser.add_argument("--list-ctd-columns", action="store_true", help="Показать колонки CTD")
     
     args = parser.parse_args()
@@ -1033,6 +1200,7 @@ def main():
             ),
             thermocline_threshold=args.thermocline_threshold,
             thermocline_mode=args.thermocline_mode,
+            density_levels=parse_density_levels(args.density_levels),
             title=args.title,
             export_format=args.format
         )

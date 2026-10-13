@@ -237,6 +237,19 @@ class PostProcessDialog(QDialog):
         ops_layout.addLayout(thermocline_row)
         self._on_thermocline_mode_changed()
 
+        density_row = QHBoxLayout()
+        density_row.setContentsMargins(40, 0, 0, 0)
+        density_row.addWidget(QLabel("Слои плотности SigmaT:"))
+        self.edit_density_levels = QLineEdit("14.5, 15.5, 16.2")
+        self.edit_density_levels.setMaximumWidth(180)
+        self.edit_density_levels.setToolTip(
+            "Значения SigmaT через запятую. Глубины определяются по CTD-колонке 11.\n"
+            "Пустое поле отключает слои плотности."
+        )
+        density_row.addWidget(self.edit_density_levels)
+        density_row.addStretch()
+        ops_layout.addLayout(density_row)
+
         layout.addWidget(ops_group)
 
         # === Общие параметры ===
@@ -839,6 +852,7 @@ class PostProcessDialog(QDialog):
             "ctd_columns": self.edit_ctd_columns.text().strip() or "6,11,12,16",
             "thermocline_threshold": self.spin_thermocline_threshold.value(),
             "thermocline_mode": self.combo_thermocline_mode.currentData(),
+            "density_levels": self.edit_density_levels.text().strip(),
         }
         try:
             calib_path = get_config().ui.calibration_json

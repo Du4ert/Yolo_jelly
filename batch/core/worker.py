@@ -607,6 +607,19 @@ class Worker(QThread):
         else:
             ctd_columns = [6, 11, 12, 16]
 
+        density_levels_raw = params.get("density_levels", "14.5,15.5,16.2")
+        if isinstance(density_levels_raw, list):
+            density_levels = [float(x) for x in density_levels_raw]
+        elif isinstance(density_levels_raw, str) and density_levels_raw.strip():
+            density_levels = []
+            for value in density_levels_raw.split(','):
+                try:
+                    density_levels.append(float(value.strip()))
+                except ValueError:
+                    continue
+        else:
+            density_levels = []
+
         processor = AnalyzeProcessor()
         result = processor.process(
             csv_path=input_csv,
@@ -624,6 +637,7 @@ class Worker(QThread):
             ),
             thermocline_threshold=params.get("thermocline_threshold", 0.2),
             thermocline_mode=params.get("thermocline_mode", "threshold"),
+            density_levels=density_levels,
         )
 
         if not result.success:
@@ -690,6 +704,7 @@ class Worker(QThread):
                 'depth_bin': current_params.get('depth_bin', 2.0),
                 'thermocline_threshold': current_params.get('thermocline_threshold', 0.2),
                 'thermocline_mode': current_params.get('thermocline_mode', 'threshold'),
+                'density_levels': current_params.get('density_levels', '14.5,15.5,16.2'),
             }
             processing_info['postprocess_params'] = postprocess_params
             
@@ -980,6 +995,7 @@ class Worker(QThread):
             "depth_bin": params.get("depth_bin", 2.0),
             "thermocline_threshold": params.get("thermocline_threshold", 0.2),
             "thermocline_mode": params.get("thermocline_mode", "threshold"),
+            "density_levels": params.get("density_levels", "14.5,15.5,16.2"),
         }
         if params.get("calibration_json"):
             common_params["calibration_json"] = params.get("calibration_json")

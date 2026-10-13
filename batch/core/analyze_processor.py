@@ -76,6 +76,7 @@ class AnalyzeProcessor:
         pleurobrachia_cross_section_area_m2: Optional[float] = None,
         thermocline_threshold: float = 0.2,
         thermocline_mode: str = "threshold",
+        density_levels: Optional[List[float]] = None,
     ) -> AnalyzeResult:
         """
         Запускает анализ данных.
@@ -210,6 +211,7 @@ class AnalyzeProcessor:
                         ),
                         thermocline_threshold=thermocline_threshold,
                         thermocline_mode=thermocline_mode,
+                        density_levels=density_levels,
                     )
                     html_path = Path(ip_path).with_suffix('.html')
                     if html_path.exists():
