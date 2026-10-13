@@ -714,6 +714,10 @@ class TaskTable(QWidget):
         action_export_tracks.triggered.connect(
             lambda: self._export_expedition_tracks(catalog_id)
         )
+        action_export_layers = menu.addAction("▤ Экспорт слоёв экспедиции")
+        action_export_layers.triggered.connect(
+            lambda: self._export_expedition_layers(catalog_id)
+        )
         menu.exec(self.tree.viewport().mapToGlobal(position))
 
     def _export_expedition_data(self, catalog_id: int):
@@ -723,6 +727,10 @@ class TaskTable(QWidget):
     def _export_expedition_tracks(self, catalog_id: int):
         from ..dialogs.expedition_export_dialog import export_expedition_tracks
         export_expedition_tracks(self, self.repo, catalog_id)
+
+    def _export_expedition_layers(self, catalog_id: int):
+        from ..dialogs.expedition_export_dialog import export_expedition_layers
+        export_expedition_layers(self, self.repo, catalog_id)
 
     def _retry_subtask(self, subtask_id: int):
         """Повторяет подзадачу."""

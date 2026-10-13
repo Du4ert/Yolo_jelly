@@ -97,3 +97,52 @@ def export_expedition_tracks(parent, repo, catalog_id: int) -> None:
             "Ошибка экспорта",
             f"Не удалось выполнить экспорт треков:\n{e}",
         )
+
+
+def export_expedition_layers(parent, repo, catalog_id: int) -> None:
+    catalog = repo.get_catalog(catalog_id)
+    if not catalog:
+        return
+
+    default_name = f"{catalog.name}_layers.csv"
+    filepath, _ = QFileDialog.getSaveFileName(
+        parent,
+        f'Экспорт слоёв экспедиции «{catalog.name}»',
+        default_name,
+        "CSV (*.csv)",
+    )
+    if not filepath:
+        return
+
+    try:
+        from ...core.expedition_exporter import export_expedition_layers_csv
+
+        total, files_with_data, rows_count = export_expedition_layers_csv(
+            repo, catalog_id, filepath
+        )
+
+        if total == 0:
+            QMessageBox.information(
+                parent,
+                "Экспорт слоёв",
+                "В экспедиции нет завершённых задач.",
+            )
+        elif rows_count == 0:
+            QMessageBox.information(
+                parent,
+                "Экспорт слоёв",
+                "Не найдено файлов layers.csv для экспорта.",
+            )
+        else:
+            QMessageBox.information(
+                parent,
+                "Экспорт слоёв",
+                f"Экспортировано {rows_count} строк из "
+                f"{files_with_data} погружений в {filepath}",
+            )
+    except Exception as e:
+        QMessageBox.warning(
+            parent,
+            "Ошибка экспорта",
+            f"Не удалось выполнить экспорт слоёв:\n{e}",
+        )

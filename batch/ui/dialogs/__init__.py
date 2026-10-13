@@ -11,7 +11,11 @@ from .edit_dive import EditDiveDialog
 from .catalog_dialog import CatalogDialog
 from .postprocess_dialog import PostProcessDialog
 from .export_ls_dialog import ExportLabelStudioDialog
-from .expedition_export_dialog import export_expedition_data, export_expedition_tracks
+from .expedition_export_dialog import (
+    export_expedition_data,
+    export_expedition_layers,
+    export_expedition_tracks,
+)
 from .verify_dialog import VerifyDialog
 
 __all__ = [
@@ -26,5 +30,6 @@ __all__ = [
     "ExportLabelStudioDialog",
     "export_expedition_data",
     "export_expedition_tracks",
+    "export_expedition_layers",
     "VerifyDialog",
 ]

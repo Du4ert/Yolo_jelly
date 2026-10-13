@@ -60,6 +60,10 @@ for name in CLASS_NAMES.values():
     }
 
 CSV_COLUMNS = ["Id"] + list(VOLUME_FIELD_MAPPING.keys())
+LAYER_CSV_COLUMNS = [
+    "St", "Layer", "Dt", "Db", "Tav", "Sav", "Chlav",
+    "A_a", "M_l", "B_o", "R_p", "P_p",
+]
 
 
 def parse_volume_csv(filepath: str) -> dict[str, str]:
@@ -196,3 +200,76 @@ def export_expedition_tracks_csv(repo, catalog_id: int, output_path: str) -> tup
         writer.writerows(rows)
 
     return len(repo.get_tasks_by_catalog(catalog_id)), files_with_data, len(rows)
+
+
+def collect_expedition_layers(
+    repo,
+    catalog_id: int,
+) -> tuple[list[dict[str, Any]], list[str], int, int]:
+    """Собирает строки layers.csv, включая каждый файл погружения один раз."""
+    rows: list[dict[str, Any]] = []
+    columns = list(LAYER_CSV_COLUMNS)
+    files_with_data = 0
+    dive_ids: set[int] = set()
+
+    tasks = repo.get_tasks_by_catalog(catalog_id)
+    total_dive_ids = {
+        task.video_file.dive.id
+        for task in tasks
+        if task.video_file and task.video_file.dive
+    }
+
+    for task in tasks:
+        dive = task.video_file.dive if task.video_file else None
+        if not dive or dive.id in dive_ids:
+            continue
+
+        layer_output = repo.get_task_output_by_type(
+            task.id, OutputType.LAYER_DENSITY_CSV
+        )
+        layers_path = layer_output.filepath if layer_output else None
+        if not layers_path or not os.path.exists(layers_path):
+            candidate = Path(dive.folder_path) / "output" / "analysis" / "layers.csv"
+            if candidate.exists():
+                layers_path = str(candidate)
+
+        if not layers_path or not os.path.exists(layers_path):
+            continue
+
+        file_rows = []
+        with open(layers_path, "r", newline="", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f, delimiter=";")
+            if not reader.fieldnames:
+                continue
+
+            for field in reader.fieldnames:
+                if field not in columns:
+                    columns.append(field)
+            file_rows.extend(dict(source_row) for source_row in reader)
+
+        dive_ids.add(dive.id)
+        if file_rows:
+            files_with_data += 1
+            rows.extend(file_rows)
+
+    return rows, columns, files_with_data, len(total_dive_ids)
+
+
+def export_expedition_layers_csv(
+    repo,
+    catalog_id: int,
+    output_path: str,
+) -> tuple[int, int, int]:
+    """Объединяет layers.csv всех погружений экспедиции в один CSV."""
+    rows, columns, files_with_data, total_dives = collect_expedition_layers(
+        repo, catalog_id
+    )
+
+    with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(
+            f, fieldnames=columns, delimiter=";", extrasaction="ignore"
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return total_dives, files_with_data, len(rows)
