@@ -417,6 +417,7 @@ def create_interactive_depth_plot(
     ctd_trace_count = 0
     ctd_visibility_configs = []
     thermocline_trace_indices = []
+    thermocline_annotation_index = None
     density_layer_trace_groups = [[] for _ in density_layers]
     density_layer_annotation_indices = []
     density_layer_legend_shown = [False] * len(density_layers)
@@ -598,6 +599,25 @@ def create_interactive_depth_plot(
                 axis_layout.update(domain=ctd_domain, overlaying='x')
                 fig.update_layout({f"xaxis{axis_config['axis_num']}": axis_layout})
         current_col += 1
+
+    if thermocline_depth is not None:
+        thermocline_annotation_index = len(annotations)
+        annotations.append(dict(
+            x=0,
+            y=thermocline_depth,
+            xref='paper',
+            yref='y',
+            text=f"<b>{thermocline_depth:.2f} м | Термоклин</b>",
+            showarrow=False,
+            xanchor='left',
+            yanchor='middle',
+            xshift=5,
+            font=dict(size=9, color=thermocline_color),
+            bgcolor='rgba(255,255,255,0.78)',
+            bordercolor=thermocline_color,
+            borderwidth=1,
+            borderpad=2,
+        ))
 
     for level, layer_depth in density_layers:
         density_layer_annotation_indices.append(len(annotations))
@@ -866,10 +886,12 @@ def create_interactive_depth_plot(
     var plot = document.getElementById('{plot_id}');
     var ctdVisibilityConfigs = __CTD_VISIBILITY_CONFIGS__;
     var thermoclineTraceIndices = __THERMOCLINE_TRACE_INDICES__;
+    var thermoclineAnnotationIndex = __THERMOCLINE_ANNOTATION_INDEX__;
     var densityLayerTraceGroups = __DENSITY_LAYER_TRACE_GROUPS__;
     var densityLayerAnnotationIndices = __DENSITY_LAYER_ANNOTATION_INDICES__;
     var syncingThermocline = false;
     var syncingDensityLayers = false;
+    var axisInsetsVisible = true;
     var horizontalHoverLine = {
         type: 'line',
         xref: 'paper',
@@ -941,6 +963,12 @@ def create_interactive_depth_plot(
             return;
         }
         var targetVisible = traceIsVisible(plot.data[sourceIndex]) ? true : 'legendonly';
+        if (thermoclineAnnotationIndex !== null) {
+            var annotationUpdate = {};
+            annotationUpdate['annotations[' + thermoclineAnnotationIndex + '].visible'] =
+                axisInsetsVisible && targetVisible === true;
+            Plotly.relayout(plot, annotationUpdate);
+        }
         var targetIndices = thermoclineTraceIndices.filter(function(traceIndex) {
             return traceIndex !== sourceIndex && plot.data[traceIndex].visible !== targetVisible;
         });
@@ -967,7 +995,8 @@ def create_interactive_depth_plot(
             var annotationIndex = densityLayerAnnotationIndices[groupIndex];
             if (annotationIndex !== undefined) {
                 var annotationUpdate = {};
-                annotationUpdate['annotations[' + annotationIndex + '].visible'] = targetVisible === true;
+                annotationUpdate['annotations[' + annotationIndex + '].visible'] =
+                    axisInsetsVisible && targetVisible === true;
                 Plotly.relayout(plot, annotationUpdate);
             }
             var targetIndices = group.filter(function(traceIndex) {
@@ -998,18 +1027,53 @@ def create_interactive_depth_plot(
     });
     syncCtdAxes(null);
 
+    function updateAxisInsets() {
+        var layoutUpdate = {};
+        if (thermoclineAnnotationIndex !== null) {
+            var thermoclineVisible = thermoclineTraceIndices.some(function(traceIndex) {
+                return traceIsVisible(plot.data[traceIndex]);
+            });
+            layoutUpdate['annotations[' + thermoclineAnnotationIndex + '].visible'] =
+                axisInsetsVisible && thermoclineVisible;
+        }
+        densityLayerAnnotationIndices.forEach(function(annotationIndex, groupIndex) {
+            var layerVisible = densityLayerTraceGroups[groupIndex].some(function(traceIndex) {
+                return traceIsVisible(plot.data[traceIndex]);
+            });
+            layoutUpdate['annotations[' + annotationIndex + '].visible'] =
+                axisInsetsVisible && layerVisible;
+        });
+        if (Object.keys(layoutUpdate).length) {
+            Plotly.relayout(plot, layoutUpdate);
+        }
+    }
+
     var printStyle = document.createElement('style');
     printStyle.textContent = '@media print {' +
         '.plotly-export-button, .modebar-container { display: none !important; }' +
         'body { margin: 0; }' +
         '}';
     document.head.appendChild(printStyle);
+    var insetsButton = document.createElement('button');
+    insetsButton.type = 'button';
+    insetsButton.className = 'plotly-export-button';
+    insetsButton.textContent = 'Метки оси: вкл';
+    insetsButton.title = 'Показать или скрыть врезки термоклина и слоёв SigmaT';
+    insetsButton.style.cssText = 'position:fixed;top:48px;right:12px;z-index:1000;' +
+        'padding:6px 12px;border:1px solid #777;border-radius:3px;' +
+        'background:white;color:#222;font:12px Arial,sans-serif;cursor:pointer;';
+    insetsButton.addEventListener('click', function() {
+        axisInsetsVisible = !axisInsetsVisible;
+        insetsButton.textContent = axisInsetsVisible ? 'Метки оси: вкл' : 'Метки оси: выкл';
+        updateAxisInsets();
+    });
+    document.body.appendChild(insetsButton);
     var pngButton = document.createElement('button');
     pngButton.type = 'button';
     pngButton.className = 'plotly-export-button';
     pngButton.textContent = 'PNG';
     pngButton.title = 'Сохранить текущее состояние графика в PNG';
-    pngButton.style.cssText = 'position:fixed;top:48px;right:12px;z-index:1000;' +
+    pngButton.style.cssText = 'position:fixed;top:84px;right:12px;z-index:1000;' +
         'padding:6px 12px;border:1px solid #777;border-radius:3px;' +
         'background:white;color:#222;font:12px Arial,sans-serif;cursor:pointer;';
     pngButton.addEventListener('click', function() {
@@ -1025,7 +1089,7 @@ def create_interactive_depth_plot(
     pdfButton.className = 'plotly-export-button';
     pdfButton.textContent = 'PDF';
     pdfButton.title = 'Печать или сохранение в PDF';
-    pdfButton.style.cssText = 'position:fixed;top:84px;right:12px;z-index:1000;' +
+    pdfButton.style.cssText = 'position:fixed;top:120px;right:12px;z-index:1000;' +
         'padding:6px 12px;border:1px solid #777;border-radius:3px;' +
         'background:white;color:#222;font:12px Arial,sans-serif;cursor:pointer;';
     pdfButton.addEventListener('click', function() {
@@ -1039,6 +1103,9 @@ def create_interactive_depth_plot(
     ).replace(
         "__THERMOCLINE_TRACE_INDICES__",
         json.dumps(thermocline_trace_indices),
+    ).replace(
+        "__THERMOCLINE_ANNOTATION_INDEX__",
+        json.dumps(thermocline_annotation_index),
     ).replace(
         "__DENSITY_LAYER_TRACE_GROUPS__",
         json.dumps(density_layer_trace_groups),
