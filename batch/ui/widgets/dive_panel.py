@@ -888,6 +888,10 @@ class DivePanel(QWidget):
                 analysis_found = add_output(
                     OutputType.ANALYSIS_REPORT, analysis_dir / "report.txt"
                 ) or analysis_found
+                analysis_found = add_output(
+                    OutputType.LAYER_DENSITY_CSV,
+                    analysis_dir / "layers.csv",
+                ) or analysis_found
                 for html_path in analysis_dir.glob("*.html"):
                     analysis_found = add_output(
                         OutputType.INTERACTIVE_PLOT, html_path

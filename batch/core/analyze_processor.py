@@ -31,6 +31,7 @@ class AnalyzeResult:
     species_summary_path: Optional[str] = None
     report_path: Optional[str] = None
     interactive_plot_path: Optional[str] = None
+    layer_density_csv_path: Optional[str] = None
     total_detections: int = 0
     unique_species: int = 0
     species_counts: dict = field(default_factory=dict)
@@ -77,6 +78,10 @@ class AnalyzeProcessor:
         thermocline_threshold: float = 0.2,
         thermocline_mode: str = "threshold",
         density_levels: Optional[List[float]] = None,
+        generate_layer_density_csv: bool = True,
+        station_name: Optional[str] = None,
+        ctd_layer_parameters=None,
+        ctd_sigma_t_column: int = 11,
     ) -> AnalyzeResult:
         """
         Запускает анализ данных.
@@ -114,13 +119,6 @@ class AnalyzeProcessor:
             # Загружаем данные
             print(f"Загрузка данных: {csv_path}")
             df = pd.read_csv(csv_path)
-            
-            if len(df) == 0:
-                return AnalyzeResult(
-                    success=False,
-                    processing_time_s=time.time() - start_time,
-                    error_message="Файл не содержит детекций"
-                )
             
             # Создаём выходную директорию
             output_path = Path(output_dir)
@@ -199,6 +197,8 @@ class AnalyzeProcessor:
                 ip_path = str(output_path / "depth_interactive")
                 try:
                     from interactive_plot import create_interactive_depth_plot
+                    from layer_density import parse_ctd_parameters
+                    layer_parameters = parse_ctd_parameters(ctd_layer_parameters)
                     create_interactive_depth_plot(
                         track_sizes_path=track_sizes_path,
                         output_path=ip_path,
@@ -212,12 +212,35 @@ class AnalyzeProcessor:
                         thermocline_threshold=thermocline_threshold,
                         thermocline_mode=thermocline_mode,
                         density_levels=density_levels,
+                        temperature_column=layer_parameters.get("Tav", 6),
+                        sigma_t_column=ctd_sigma_t_column,
                     )
                     html_path = Path(ip_path).with_suffix('.html')
                     if html_path.exists():
                         result.interactive_plot_path = str(html_path)
                 except Exception as e:
                     print(f"Ошибка при построении интерактивного графика: {e}")
+
+            # Плотности организмов и параметры CTD по стандартным слоям
+            if (generate_layer_density_csv and ctd_path and Path(ctd_path).exists()):
+                if self._cancelled:
+                    result.cancelled = True
+                    return result
+                from layer_density import export_layer_density_csv
+                result.layer_density_csv_path = export_layer_density_csv(
+                    output_path=str(output_path / "layers.csv"),
+                    station_name=station_name or video_name or Path(csv_path).stem,
+                    track_sizes_path=track_sizes_path,
+                    ctd_path=ctd_path,
+                    ctd_parameters=ctd_layer_parameters,
+                    sigma_t_column=ctd_sigma_t_column,
+                    cross_section_area_m2=cross_section_area_m2,
+                    pleurobrachia_cross_section_area_m2=(
+                        pleurobrachia_cross_section_area_m2
+                    ),
+                    thermocline_threshold=thermocline_threshold,
+                    thermocline_mode=thermocline_mode,
+                )
 
             result.processing_time_s = time.time() - start_time
             return result

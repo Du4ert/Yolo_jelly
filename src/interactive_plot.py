@@ -205,6 +205,8 @@ def create_interactive_depth_plot(
     thermocline_threshold: float = 0.2,
     thermocline_mode: str = "threshold",
     density_levels: Optional[List[float]] = None,
+    temperature_column: int = 6,
+    sigma_t_column: int = 11,
     title: str = "Распределение желетелых по глубине",
     export_format: str = "html"
 ):
@@ -227,6 +229,8 @@ def create_interactive_depth_plot(
         thermocline_threshold: порог величины температурного градиента для термоклина (°C/м)
         thermocline_mode: режим термоклина (threshold, maximum, off)
         density_levels: значения SigmaT для отметки слоёв плотности
+        temperature_column: 0-based индекс колонки температуры
+        sigma_t_column: 0-based индекс колонки SigmaT
         title: заголовок графика
         export_format: формат экспорта (html, svg, pdf, png)
     """
@@ -283,13 +287,13 @@ def create_interactive_depth_plot(
             
             if ctd_depth_col:
                 all_cols = list(ctd_df.columns)
-                if len(all_cols) > 11:
-                    ctd_sigma_t_col = all_cols[11]
+                if 0 <= sigma_t_column < len(all_cols):
+                    ctd_sigma_t_col = all_cols[sigma_t_column]
+                if 0 <= temperature_column < len(all_cols):
+                    ctd_temperature_col = all_cols[temperature_column]
                 for idx in ctd_columns or []:
                     if 0 <= idx < len(all_cols):
                         ctd_col_names.append(all_cols[idx])
-                        if idx == 6:
-                            ctd_temperature_col = all_cols[idx]
 
                 ctd_df[ctd_depth_col] = to_numeric_series(ctd_df[ctd_depth_col])
                 ctd_depth_values = ctd_df[ctd_depth_col].dropna()

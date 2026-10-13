@@ -494,6 +494,12 @@ class NewTaskDialog(QDialog):
                 "thermocline_threshold": self.pp_spin_thermocline_threshold.value(),
                 "thermocline_mode": self.pp_combo_thermocline_mode.currentData(),
                 "density_levels": self.pp_edit_density_levels.text().strip(),
+                "generate_layer_density_csv": self.pp_chk_layer_density_csv.isChecked(),
+                "ctd_layer_parameters": (
+                    self.pp_edit_ctd_layer_parameters.text().strip()
+                    or "Tav:6,Sav:7,Chlav:12"
+                ),
+                "ctd_sigma_t_column": self.pp_spin_ctd_sigma_t_column.value(),
                 "frame_step": self.pp_spin_frame_step.value(),
             }
             try:
@@ -698,6 +704,38 @@ class NewTaskDialog(QDialog):
         density_indent_layout.addWidget(self.pp_edit_density_levels)
         density_indent_layout.addStretch()
         layout.addWidget(density_indent)
+
+        layer_export_indent = QWidget()
+        layer_export_layout = QHBoxLayout(layer_export_indent)
+        layer_export_layout.setContentsMargins(20, 0, 0, 0)
+        self.pp_chk_layer_density_csv = QCheckBox("CSV плотностей по слоям")
+        self.pp_chk_layer_density_csv.setChecked(True)
+        self.pp_chk_layer_density_csv.setToolTip(
+            "Создать layers.csv для слоёв UML, STL, OXY и SOL.\n"
+            "Для графика используются уровни SigmaT 14.5, 15.5 и 16.2."
+        )
+        self.pp_chk_layer_density_csv.toggled.connect(
+            lambda checked: self.pp_edit_density_levels.setEnabled(not checked)
+        )
+        self.pp_edit_density_levels.setEnabled(False)
+        layer_export_layout.addWidget(self.pp_chk_layer_density_csv)
+        layer_export_layout.addWidget(QLabel("Параметры:"))
+        self.pp_edit_ctd_layer_parameters = QLineEdit("Tav:6,Sav:7,Chlav:12")
+        self.pp_edit_ctd_layer_parameters.setMaximumWidth(210)
+        self.pp_edit_ctd_layer_parameters.setToolTip(
+            "Выходное имя и 0-based индекс CTD-колонки через двоеточие.\n"
+            "Новые параметры можно добавлять через запятую."
+        )
+        layer_export_layout.addWidget(self.pp_edit_ctd_layer_parameters)
+        layer_export_layout.addWidget(QLabel("SigmaT:"))
+        self.pp_spin_ctd_sigma_t_column = QSpinBox()
+        self.pp_spin_ctd_sigma_t_column.setRange(0, 999)
+        self.pp_spin_ctd_sigma_t_column.setValue(11)
+        self.pp_spin_ctd_sigma_t_column.setMaximumWidth(65)
+        self.pp_spin_ctd_sigma_t_column.setToolTip("0-based индекс колонки SigmaT.")
+        layer_export_layout.addWidget(self.pp_spin_ctd_sigma_t_column)
+        layer_export_layout.addStretch()
+        layout.addWidget(layer_export_indent)
 
         # === Параметры ===
         params_label = QLabel("Параметры:")

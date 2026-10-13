@@ -593,10 +593,16 @@ class Worker(QThread):
         # Путь к CTD-файлу из задачи
         ctd_path = None
         task = self.repo.get_task(task_id)
+        station_name = base_name
         if task and task.ctd_id:
             ctd_file = self.repo.get_ctd_file(task.ctd_id)
             if ctd_file:
                 ctd_path = ctd_file.filepath
+        if task:
+            video = self.repo.get_video_file(task.video_id)
+            dive = self.repo.get_dive(video.dive_id) if video else None
+            if dive:
+                station_name = dive.name
 
         # Колонки CTD (0-based индексы), по умолчанию 6, 11, 12, 16
         ctd_columns_raw = params.get("ctd_columns", "6,11,12,16")
@@ -619,6 +625,8 @@ class Worker(QThread):
                     continue
         else:
             density_levels = []
+        if params.get("generate_layer_density_csv", True):
+            density_levels = [14.5, 15.5, 16.2]
 
         processor = AnalyzeProcessor()
         result = processor.process(
@@ -638,6 +646,12 @@ class Worker(QThread):
             thermocline_threshold=params.get("thermocline_threshold", 0.2),
             thermocline_mode=params.get("thermocline_mode", "threshold"),
             density_levels=density_levels,
+            generate_layer_density_csv=params.get("generate_layer_density_csv", True),
+            station_name=station_name,
+            ctd_layer_parameters=params.get(
+                "ctd_layer_parameters", "Tav:6,Sav:7,Chlav:12"
+            ),
+            ctd_sigma_t_column=int(params.get("ctd_sigma_t_column", 11)),
         )
 
         if not result.success:
@@ -655,6 +669,12 @@ class Worker(QThread):
 
         if result.interactive_plot_path and Path(result.interactive_plot_path).exists():
             self.repo.add_task_output(task_id, OutputType.INTERACTIVE_PLOT, result.interactive_plot_path)
+
+        if (result.layer_density_csv_path
+                and Path(result.layer_density_csv_path).exists()):
+            self.repo.add_task_output(
+                task_id, OutputType.LAYER_DENSITY_CSV, result.layer_density_csv_path
+            )
 
         return float(result.total_detections), f"{result.total_detections} дет."
 
@@ -1067,6 +1087,15 @@ class Worker(QThread):
         if do_analysis:
             analysis_params = common_params.copy()
             analysis_params["ctd_columns"] = params.get("ctd_columns", "6,11,12,16")
+            analysis_params["generate_layer_density_csv"] = params.get(
+                "generate_layer_density_csv", True
+            )
+            analysis_params["ctd_layer_parameters"] = params.get(
+                "ctd_layer_parameters", "Tav:6,Sav:7,Chlav:12"
+            )
+            analysis_params["ctd_sigma_t_column"] = params.get(
+                "ctd_sigma_t_column", 11
+            )
             self.repo.create_subtask(
                 parent_task_id=task_id,
                 subtask_type=SubTaskType.ANALYSIS,

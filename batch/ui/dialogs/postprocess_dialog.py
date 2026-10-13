@@ -250,6 +250,37 @@ class PostProcessDialog(QDialog):
         density_row.addStretch()
         ops_layout.addLayout(density_row)
 
+        layer_export_row = QHBoxLayout()
+        layer_export_row.setContentsMargins(40, 0, 0, 0)
+        self.chk_layer_density_csv = QCheckBox("CSV плотностей по слоям")
+        self.chk_layer_density_csv.setChecked(True)
+        self.chk_layer_density_csv.setToolTip(
+            "Создать layers.csv для слоёв UML, STL, OXY и SOL.\n"
+            "Для графика используются уровни SigmaT 14.5, 15.5 и 16.2."
+        )
+        self.chk_layer_density_csv.toggled.connect(
+            lambda checked: self.edit_density_levels.setEnabled(not checked)
+        )
+        self.edit_density_levels.setEnabled(False)
+        layer_export_row.addWidget(self.chk_layer_density_csv)
+        layer_export_row.addWidget(QLabel("Параметры:"))
+        self.edit_ctd_layer_parameters = QLineEdit("Tav:6,Sav:7,Chlav:12")
+        self.edit_ctd_layer_parameters.setMaximumWidth(210)
+        self.edit_ctd_layer_parameters.setToolTip(
+            "Выходное имя и 0-based индекс CTD-колонки через двоеточие.\n"
+            "Новые параметры можно добавлять через запятую."
+        )
+        layer_export_row.addWidget(self.edit_ctd_layer_parameters)
+        layer_export_row.addWidget(QLabel("SigmaT:"))
+        self.spin_ctd_sigma_t_column = QSpinBox()
+        self.spin_ctd_sigma_t_column.setRange(0, 999)
+        self.spin_ctd_sigma_t_column.setValue(11)
+        self.spin_ctd_sigma_t_column.setMaximumWidth(65)
+        self.spin_ctd_sigma_t_column.setToolTip("0-based индекс колонки SigmaT.")
+        layer_export_row.addWidget(self.spin_ctd_sigma_t_column)
+        layer_export_row.addStretch()
+        ops_layout.addLayout(layer_export_row)
+
         layout.addWidget(ops_group)
 
         # === Общие параметры ===
@@ -853,6 +884,12 @@ class PostProcessDialog(QDialog):
             "thermocline_threshold": self.spin_thermocline_threshold.value(),
             "thermocline_mode": self.combo_thermocline_mode.currentData(),
             "density_levels": self.edit_density_levels.text().strip(),
+            "generate_layer_density_csv": self.chk_layer_density_csv.isChecked(),
+            "ctd_layer_parameters": (
+                self.edit_ctd_layer_parameters.text().strip()
+                or "Tav:6,Sav:7,Chlav:12"
+            ),
+            "ctd_sigma_t_column": self.spin_ctd_sigma_t_column.value(),
         }
         try:
             calib_path = get_config().ui.calibration_json

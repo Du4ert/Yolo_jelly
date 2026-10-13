@@ -66,6 +66,7 @@ class OutputType(enum.Enum):
     ANALYSIS_PLOT = "analysis_plot"
     ANALYSIS_REPORT = "analysis_report"
     INTERACTIVE_PLOT = "interactive_plot"
+    LAYER_DENSITY_CSV = "layer_density_csv"
     LABEL_STUDIO_JSON = "label_studio_json"
     VERIFIED_CSV = "verified_csv"
 
@@ -94,6 +95,7 @@ SUBTASK_OUTPUT_TYPES: dict["SubTaskType", List["OutputType"]] = {
         OutputType.ANALYSIS_PLOT,
         OutputType.ANALYSIS_REPORT,
         OutputType.INTERACTIVE_PLOT,
+        OutputType.LAYER_DENSITY_CSV,
     ],
     SubTaskType.LABEL_STUDIO_EXPORT: [OutputType.LABEL_STUDIO_JSON],
 }
