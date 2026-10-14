@@ -3,12 +3,12 @@
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import QThread, pyqtSignal, QUrl
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QFormLayout, QLabel, QLineEdit, QDoubleSpinBox,
     QSpinBox, QComboBox, QPushButton, QFileDialog, QProgressBar, QMessageBox,
-    QPlainTextEdit,
+    QPlainTextEdit, QListWidget, QListWidgetItem, QAbstractItemView, QHBoxLayout,
 )
 
 from ...database import OutputType
@@ -46,11 +46,40 @@ class PlotPanelDialog(QDialog):
         sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'src'))
         self.tasks, errors = self._collect_tasks(repository, task_ids)
         layout = QVBoxLayout(self)
-        summary = QPlainTextEdit()
-        summary.setReadOnly(True)
-        summary.setPlainText('\n'.join(t['title'] for t in self.tasks))
-        summary.setMaximumHeight(140)
-        layout.addWidget(summary)
+        layout.addWidget(QLabel('Подписи и порядок графиков (сверху вниз):'))
+        self.task_list = QListWidget()
+        self.task_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.task_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.task_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.task_list.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked | QAbstractItemView.EditTrigger.EditKeyPressed
+        )
+        self.task_list.setMaximumHeight(180)
+        self.task_list.setToolTip('Двойной щелчок — изменить подпись. Перетаскивание — изменить порядок графиков.')
+        for index, task in enumerate(self.tasks):
+            item = QListWidgetItem(task['title'])
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+            item.setData(Qt.ItemDataRole.UserRole, index)
+            item.setToolTip(f"Исходная задача: {task['title']}")
+            self.task_list.addItem(item)
+        layout.addWidget(self.task_list)
+        order_buttons = QHBoxLayout()
+        self.rename_button = QPushButton('Переименовать')
+        self.rename_button.clicked.connect(self._rename_task)
+        order_buttons.addWidget(self.rename_button)
+        self.move_up_button = QPushButton('▲ Вверх')
+        self.move_up_button.clicked.connect(lambda: self._move_task(-1))
+        order_buttons.addWidget(self.move_up_button)
+        self.move_down_button = QPushButton('▼ Вниз')
+        self.move_down_button.clicked.connect(lambda: self._move_task(1))
+        order_buttons.addWidget(self.move_down_button)
+        order_buttons.addStretch()
+        layout.addLayout(order_buttons)
+        self.task_list.currentRowChanged.connect(self._update_task_buttons)
+        self.task_list.model().rowsMoved.connect(self._update_task_buttons)
+        if self.tasks:
+            self.task_list.setCurrentRow(0)
+        self._update_task_buttons()
         info = QLabel('Одна задача — одна строка. CTD и KDE выровнены между задачами; глубина индивидуальная.')
         info.setWordWrap(True)
         layout.addWidget(info)
@@ -156,6 +185,30 @@ class PlotPanelDialog(QDialog):
             errors.append('Для панели необходимы данные не менее двух задач.')
         return tasks, errors
 
+    def _rename_task(self):
+        """Редактирует подпись выбранной строки итогового листа."""
+        item = self.task_list.currentItem()
+        if item:
+            self.task_list.editItem(item)
+
+    def _move_task(self, offset):
+        """Перемещает строку вместе с её связью с исходными данными задачи."""
+        row = self.task_list.currentRow()
+        target = row + offset
+        if row < 0 or not 0 <= target < self.task_list.count():
+            return
+        item = self.task_list.takeItem(row)
+        self.task_list.insertItem(target, item)
+        self.task_list.setCurrentRow(target)
+        self._update_task_buttons()
+
+    def _update_task_buttons(self, *args):
+        row = self.task_list.currentRow()
+        enabled = self.task_list.isEnabled()
+        self.rename_button.setEnabled(enabled and row >= 0)
+        self.move_up_button.setEnabled(enabled and row > 0)
+        self.move_down_button.setEnabled(enabled and 0 <= row < self.task_list.count() - 1)
+
     def _browse(self):
         path, _ = QFileDialog.getSaveFileName(self, 'Сохранить панель', self.path.text(), 'HTML (*.html)')
         if path:
@@ -170,6 +223,16 @@ class PlotPanelDialog(QDialog):
                 raise ValueError('Проверьте индексы колонок CTD и уровни SigmaT.')
             if not self.path.text().strip():
                 raise ValueError('Укажите путь сохранения HTML.')
+            # Снимок подписей и порядка: воркер не обращается к виджетам диалога.
+            tasks = []
+            for row in range(self.task_list.count()):
+                item = self.task_list.item(row)
+                title = item.text().strip()
+                if not title:
+                    raise ValueError(f'Укажите подпись графика в строке {row + 1}.')
+                task = self.tasks[item.data(Qt.ItemDataRole.UserRole)].copy()
+                task['title'] = title
+                tasks.append(task)
             parameters = dict(ctd_columns=list(dict.fromkeys(columns)), depth_bin=self.depth_bin.value(),
                               thermocline_mode=self.mode.currentData(), thermocline_threshold=self.threshold.value(),
                               temperature_column=self.temperature_column.value(), sigma_t_column=self.sigma_column.value(),
@@ -181,7 +244,7 @@ class PlotPanelDialog(QDialog):
         self.progress.setRange(0, len(self.tasks))
         self.progress.setValue(0)
         self.progress.setVisible(True)
-        self.worker = PlotPanelWorker(self.tasks, self.path.text().strip(), parameters, self)
+        self.worker = PlotPanelWorker(tasks, self.path.text().strip(), parameters, self)
         self.worker.progress.connect(lambda current, total: self.progress.setValue(current))
         self.worker.result_ready.connect(self._finished)
         self.worker.start()
@@ -199,9 +262,10 @@ class PlotPanelDialog(QDialog):
     def _set_running(self, running):
         for widget in (self.ctd_columns, self.depth_bin, self.mode, self.threshold,
                        self.temperature_column, self.sigma_column, self.levels,
-                       self.path, self.browse, self.run_button):
+                       self.path, self.browse, self.run_button, self.task_list):
             widget.setEnabled(not running)
         self.threshold.setEnabled(not running and self.mode.currentData() == 'threshold')
+        self._update_task_buttons()
 
     def reject(self):
         if self.worker and self.worker.isRunning():
