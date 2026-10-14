@@ -75,7 +75,7 @@ class AnalyzeProcessor:
         ctd_columns: Optional[List[int]] = None,
         cross_section_area_m2: Optional[float] = None,
         pleurobrachia_cross_section_area_m2: Optional[float] = None,
-        thermocline_threshold: float = 0.2,
+        thermocline_threshold: float = 1.0,
         thermocline_mode: str = "threshold",
         density_levels: Optional[List[float]] = None,
         generate_layer_density_csv: bool = True,

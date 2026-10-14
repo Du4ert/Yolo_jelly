@@ -123,14 +123,23 @@ def calculate_thermocline_depth(
     mode: str = "threshold",
     min_depth_m: float = 2.0,
 ) -> Optional[Tuple[float, float]]:
-    """Возвращает глубину и величину максимального градиента выше порога."""
-    if mode == "off" or (mode == "threshold" and threshold_c_per_m <= 0):
+    """Возвращает середину первого интервала 1 м с перепадом выше порога.
+
+    Окно толщиной 1 м сдвигается на 0,1 м от min_depth_m
+    (по умолчанию 2–3, 2,1–3,1, 2,2–3,2 м).
+    Температуры на границах интерполируются без экстраполяции.
+    Старый режим maximum обрабатывается как threshold.
+    """
+    if mode == "off" or not np.isfinite(threshold_c_per_m) or threshold_c_per_m <= 0:
         return None
 
     profile = ctd_df[[depth_col, temp_col]].copy()
     profile[depth_col] = to_numeric_series(profile[depth_col])
     profile[temp_col] = to_numeric_series(profile[temp_col])
-    profile = profile.dropna().sort_values(depth_col)
+    profile = profile.replace([np.inf, -np.inf], np.nan).dropna()
+    # Для интерполяции каждой глубине должно соответствовать одно значение.
+    profile = profile.groupby(depth_col, as_index=False)[temp_col].mean()
+    profile = profile.sort_values(depth_col)
     if min_depth_m > 0:
         profile = profile[profile[depth_col] >= min_depth_m]
 
@@ -139,24 +148,28 @@ def calculate_thermocline_depth(
     if len(depths) < 2:
         return None
 
-    delta_depth = np.diff(depths)
-    delta_temp = np.diff(temps)
-    valid = delta_depth > 0
-    if not np.any(valid):
+    interval_m = 1.0
+    step_m = 0.1
+    first_step = int(np.ceil(np.round((depths[0] - min_depth_m) / step_m, 10)))
+    last_step = int(np.floor(np.round((depths[-1] - interval_m - min_depth_m) / step_m, 10)))
+    if last_step < first_step:
         return None
 
-    gradients = delta_temp[valid] / delta_depth[valid]
-    gradient_abs = np.abs(gradients)
-    segment_depths = (depths[:-1][valid] + depths[1:][valid]) / 2
-    if mode == "maximum":
-        candidates = np.arange(len(gradient_abs))
-    else:
-        candidates = np.where(gradient_abs > threshold_c_per_m)[0]
+    # Округление устраняет погрешность сетки 0,1 м на границах профиля.
+    window_tops = np.round(min_depth_m + np.arange(first_step, last_step + 1) * step_m, 10)
+    window_bottoms = np.round(window_tops + interval_m, 10)
+    covered = (window_tops >= depths[0]) & (window_bottoms <= depths[-1])
+    window_tops = window_tops[covered]
+    window_bottoms = window_bottoms[covered]
+    top_temps = np.interp(window_tops, depths, temps)
+    bottom_temps = np.interp(window_bottoms, depths, temps)
+    gradient_abs = np.abs(bottom_temps - top_temps) / interval_m
+    candidates = np.flatnonzero(gradient_abs > threshold_c_per_m)
     if len(candidates) == 0:
         return None
 
-    strongest = candidates[np.argmax(gradient_abs[candidates])]
-    return float(segment_depths[strongest]), float(gradient_abs[strongest])
+    first = candidates[0]
+    return float(window_tops[first] + interval_m / 2), float(gradient_abs[first])
 
 
 def calculate_density_layer_depths(
@@ -202,7 +215,7 @@ def create_interactive_depth_plot(
     depth_bin: float = 1.0,
     cross_section_area_m2: Optional[float] = None,
     pleurobrachia_cross_section_area_m2: Optional[float] = None,
-    thermocline_threshold: float = 0.2,
+    thermocline_threshold: float = 1.0,
     thermocline_mode: str = "threshold",
     density_levels: Optional[List[float]] = None,
     temperature_column: int = 6,
@@ -226,8 +239,8 @@ def create_interactive_depth_plot(
         depth_bin: шаг биннинга для расчёта средних (м)
         cross_section_area_m2: площадь сечения наблюдения для нормировки KDE (м²)
         pleurobrachia_cross_section_area_m2: отдельная площадь сечения P. pileus (м²)
-        thermocline_threshold: порог величины температурного градиента для термоклина (°C/м)
-        thermocline_mode: режим термоклина (threshold, maximum, off)
+        thermocline_threshold: порог перепада температуры на интервале 1 м (°C)
+        thermocline_mode: threshold или off; старый maximum равнозначен threshold
         density_levels: значения SigmaT для отметки слоёв плотности
         temperature_column: 0-based индекс колонки температуры
         sigma_t_column: 0-based индекс колонки SigmaT
@@ -304,23 +317,22 @@ def create_interactive_depth_plot(
                 if ctd_col_names:
                     if len(ctd_depth_values) > 0:
                         print(f"CTD колонки: {ctd_col_names}")
-                        if ctd_temperature_col:
-                            thermocline = calculate_thermocline_depth(
-                                ctd_df,
-                                ctd_depth_col,
-                                ctd_temperature_col,
-                                thermocline_threshold,
-                                thermocline_mode,
-                            )
-                            if thermocline is not None:
-                                thermocline_depth, thermocline_gradient = thermocline
-                            if thermocline_depth is not None:
-                                print(
-                                    f"Термоклин: {thermocline_depth:.2f} м, "
-                                    f"градиент {thermocline_gradient:.3f} °C/м"
-                                )
                     else:
                         ctd_col_names = []
+                if ctd_temperature_col and len(ctd_depth_values) > 0:
+                    thermocline = calculate_thermocline_depth(
+                        ctd_df,
+                        ctd_depth_col,
+                        ctd_temperature_col,
+                        thermocline_threshold,
+                        thermocline_mode,
+                    )
+                    if thermocline is not None:
+                        thermocline_depth, thermocline_gradient = thermocline
+                        print(
+                            f"Термоклин: {thermocline_depth:.2f} м, "
+                            f"градиент {thermocline_gradient:.3f} °C/м"
+                        )
                 if density_levels and ctd_sigma_t_col:
                     density_layers = calculate_density_layer_depths(
                         ctd_df,
@@ -513,8 +525,8 @@ def create_interactive_depth_plot(
                 hovertemplate=(
                     f"Термоклин<br>Глубина: {thermocline_depth:.2f} м<br>"
                     f"Градиент: {thermocline_gradient:.3f} °C/м<br>"
-                    f"Режим: {'максимальный' if thermocline_mode == 'maximum' else 'порог'}<br>"
-                    f"Порог: {thermocline_threshold:.2f} °C/м<extra></extra>"
+                    "Режим: первое окно 1 м выше порога, шаг 0,1 м<br>"
+                    f"Порог: {thermocline_threshold:.2f} °C на 1 м<extra></extra>"
                 ),
                 showlegend=True,
                 meta=dict(role='thermocline'),
@@ -744,8 +756,8 @@ def create_interactive_depth_plot(
                 hovertemplate=(
                     f"Термоклин<br>Глубина: {thermocline_depth:.2f} м<br>"
                     f"Градиент: {thermocline_gradient:.3f} °C/м<br>"
-                    f"Режим: {'максимальный' if thermocline_mode == 'maximum' else 'порог'}<br>"
-                    f"Порог: {thermocline_threshold:.2f} °C/м<extra></extra>"
+                    "Режим: первое окно 1 м выше порога, шаг 0,1 м<br>"
+                    f"Порог: {thermocline_threshold:.2f} °C на 1 м<extra></extra>"
                 ),
                 showlegend=False,
                 meta=dict(role='thermocline'),
@@ -1231,8 +1243,8 @@ def main():
     parser.add_argument("--cross-section-area", type=float, default=None, help="Площадь сечения наблюдения, м²")
     parser.add_argument("--pleurobrachia-cross-section-area", type=float, default=None,
                         help="Отдельная площадь сечения P. pileus, м²")
-    parser.add_argument("--thermocline-threshold", type=float, default=0.2, help="Порог термоклина, °C/м")
-    parser.add_argument("--thermocline-mode", choices=["threshold", "maximum", "off"], default="threshold", help="Режим термоклина")
+    parser.add_argument("--thermocline-threshold", type=float, default=1.0, help="Порог перепада температуры в скользящем окне 1 м с шагом 0,1 м, °C")
+    parser.add_argument("--thermocline-mode", choices=["threshold", "maximum", "off"], default="threshold", help="Режим термоклина: threshold — первый интервал выше порога, off — отключить; maximum — устаревший синоним threshold")
     parser.add_argument("--density-levels", default="14.5,15.5,16.2", help="Уровни SigmaT через запятую")
     parser.add_argument("--list-ctd-columns", action="store_true", help="Показать колонки CTD")
     

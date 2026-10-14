@@ -662,13 +662,12 @@ class NewTaskDialog(QDialog):
         thermocline_indent_layout.addWidget(QLabel("Термоклин:"))
         self.pp_combo_thermocline_mode = QComboBox()
         self.pp_combo_thermocline_mode.addItem("Порог", "threshold")
-        self.pp_combo_thermocline_mode.addItem("Максимальный", "maximum")
         self.pp_combo_thermocline_mode.addItem("Отключить", "off")
         self.pp_combo_thermocline_mode.setMaximumWidth(120)
         self.pp_combo_thermocline_mode.setToolTip(
-            "Порог — максимум градиента выше порога.\n"
-            "Максимальный — максимум градиента без порога.\n"
-            "Отключить — не строить линию термоклина."
+            "Порог — первый от поверхности интервал 1 м с перепадом температуры выше порога.\n"
+            "Поиск начинается с 2 м, шаг окна — 0,1 м; глубина термоклина — середина интервала.\n"
+            "Отключить — не рассчитывать термоклин для графика и слоёв CSV."
         )
         self.pp_combo_thermocline_mode.currentIndexChanged.connect(
             self._on_thermocline_mode_changed
@@ -677,13 +676,14 @@ class NewTaskDialog(QDialog):
         thermocline_label = QLabel("Порог термоклина:")
         self.pp_spin_thermocline_threshold = QDoubleSpinBox()
         self.pp_spin_thermocline_threshold.setRange(0.01, 5.0)
-        self.pp_spin_thermocline_threshold.setValue(0.2)
+        self.pp_spin_thermocline_threshold.setValue(1.0)
         self.pp_spin_thermocline_threshold.setSingleStep(0.05)
         self.pp_spin_thermocline_threshold.setDecimals(2)
-        self.pp_spin_thermocline_threshold.setSuffix(" °C/м")
-        self.pp_spin_thermocline_threshold.setMaximumWidth(110)
+        self.pp_spin_thermocline_threshold.setSuffix(" °C на 1 м")
+        self.pp_spin_thermocline_threshold.setMaximumWidth(140)
         self.pp_spin_thermocline_threshold.setToolTip(
-            "Термоклин строится по CTD-колонке 6, если она включена в список колонок."
+            "Модуль перепада температуры на интервале 1 м должен быть строго больше порога.\n"
+            "Температура берётся из колонки Tav (по умолчанию индекс 6), независимо от отображаемых колонок."
         )
         thermocline_indent_layout.addWidget(thermocline_label)
         thermocline_indent_layout.addWidget(self.pp_spin_thermocline_threshold)

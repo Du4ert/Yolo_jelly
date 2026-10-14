@@ -643,7 +643,7 @@ class Worker(QThread):
             pleurobrachia_cross_section_area_m2=processing_info.get(
                 'pleurobrachia_cross_section_area_m2'
             ),
-            thermocline_threshold=params.get("thermocline_threshold", 0.2),
+            thermocline_threshold=params.get("thermocline_threshold", 1.0),
             thermocline_mode=params.get("thermocline_mode", "threshold"),
             density_levels=density_levels,
             generate_layer_density_csv=params.get("generate_layer_density_csv", True),
@@ -722,7 +722,7 @@ class Worker(QThread):
                 'effective_distance_auto': current_params.get('effective_distance_auto', True),
                 'detection_distance': current_params.get('detection_distance'),
                 'depth_bin': current_params.get('depth_bin', 2.0),
-                'thermocline_threshold': current_params.get('thermocline_threshold', 0.2),
+                'thermocline_threshold': current_params.get('thermocline_threshold', 1.0),
                 'thermocline_mode': current_params.get('thermocline_mode', 'threshold'),
                 'density_levels': current_params.get('density_levels', '14.5,15.5,16.2'),
             }
@@ -1013,7 +1013,7 @@ class Worker(QThread):
                 "pleurobrachia_detection_distance"
             ),
             "depth_bin": params.get("depth_bin", 2.0),
-            "thermocline_threshold": params.get("thermocline_threshold", 0.2),
+            "thermocline_threshold": params.get("thermocline_threshold", 1.0),
             "thermocline_mode": params.get("thermocline_mode", "threshold"),
             "density_levels": params.get("density_levels", "14.5,15.5,16.2"),
         }

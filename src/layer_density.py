@@ -134,7 +134,7 @@ def export_layer_density_csv(
     sigma_t_column: int = 11,
     cross_section_area_m2: Optional[float] = None,
     pleurobrachia_cross_section_area_m2: Optional[float] = None,
-    thermocline_threshold: float = 0.2,
+    thermocline_threshold: float = 1.0,
     thermocline_mode: str = "threshold",
 ) -> str:
     """Создаёт CSV с четырьмя стандартными слоями UML/STL/OXY/SOL."""
