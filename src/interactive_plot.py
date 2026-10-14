@@ -115,6 +115,53 @@ def axis_ticks(min_value: float, max_value: float, count: int = 5) -> List[float
     return [float(x) for x in np.linspace(min_value, max_value, count)]
 
 
+def format_axis_tick_labels(values: List[float]) -> List[str]:
+    """Форматирует деления с точностью по шагу, сохраняя зеркальные повторы."""
+    values = [float(value) for value in values]
+    unique_values = sorted(set(values))
+    if not unique_values:
+        return []
+    if len(unique_values) == 1:
+        # Без шага сохраняем дробную часть постоянного параметра.
+        label = str(unique_values[0]) if unique_values[0] else "0"
+        if label.endswith('.0'):
+            label = label[:-2]
+        return [label] * len(values)
+
+    step = min(right - left for left, right in zip(unique_values, unique_values[1:]))
+    max_abs = max(abs(value) for value in unique_values)
+    exponent = int(np.floor(np.log10(max_abs)))
+
+    for divisor in (2, 10):
+        # Считаем через логарифмы, чтобы не обнулить очень малый шаг делением.
+        decimals = max(0, int(np.ceil(np.log10(divisor) - np.log10(step))))
+        labels = []
+        for value in unique_values:
+            if value == 0:
+                label = "0"
+            elif decimals <= 6:
+                label = f"{value:.{decimals}f}"
+                if decimals:
+                    label = label.rstrip('0').rstrip('.')
+                if label == '-0':
+                    label = '0'
+            else:
+                significant_digits = min(17, max(1, exponent + decimals + 1))
+                mantissa, power = f"{value:.{significant_digits - 1}e}".split('e')
+                if '.' in mantissa:
+                    mantissa = mantissa.rstrip('0').rstrip('.')
+                label = f"{mantissa}e{int(power):+d}"
+            labels.append(label)
+        if len(set(labels)) == len(unique_values):
+            break
+    else:
+        # 17 значащих цифр различают значения float даже у предельно узкой шкалы.
+        labels = [f"{value:.17g}" if value else "0" for value in unique_values]
+
+    labels_by_value = dict(zip(unique_values, labels))
+    return [labels_by_value[value] for value in values]
+
+
 def calculate_thermocline_depth(
     ctd_df: pd.DataFrame,
     depth_col: str,
@@ -507,7 +554,7 @@ def create_interactive_depth_plot(
                 'color': CTD_COLORS[i % len(CTD_COLORS)],
                 'range': axis_range,
                 'tickvals': tickvals,
-                'ticktext': [f"{v:.2g}" for v in tickvals],
+                'ticktext': format_axis_tick_labels(tickvals),
                 'trace_index': len(fig.data) - 1,
                 'axis_layout_key': axis_layout_key,
             })
@@ -801,13 +848,13 @@ def create_interactive_depth_plot(
                 density_max * 0.25,
                 density_max * 0.5,
             ],
-            ticktext=[
-                f"{density_max:.2f}",
-                f"{density_max * 0.5:.2f}",
-                "0",
-                f"{density_max * 0.5:.2f}",
-                f"{density_max:.2f}",
-            ],
+            ticktext=format_axis_tick_labels([
+                density_max,
+                density_max * 0.5,
+                0,
+                density_max * 0.5,
+                density_max,
+            ]),
             showspikes=False,
             range=[-density_max * 0.62, density_max * 0.62],
             row=1,
