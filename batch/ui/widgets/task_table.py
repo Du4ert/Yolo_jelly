@@ -836,6 +836,10 @@ class TaskTable(QWidget):
         menu = QMenu(self)
         has_items = False
 
+        action_panel = menu.addAction("📈 Панель графиков...")
+        action_panel.triggered.connect(lambda: self._plot_panel(task_ids))
+        has_items = True
+
         if non_running_ids:
             action = menu.addAction(
                 f"📊 Постобработка {len(non_running_ids)} задач..."
@@ -875,6 +879,15 @@ class TaskTable(QWidget):
 
         if has_items or deletable_ids:
             menu.exec(self.tree.viewport().mapToGlobal(position))
+
+    def _plot_panel(self, task_ids: list):
+        """Открывает параметры общей интерактивной панели выбранных задач."""
+        from ..dialogs.plot_panel_dialog import PlotPanelDialog
+        try:
+            dialog = PlotPanelDialog(self.repo, task_ids, parent=self)
+            dialog.exec()
+        except Exception as error:
+            QMessageBox.warning(self, "Панель графиков", str(error))
 
     def _skip_tasks(self, task_ids: list):
         """Пропускает несколько задач."""

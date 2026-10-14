@@ -268,7 +268,9 @@ def create_interactive_depth_plot(
     temperature_column: int = 6,
     sigma_t_column: int = 11,
     title: str = "Распределение желетелых по глубине",
-    export_format: str = "html"
+    export_format: str = "html",
+    return_figure: bool = False,
+    include_ctd_panel: bool = False,
 ):
     """
     Создаёт интерактивный векторный график распределения желетелых по глубине.
@@ -293,6 +295,8 @@ def create_interactive_depth_plot(
         sigma_t_column: 0-based индекс колонки SigmaT
         title: заголовок графика
         export_format: формат экспорта (html, svg, pdf, png)
+        return_figure: вернуть фигуру и настройки интерактивности без записи файла
+        include_ctd_panel: сохранить колонку CTD даже при отсутствии данных
     """
     if not PLOTLY_AVAILABLE:
         print(f"Ошибка: plotly не установлен для {sys.executable}")
@@ -394,6 +398,7 @@ def create_interactive_depth_plot(
             ctd_df = None
     species_list = [CLASS_NAMES[i] for i in sorted(CLASS_NAMES)]
     has_ctd_panel = ctd_df is not None and bool(ctd_col_names) and ctd_depth_col is not None
+    has_ctd_panel = has_ctd_panel or include_ctd_panel
     panel_titles = (["CTD"] if has_ctd_panel else []) + species_list
     n_panels = len(panel_titles)
     col_widths = ([1.8] if has_ctd_panel else []) + [1.0] * len(species_list)
@@ -493,7 +498,13 @@ def create_interactive_depth_plot(
             ctd_plot_df = ctd_df[[ctd_depth_col, col_name]].copy()
             ctd_plot_df[ctd_depth_col] = to_numeric_series(ctd_plot_df[ctd_depth_col])
             ctd_plot_df[col_name] = to_numeric_series(ctd_plot_df[col_name])
-            ctd_plot_df = ctd_plot_df.dropna()
+            ctd_plot_df = ctd_plot_df.replace([np.inf, -np.inf], np.nan).dropna()
+
+            if len(ctd_plot_df) == 0:
+                continue
+            # Границы берём до прореживания, чтобы не потерять экстремумы профиля.
+            value_min = float(ctd_plot_df[col_name].min())
+            value_max = float(ctd_plot_df[col_name].max())
 
             if len(ctd_plot_df) > 2000:
                 step = max(len(ctd_plot_df) // 2000, 1)
@@ -504,8 +515,6 @@ def create_interactive_depth_plot(
 
             values = ctd_plot_df[col_name].values
             depths = ctd_plot_df[ctd_depth_col].values
-            value_min = float(np.nanmin(values))
-            value_max = float(np.nanmax(values))
             if value_max > value_min:
                 pad = (value_max - value_min) * 0.03
                 axis_range = [value_min - pad, value_max + pad]
@@ -536,6 +545,7 @@ def create_interactive_depth_plot(
                 meta=dict(
                     role='ctd',
                     axis_layout_key=axis_layout_key,
+                    parameter_index=list(ctd_df.columns).index(col_name),
                 ),
             )
             if trace_axis:
@@ -941,6 +951,22 @@ def create_interactive_depth_plot(
         annotations=annotations,
         plot_bgcolor='white'
     )
+
+    if return_figure:
+        return fig, dict(
+            ctd=ctd_visibility_configs,
+            thermocline=thermocline_trace_indices,
+            thermocline_annotation=thermocline_annotation_index,
+            layers=density_layer_trace_groups,
+            layer_annotations=density_layer_annotation_indices,
+            size_ranges={
+                species: [float(values.min()), float(values.max())]
+                for species in species_list
+                if len(values := df_depth.loc[
+                    df_depth['class_name'] == species, 'real_size_cm'
+                ].replace([np.inf, -np.inf], np.nan).dropna()) > 0
+            },
+        )
     
     # === Экспорт ===
     output_path = Path(output_path)
