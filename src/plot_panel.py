@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 from interactive_plot import create_interactive_depth_plot, format_axis_tick_labels
 
 
-def create_plot_panel(tasks, output_path, progress=None, **parameters):
+def create_plot_panel(tasks, output_path, progress=None, combine_scales=False, **parameters):
     """Объединяет существующие графики; глубина каждой строки независима."""
     if len(tasks) < 2:
         raise ValueError("Для панели выберите не менее двух задач.")
@@ -68,10 +68,27 @@ def create_plot_panel(tasks, output_path, progress=None, **parameters):
     axis_offset = 0
     shared_x_refs = {}
     count = len(figures)
+    # Шкалу параметра оставляем у последней строки, где есть его данные CTD.
+    scale_rows = {key: row for row, keys in enumerate(keys_by_row) for key in keys.values()}
+    ctd_keys = [key for key in ranges if key[0] == 'ctd']
+    scale_space = max(80, 45 * len(ctd_keys) + 30)
+    compact_height = 500 * count + 35 * (count - 1) + scale_space
+    shared_bottom = scale_space / compact_height
     for row, ((fig, metadata), task, keys) in enumerate(zip(figures, tasks, keys_by_row)):
         # Домены исходного графика сохраняются внутри собственной строки.
         bottom = (count - row - 1) / count
         height = 0.94 / count
+        source_bottom, source_top = fig.layout.yaxis.domain
+        if combine_scales:
+            plot_top = 1 - row * 535 / compact_height
+            plot_bottom = plot_top - 500 / compact_height
+
+        def map_y(value):
+            if combine_scales:
+                return plot_bottom + (value - source_bottom) / (source_top - source_bottom) * (
+                    plot_top - plot_bottom)
+            return bottom + value * height
+
         axis_names = [name for name in fig.layout if re.fullmatch(r'[xy]axis\d*', name)]
         max_axis = max(int(re.search(r'\d+', name)[0]) if re.search(r'\d+', name) else 1
                        for name in axis_names)
@@ -94,7 +111,7 @@ def create_plot_panel(tasks, output_path, progress=None, **parameters):
                 if field in axis:
                     axis[field] = remap(axis[field])
             if name.startswith('y') and 'domain' in axis:
-                axis['domain'] = [bottom + value * height for value in axis['domain']]
+                axis['domain'] = [map_y(value) for value in axis['domain']]
             if name.startswith('x') and 'position' in axis:
                 axis['position'] = bottom + axis['position'] * height
             if name in keys:
@@ -112,6 +129,11 @@ def create_plot_panel(tasks, output_path, progress=None, **parameters):
                     low, high = axis['range']
                     axis['tickvals'] = np.linspace(low, high, 5).tolist()
                     axis['ticktext'] = format_axis_tick_labels(axis['tickvals'])
+                if combine_scales:
+                    if key[0] == 'ctd':
+                        axis['position'] = shared_bottom - (ctd_keys.index(key) + 1) * 45 / compact_height
+                    if scale_rows[key] != row:
+                        axis.update(showticklabels=False, ticks='', showline=False, title=dict(text=''))
             panel.update_layout({layout_key(name): axis})
 
         trace_offset = len(panel.data)
@@ -146,23 +168,41 @@ def create_plot_panel(tasks, output_path, progress=None, **parameters):
                 data['x'] = list(panel.layout[axis_name].range)
             panel.add_trace(go.Scatter(data))
 
-        for annotation in fig.layout.annotations:
+        ctd_annotations = {config['annotationIndex']: config for config in metadata['ctd']}
+        for annotation_index, annotation in enumerate(fig.layout.annotations):
             data = copy.deepcopy(annotation.to_plotly_json())
             for field in ('xref', 'yref'):
                 data[field] = remap(data.get(field, 'paper'))
             if data['yref'] == 'paper':
-                data['y'] = bottom + data['y'] * height
+                data['y'] = map_y(data['y'])
+                if combine_scales and annotation.y > source_top:
+                    # Названия видов располагаем внутри верхнего края строки.
+                    data['y'] = plot_top - 15 / compact_height
+                    data['yanchor'] = 'top'
+            if combine_scales and annotation_index in ctd_annotations:
+                config = ctd_annotations[annotation_index]
+                key = keys[config['axisKey']]
+                data['y'] = shared_bottom - (ctd_keys.index(key) + 1) * 45 / compact_height
+                data['visible'] = scale_rows[key] == row
             # Убираем повторяющуюся подсказку из каждой строки.
             if annotation.yref == 'paper' and annotation.y < 0:
                 data['visible'] = False
             annotations.append(data)
-        annotations.append(dict(x=0.5, y=bottom + 0.99 / count, xref='paper', yref='paper',
-                                text=f"<b>{escape(task['title'])}</b>", showarrow=False,
-                                font=dict(size=16), yanchor='top'))
+        if combine_scales:
+            annotations.append(dict(x=0, y=(plot_bottom + plot_top) / 2,
+                                    xref='paper', yref='paper', xshift=-100,
+                                    text=f"<b>{escape(task['title'])}</b>", textangle=-90,
+                                    showarrow=False, font=dict(size=16),
+                                    xanchor='center', yanchor='middle'))
+        else:
+            annotations.append(dict(x=0.5, y=bottom + 0.99 / count, xref='paper', yref='paper',
+                                    text=f"<b>{escape(task['title'])}</b>", showarrow=False,
+                                    font=dict(size=16), yanchor='top'))
         for config in metadata['ctd']:
             ctd_configs.append(dict(traceIndex=trace_offset + config['traceIndex'],
                                     axisKey=layout_key(config['axisKey']),
-                                    annotationIndex=annotation_offset + config['annotationIndex']))
+                                    annotationIndex=annotation_offset + config['annotationIndex'],
+                                    showScale=not combine_scales or scale_rows[keys[config['axisKey']]] == row))
         if metadata['thermocline_annotation'] is not None:
             inset_configs.append(dict(group='thermocline',
                                       index=annotation_offset + metadata['thermocline_annotation'],
@@ -178,8 +218,9 @@ def create_plot_panel(tasks, output_path, progress=None, **parameters):
                             font=dict(size=10, color='gray'), xanchor='left'))
 
     panel.update_layout(
-        width=max(fig.layout.width for fig, _ in figures), height=850 * count,
-        margin=dict(t=55, b=80, l=100, r=240), annotations=annotations,
+        width=max(fig.layout.width for fig, _ in figures),
+        height=compact_height + 135 if combine_scales else 850 * count,
+        margin=dict(t=55, b=80, l=160 if combine_scales else 100, r=240), annotations=annotations,
         plot_bgcolor='white', hovermode='closest',
         legend=dict(x=1.01, y=1, groupclick='togglegroup', tracegroupgap=8,
                     bgcolor='white', bordercolor='black', borderwidth=1),
@@ -204,7 +245,7 @@ function sync() {
     var update = {};
     ctd.forEach(function(c) {
         update[c.axisKey + '.visible'] = visible(c.traceIndex);
-        update['annotations[' + c.annotationIndex + '].visible'] = visible(c.traceIndex);
+        update['annotations[' + c.annotationIndex + '].visible'] = c.showScale && visible(c.traceIndex);
     });
     insets.forEach(function(c) {
         update['annotations[' + c.index + '].visible'] = labelsVisible && c.traces.some(visible);

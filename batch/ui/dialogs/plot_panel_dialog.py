@@ -8,7 +8,7 @@ from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QFormLayout, QLabel, QLineEdit, QDoubleSpinBox,
     QSpinBox, QComboBox, QPushButton, QFileDialog, QProgressBar, QMessageBox,
-    QPlainTextEdit, QListWidget, QListWidgetItem, QAbstractItemView, QHBoxLayout,
+    QPlainTextEdit, QListWidget, QListWidgetItem, QAbstractItemView, QHBoxLayout, QCheckBox,
 )
 
 from ...database import OutputType
@@ -85,6 +85,10 @@ class PlotPanelDialog(QDialog):
         layout.addWidget(info)
         self.form = QFormLayout()
         layout.addLayout(self.form)
+        self.combine_scales = QCheckBox('Объединить шкалы')
+        self.combine_scales.setToolTip(
+            'Общие шкалы снизу, компактные строки и вертикальные подписи задач слева.')
+        self.form.addRow(self.combine_scales)
         self.ctd_columns = QLineEdit('6,11,12,16')
         self.ctd_columns.setToolTip('0-based индексы колонок CTD, через запятую. Пустое поле отключает блок CTD.')
         self.form.addRow('Колонки CTD:', self.ctd_columns)
@@ -236,7 +240,7 @@ class PlotPanelDialog(QDialog):
             parameters = dict(ctd_columns=list(dict.fromkeys(columns)), depth_bin=self.depth_bin.value(),
                               thermocline_mode=self.mode.currentData(), thermocline_threshold=self.threshold.value(),
                               temperature_column=self.temperature_column.value(), sigma_t_column=self.sigma_column.value(),
-                              density_levels=levels)
+                              density_levels=levels, combine_scales=self.combine_scales.isChecked())
         except ValueError as error:
             QMessageBox.warning(self, 'Параметры панели', str(error))
             return
@@ -262,7 +266,7 @@ class PlotPanelDialog(QDialog):
     def _set_running(self, running):
         for widget in (self.ctd_columns, self.depth_bin, self.mode, self.threshold,
                        self.temperature_column, self.sigma_column, self.levels,
-                       self.path, self.browse, self.run_button, self.task_list):
+                       self.path, self.browse, self.run_button, self.task_list, self.combine_scales):
             widget.setEnabled(not running)
         self.threshold.setEnabled(not running and self.mode.currentData() == 'threshold')
         self._update_task_buttons()
