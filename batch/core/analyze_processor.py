@@ -32,6 +32,8 @@ class AnalyzeResult:
     report_path: Optional[str] = None
     interactive_plot_path: Optional[str] = None
     layer_density_csv_path: Optional[str] = None
+    tracks_ctd_csv_path: Optional[str] = None
+    tracks_ctd_warnings: List[str] = field(default_factory=list)
     total_detections: int = 0
     unique_species: int = 0
     species_counts: dict = field(default_factory=dict)
@@ -82,6 +84,9 @@ class AnalyzeProcessor:
         station_name: Optional[str] = None,
         ctd_layer_parameters=None,
         ctd_sigma_t_column: int = 11,
+        generate_tracks_ctd_csv: bool = False,
+        tracks_ctd_all_parameters: bool = False,
+        tracks_ctd_columns: Optional[List[int]] = None,
     ) -> AnalyzeResult:
         """
         Запускает анализ данных.
@@ -241,6 +246,30 @@ class AnalyzeProcessor:
                     thermocline_threshold=thermocline_threshold,
                     thermocline_mode=thermocline_mode,
                 )
+
+            # Таблица организмов с CTD использует уже готовые размеры и слои.
+            if generate_tracks_ctd_csv:
+                if self._cancelled:
+                    result.cancelled = True
+                    return result
+                if not track_sizes_path or not Path(track_sizes_path).is_file():
+                    raise ValueError("Для CSV треков с CTD необходим готовый CSV размеров треков.")
+                from tracks_ctd import collect_tracks_ctd
+                table, result.tracks_ctd_warnings = collect_tracks_ctd(
+                    dict(
+                        track_sizes_path=track_sizes_path,
+                        station=station_name or video_name or Path(csv_path).stem,
+                        ctd_path=ctd_path,
+                        layers_path=result.layer_density_csv_path or str(output_path / "layers.csv"),
+                    ),
+                    ctd_columns=tracks_ctd_columns,
+                    all_parameters=tracks_ctd_all_parameters,
+                )
+                filename = f"{video_name}_tracks_ctd.csv" if video_name else "tracks_ctd.csv"
+                result.tracks_ctd_csv_path = str(output_path / filename)
+                table.to_csv(result.tracks_ctd_csv_path, index=False, encoding="utf-8-sig")
+                for message in result.tracks_ctd_warnings:
+                    print(f"CSV треков с CTD: {message}")
 
             result.processing_time_s = time.time() - start_time
             return result

@@ -495,6 +495,9 @@ class NewTaskDialog(QDialog):
                 "thermocline_mode": self.pp_combo_thermocline_mode.currentData(),
                 "density_levels": self.pp_edit_density_levels.text().strip(),
                 "generate_layer_density_csv": self.pp_chk_layer_density_csv.isChecked(),
+                "generate_tracks_ctd_csv": self.pp_chk_tracks_ctd_csv.isChecked(),
+                "tracks_ctd_columns": self.pp_edit_tracks_ctd_columns.text().strip() or "6,11,12,16",
+                "tracks_ctd_all_parameters": self.pp_chk_tracks_ctd_all.isChecked(),
                 "ctd_layer_parameters": (
                     self.pp_edit_ctd_layer_parameters.text().strip()
                     or "Tav:6,Sav:7,Chlav:12"
@@ -736,6 +739,40 @@ class NewTaskDialog(QDialog):
         layer_export_layout.addWidget(self.pp_spin_ctd_sigma_t_column)
         layer_export_layout.addStretch()
         layout.addWidget(layer_export_indent)
+
+        tracks_ctd_indent = QWidget()
+        tracks_ctd_layout = QHBoxLayout(tracks_ctd_indent)
+        tracks_ctd_layout.setContentsMargins(20, 0, 0, 0)
+        self.pp_chk_tracks_ctd_csv = QCheckBox("CSV треков с CTD")
+        self.pp_chk_tracks_ctd_csv.setChecked(True)
+        self.pp_chk_tracks_ctd_csv.setToolTip(
+            "Таблица организмов с готовой глубиной, размером и CTD на этой глубине.\n"
+            "Используются отдельные колонки CTD этой операции; исходные track_id сохраняются."
+        )
+        self.pp_edit_tracks_ctd_columns = QLineEdit("6,11,12,16")
+        self.pp_edit_tracks_ctd_columns.setMaximumWidth(120)
+        self.pp_edit_tracks_ctd_columns.setToolTip(
+            "Индексы колонок CTD с нуля для CSV треков, через запятую.\n"
+            "Настройка не зависит от колонок CTD для графиков."
+        )
+        self.pp_chk_tracks_ctd_all = QCheckBox("Все параметры CTD")
+        self.pp_chk_tracks_ctd_csv.toggled.connect(self.pp_chk_tracks_ctd_all.setEnabled)
+        self.pp_chk_tracks_ctd_csv.toggled.connect(
+            lambda checked: self.pp_edit_tracks_ctd_columns.setEnabled(
+                checked and not self.pp_chk_tracks_ctd_all.isChecked()
+            )
+        )
+        self.pp_chk_tracks_ctd_all.toggled.connect(
+            lambda checked: self.pp_edit_tracks_ctd_columns.setEnabled(
+                not checked and self.pp_chk_tracks_ctd_csv.isChecked()
+            )
+        )
+        tracks_ctd_layout.addWidget(self.pp_chk_tracks_ctd_csv)
+        tracks_ctd_layout.addWidget(QLabel("Колонки CTD:"))
+        tracks_ctd_layout.addWidget(self.pp_edit_tracks_ctd_columns)
+        tracks_ctd_layout.addWidget(self.pp_chk_tracks_ctd_all)
+        tracks_ctd_layout.addStretch()
+        layout.addWidget(tracks_ctd_indent)
 
         # === Параметры ===
         params_label = QLabel("Параметры:")

@@ -628,6 +628,11 @@ class Worker(QThread):
         if params.get("generate_layer_density_csv", True):
             density_levels = [14.5, 15.5, 16.2]
 
+        tracks_ctd_columns = None
+        if params.get("generate_tracks_ctd_csv", False) and not params.get("tracks_ctd_all_parameters", False):
+            from tracks_ctd import parse_ctd_columns
+            tracks_ctd_columns = parse_ctd_columns(params.get("tracks_ctd_columns", "6,11,12,16"))
+
         processor = AnalyzeProcessor()
         result = processor.process(
             csv_path=input_csv,
@@ -652,6 +657,9 @@ class Worker(QThread):
                 "ctd_layer_parameters", "Tav:6,Sav:7,Chlav:12"
             ),
             ctd_sigma_t_column=int(params.get("ctd_sigma_t_column", 11)),
+            generate_tracks_ctd_csv=params.get("generate_tracks_ctd_csv", False),
+            tracks_ctd_all_parameters=params.get("tracks_ctd_all_parameters", False),
+            tracks_ctd_columns=tracks_ctd_columns,
         )
 
         if not result.success:
@@ -676,7 +684,13 @@ class Worker(QThread):
                 task_id, OutputType.LAYER_DENSITY_CSV, result.layer_density_csv_path
             )
 
-        return float(result.total_detections), f"{result.total_detections} дет."
+        if result.tracks_ctd_csv_path and Path(result.tracks_ctd_csv_path).is_file():
+            self.repo.add_task_output(task_id, OutputType.TRACKS_CTD_CSV, result.tracks_ctd_csv_path)
+
+        summary = f"{result.total_detections} дет."
+        if result.tracks_ctd_warnings:
+            summary += f"; CTD: {len(result.tracks_ctd_warnings)} замеч. (см. лог)"
+        return float(result.total_detections), summary
 
     def _collect_processing_info(self, task_id: int, current_params: dict) -> dict:
         """
@@ -1087,6 +1101,9 @@ class Worker(QThread):
         if do_analysis:
             analysis_params = common_params.copy()
             analysis_params["ctd_columns"] = params.get("ctd_columns", "6,11,12,16")
+            analysis_params["generate_tracks_ctd_csv"] = params.get("generate_tracks_ctd_csv", False)
+            analysis_params["tracks_ctd_columns"] = params.get("tracks_ctd_columns", "6,11,12,16")
+            analysis_params["tracks_ctd_all_parameters"] = params.get("tracks_ctd_all_parameters", False)
             analysis_params["generate_layer_density_csv"] = params.get(
                 "generate_layer_density_csv", True
             )

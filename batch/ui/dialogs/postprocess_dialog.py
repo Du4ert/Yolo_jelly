@@ -281,6 +281,39 @@ class PostProcessDialog(QDialog):
         layer_export_row.addStretch()
         ops_layout.addLayout(layer_export_row)
 
+        tracks_ctd_row = QHBoxLayout()
+        tracks_ctd_row.setContentsMargins(40, 0, 0, 0)
+        self.chk_tracks_ctd_csv = QCheckBox("CSV треков с CTD")
+        self.chk_tracks_ctd_csv.setChecked(True)
+        self.chk_tracks_ctd_csv.setToolTip(
+            "Таблица организмов с готовой глубиной, размером и CTD на этой глубине.\n"
+            "Используются отдельные колонки CTD этой операции; исходные track_id сохраняются."
+        )
+        self.edit_tracks_ctd_columns = QLineEdit("6,11,12,16")
+        self.edit_tracks_ctd_columns.setMaximumWidth(120)
+        self.edit_tracks_ctd_columns.setToolTip(
+            "Индексы колонок CTD с нуля для CSV треков, через запятую.\n"
+            "Настройка не зависит от колонок CTD для графиков."
+        )
+        self.chk_tracks_ctd_all = QCheckBox("Все параметры CTD")
+        self.chk_tracks_ctd_csv.toggled.connect(self.chk_tracks_ctd_all.setEnabled)
+        self.chk_tracks_ctd_csv.toggled.connect(
+            lambda checked: self.edit_tracks_ctd_columns.setEnabled(
+                checked and not self.chk_tracks_ctd_all.isChecked()
+            )
+        )
+        self.chk_tracks_ctd_all.toggled.connect(
+            lambda checked: self.edit_tracks_ctd_columns.setEnabled(
+                not checked and self.chk_tracks_ctd_csv.isChecked()
+            )
+        )
+        tracks_ctd_row.addWidget(self.chk_tracks_ctd_csv)
+        tracks_ctd_row.addWidget(QLabel("Колонки CTD:"))
+        tracks_ctd_row.addWidget(self.edit_tracks_ctd_columns)
+        tracks_ctd_row.addWidget(self.chk_tracks_ctd_all)
+        tracks_ctd_row.addStretch()
+        ops_layout.addLayout(tracks_ctd_row)
+
         layout.addWidget(ops_group)
 
         # === Общие параметры ===
@@ -885,6 +918,9 @@ class PostProcessDialog(QDialog):
             "thermocline_mode": self.combo_thermocline_mode.currentData(),
             "density_levels": self.edit_density_levels.text().strip(),
             "generate_layer_density_csv": self.chk_layer_density_csv.isChecked(),
+            "generate_tracks_ctd_csv": self.chk_tracks_ctd_csv.isChecked(),
+            "tracks_ctd_columns": self.edit_tracks_ctd_columns.text().strip() or "6,11,12,16",
+            "tracks_ctd_all_parameters": self.chk_tracks_ctd_all.isChecked(),
             "ctd_layer_parameters": (
                 self.edit_ctd_layer_parameters.text().strip()
                 or "Tav:6,Sav:7,Chlav:12"

@@ -162,7 +162,7 @@ def collect_expedition_tracks(
     expedition_names: dict[Optional[int], str] = {}
 
     rows: list[dict[str, Any]] = []
-    columns: list[str] = ["u_track_id"]
+    columns: list[str] = ["u_track_id", "Station"]
     files_with_data = 0
 
     tasks = _get_export_tasks(repo, catalog_id, task_ids)
@@ -201,6 +201,7 @@ def collect_expedition_tracks(
                 original_track_id = _format_track_id(source_row.get("track_id"))
                 row = dict(source_row)
                 row["u_track_id"] = f"{expedition_name}_{dive_name}_{original_track_id}"
+                row["Station"] = dive_name
                 file_rows.append(row)
 
         if file_rows:

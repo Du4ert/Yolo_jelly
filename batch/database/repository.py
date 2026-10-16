@@ -881,6 +881,17 @@ class Repository:
             )
             return list(session.scalars(stmt).unique())
 
+    def get_completed_tasks_by_dive(self, dive_id: int) -> List[Task]:
+        """Возвращает завершённые задачи погружения с необходимыми связями."""
+        with self.get_session() as session:
+            task_ids = list(session.scalars(
+                select(Task.id).join(Task.video_file)
+                .where(VideoFile.dive_id == dive_id)
+                .where(Task.status == TaskStatus.DONE)
+                .order_by(Task.position, Task.id)
+            ))
+        return self.get_completed_tasks_by_ids(task_ids)
+
     def get_completed_tasks_by_ids(self, task_ids: List[int]) -> List[Task]:
         """Возвращает выбранные завершённые задачи со связанными данными."""
         from sqlalchemy.orm import joinedload

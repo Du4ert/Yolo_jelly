@@ -527,6 +527,9 @@ class DivePanel(QWidget):
 
     def _build_catalog_menu(self, menu: QMenu, catalog_id: int):
         """Меню для каталога."""
+        action_export = menu.addAction("📋 Экспорт треков с CTD экспедиции...")
+        action_export.triggered.connect(lambda: self._export_tracks_ctd(catalog_id=catalog_id))
+        menu.addSeparator()
         action_edit = menu.addAction("✏ Редактировать...")
         action_edit.triggered.connect(lambda: self._edit_catalog(catalog_id))
         
@@ -548,6 +551,9 @@ class DivePanel(QWidget):
 
     def _build_dive_menu(self, menu: QMenu, item: QTreeWidgetItem, dive_id: int):
         """Меню для погружения."""
+        action_export = menu.addAction("📋 Экспорт треков с CTD погружения...")
+        action_export.triggered.connect(lambda: self._export_tracks_ctd(dive_id=dive_id))
+        menu.addSeparator()
         action_edit = menu.addAction("✏ Редактировать...")
         action_edit.triggered.connect(lambda: self._edit_dive(dive_id))
         
@@ -589,6 +595,12 @@ class DivePanel(QWidget):
         
         action_delete = menu.addAction("🗑 Удалить из базы")
         action_delete.triggered.connect(lambda: self._delete_dive(dive_id))
+
+    def _export_tracks_ctd(self, catalog_id=None, dive_id=None):
+        from ..dialogs.track_ctd_export_dialog import TrackCTDExportDialog
+        TrackCTDExportDialog(
+            self.repo, parent=self, catalog_id=catalog_id, dive_id=dive_id,
+        ).exec()
 
     def _build_video_menu(self, menu: QMenu, item: QTreeWidgetItem, video_id: int):
         """Меню для видео."""
@@ -891,6 +903,10 @@ class DivePanel(QWidget):
                 analysis_found = add_output(
                     OutputType.LAYER_DENSITY_CSV,
                     analysis_dir / "layers.csv",
+                ) or analysis_found
+                analysis_found = add_output(
+                    OutputType.TRACKS_CTD_CSV,
+                    analysis_dir / f"{base}_tracks_ctd.csv",
                 ) or analysis_found
                 for html_path in analysis_dir.glob("*.html"):
                     analysis_found = add_output(
