@@ -39,6 +39,12 @@ class TrackCTDExportDialog(QDialog):
         self.all_parameters = QCheckBox("Все параметры")
         self.all_parameters.toggled.connect(lambda checked: self.columns.setEnabled(not checked))
         form.addRow(self.all_parameters)
+        self.extrapolate = QCheckBox("Экстраполировать CTD")
+        self.extrapolate.setToolTip(
+            "Глубже профиля CTD использовать последнее доступное значение каждого параметра.\n"
+            "Если выключено, поля CTD остаются пустыми. Слой назначается в обоих случаях."
+        )
+        form.addRow(self.extrapolate)
         layout.addLayout(form)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
@@ -64,7 +70,8 @@ class TrackCTDExportDialog(QDialog):
         try:
             count, warnings = export_task_tracks_ctd(
                 self.repo, path, ctd_columns=columns,
-                all_parameters=self.all_parameters.isChecked(), **self.scope,
+                all_parameters=self.all_parameters.isChecked(),
+                extrapolate=self.extrapolate.isChecked(), **self.scope,
             )
         except Exception as error:
             QMessageBox.warning(self, "Ошибка экспорта", str(error))

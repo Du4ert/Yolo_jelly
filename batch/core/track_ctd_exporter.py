@@ -8,7 +8,8 @@ from tracks_ctd import export_tracks_ctd_csv
 
 
 def export_task_tracks_ctd(repo, output_path, catalog_id=None, task_ids=None,
-                           dive_id=None, ctd_columns=None, all_parameters=False):
+                           dive_id=None, ctd_columns=None, all_parameters=False,
+                           extrapolate=False):
     """Экспортирует готовые измерения погружения, выбранных задач или экспедиции."""
     tasks = (repo.get_completed_tasks_by_dive(dive_id) if dive_id is not None
              else _get_export_tasks(repo, catalog_id, task_ids))
@@ -43,7 +44,9 @@ def export_task_tracks_ctd(repo, output_path, catalog_id=None, task_ids=None,
                 f"{expedition}_{dive.name}_{video.filename}_d{dive.id}_v{video.id}_"
             ),
         ))
-    count, messages = export_tracks_ctd_csv(sources, output_path, ctd_columns, all_parameters)
+    count, messages = export_tracks_ctd_csv(
+        sources, output_path, ctd_columns, all_parameters, extrapolate
+    )
     if not tasks:
         warnings.append("Нет завершённых задач для экспорта.")
     return count, warnings + messages

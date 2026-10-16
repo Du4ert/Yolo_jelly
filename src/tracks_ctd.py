@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from interactive_plot import find_depth_column, load_ctd_data, to_numeric_series
+from layer_density import assign_depth_layers
 
 
 BASE_COLUMNS = [
@@ -41,7 +42,7 @@ def _ctd_column_names(columns):
     return result
 
 
-def _sample_parameter(ctd, depth_column, column, target_depths):
+def _sample_parameter(ctd, depth_column, column, target_depths, extrapolate=False):
     """Интерполирует числа, для текстовых параметров берёт ближайшую глубину."""
     depths = to_numeric_series(ctd[depth_column])
     depths = depths.where(np.isfinite(depths))
@@ -54,7 +55,7 @@ def _sample_parameter(ctd, depth_column, column, target_depths):
             return np.full(len(target_depths), np.nan)
         return np.interp(
             target_depths.to_numpy(dtype=float), profile["depth"], profile["value"],
-            left=np.nan, right=np.nan,
+            left=np.nan, right=float(profile["value"].iloc[-1]) if extrapolate else np.nan,
         )
 
     profile = pd.DataFrame({"depth": depths, "value": ctd[column]}).dropna()
@@ -67,12 +68,13 @@ def _sample_parameter(ctd, depth_column, column, target_depths):
     for index, depth in enumerate(target_depths):
         if pd.notna(depth) and source_depths[0] <= depth <= source_depths[-1]:
             result[index] = values[np.abs(source_depths - depth).argmin()]
+        elif extrapolate and pd.notna(depth) and depth > source_depths[-1]:
+            result[index] = values[-1]
     return result
 
 
-def _assign_layers(depths, layers_path):
+def _assign_layers(depths, layers_path, profile_bottom=None):
     """Использует готовые границы и правила включения границ из расчёта слоёв."""
-    result = pd.Series("", index=depths.index, dtype=object)
     layers = load_ctd_data(layers_path)
     if not {"Layer", "Dt", "Db"}.issubset(layers.columns):
         raise ValueError("В layers.csv отсутствуют Layer, Dt или Db.")
@@ -80,16 +82,11 @@ def _assign_layers(depths, layers_path):
     layers["Db"] = to_numeric_series(layers["Db"])
     layers = layers[layers["Layer"].isin(["UML", "STL", "OXY", "SOL"])]
     layers = layers.dropna(subset=["Dt", "Db"]).sort_values("Dt")
-    for index, (_, layer) in enumerate(layers.iterrows()):
-        last = index == len(layers) - 1
-        mask = (depths >= layer["Dt"]) & (
-            (depths <= layer["Db"]) if last else (depths < layer["Db"])
-        )
-        result.loc[mask] = layer["Layer"]
-    return result
+    bounds = {row["Layer"]: (row["Dt"], row["Db"]) for _, row in layers.iterrows()}
+    return assign_depth_layers(depths, bounds, profile_bottom)
 
 
-def collect_tracks_ctd(source, ctd_columns=None, all_parameters=False):
+def collect_tracks_ctd(source, ctd_columns=None, all_parameters=False, extrapolate=False):
     """Собирает одно видео без пересчёта геометрии, размеров или границ слоёв."""
     warnings = []
     tracks = pd.read_csv(source["track_sizes_path"], encoding="utf-8-sig")
@@ -128,25 +125,37 @@ def collect_tracks_ctd(source, ctd_columns=None, all_parameters=False):
     if missing_sizes:
         warnings.append(f"Организмов без рассчитанного размера: {missing_sizes}.")
 
+    ctd = None
+    depth_column = None
+    profile_depths = pd.Series(dtype=float)
+    ctd_path = source.get("ctd_path")
+    if not ctd_path or not Path(ctd_path).is_file():
+        warnings.append("Нет доступного CTD-файла: параметры CTD оставлены пустыми.")
+    else:
+        try:
+            ctd = load_ctd_data(ctd_path)
+            depth_column = find_depth_column(ctd)
+            if depth_column is not None:
+                profile_depths = to_numeric_series(ctd[depth_column])
+                profile_depths = profile_depths[np.isfinite(profile_depths)]
+        except Exception as error:
+            ctd = None
+            warnings.append(f"Не удалось прочитать CTD: {error}; измерения организмов сохранены.")
+
     layers_path = source.get("layers_path")
     if layers_path and Path(layers_path).is_file():
         try:
-            result["layer"] = _assign_layers(result["depth_m"], layers_path)
+            result["layer"] = _assign_layers(
+                result["depth_m"], layers_path,
+                float(profile_depths.max()) if not profile_depths.empty else None,
+            )
         except Exception as error:
             warnings.append(f"Не удалось прочитать границы слоёв: {error}")
     else:
         warnings.append("Нет layers.csv: поле layer оставлено пустым.")
 
-    ctd_path = source.get("ctd_path")
-    if not ctd_path or not Path(ctd_path).is_file():
-        warnings.append("Нет доступного CTD-файла: параметры CTD оставлены пустыми.")
+    if ctd is None:
         return result, warnings
-    try:
-        ctd = load_ctd_data(ctd_path)
-    except Exception as error:
-        warnings.append(f"Не удалось прочитать CTD: {error}; измерения организмов сохранены.")
-        return result, warnings
-    depth_column = find_depth_column(ctd)
     indices = list(range(len(ctd.columns))) if all_parameters else parse_ctd_columns(ctd_columns)
     names = _ctd_column_names(ctd.columns)
     for index in indices:
@@ -155,27 +164,27 @@ def collect_tracks_ctd(source, ctd_columns=None, all_parameters=False):
             continue
         column = ctd.columns[index]
         result[names[column]] = (
-            _sample_parameter(ctd, depth_column, column, result["depth_m"])
+            _sample_parameter(ctd, depth_column, column, result["depth_m"], extrapolate)
             if depth_column is not None else np.nan
         )
     if depth_column is None:
         warnings.append("В CTD не найдена глубина: параметры CTD оставлены пустыми.")
         return result, warnings
-    profile_depths = to_numeric_series(ctd[depth_column])
-    profile_depths = profile_depths[np.isfinite(profile_depths)]
     if profile_depths.empty:
         warnings.append("В CTD нет числовых глубин.")
     else:
-        outside = (
-            (result["depth_m"] < profile_depths.min())
-            | (result["depth_m"] > profile_depths.max())
-        ).sum()
-        if outside:
-            warnings.append(f"Организмов за диапазоном глубин CTD: {outside}; CTD без экстраполяции.")
+        shallow = int((result["depth_m"] < profile_depths.min()).sum())
+        deep = int((result["depth_m"] > profile_depths.max()).sum())
+        if shallow:
+            warnings.append(f"Организмов выше диапазона CTD: {shallow}; параметры CTD пустые.")
+        if deep:
+            action = "продлены последними доступными значениями" if extrapolate else "оставлены пустыми"
+            warnings.append(f"Организмов глубже профиля CTD: {deep}; параметры CTD {action}.")
     return result, warnings
 
 
-def export_tracks_ctd_csv(sources, output_path, ctd_columns=None, all_parameters=False):
+def export_tracks_ctd_csv(sources, output_path, ctd_columns=None, all_parameters=False,
+                          extrapolate=False):
     """Объединяет источники и возвращает количество организмов и замечания."""
     frames, warnings = [], []
     seen = set()
@@ -184,7 +193,9 @@ def export_tracks_ctd_csv(sources, output_path, ctd_columns=None, all_parameters
         if key in seen:
             continue
         try:
-            frame, source_warnings = collect_tracks_ctd(source, ctd_columns, all_parameters)
+            frame, source_warnings = collect_tracks_ctd(
+                source, ctd_columns, all_parameters, extrapolate
+            )
         except Exception as error:
             warnings.append(f"{source['station']}: {error}")
             continue

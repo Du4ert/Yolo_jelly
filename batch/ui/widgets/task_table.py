@@ -621,6 +621,7 @@ class TaskTable(QWidget):
         if task.status == TaskStatus.DONE:
             action_postprocess = menu.addAction("📊 Добавить постобработку...")
             action_postprocess.triggered.connect(lambda: self._postprocess_task(task_id))
+            menu.addSeparator()
             action_export_ls = menu.addAction("🏷 Экспорт в Label Studio...")
             action_export_ls.triggered.connect(lambda: self._export_label_studio([task_id]))
             if task.enable_tracking:
@@ -865,13 +866,6 @@ class TaskTable(QWidget):
         menu = QMenu(self)
         has_items = False
 
-        action_panel = menu.addAction("📈 Панель графиков...")
-        action_panel.triggered.connect(lambda: self._plot_panel(task_ids))
-        has_items = True
-
-        if done_ids:
-            self._add_selected_export_actions(menu, done_ids)
-
         if non_running_ids:
             action = menu.addAction(
                 f"📊 Постобработка {len(non_running_ids)} задач..."
@@ -879,7 +873,15 @@ class TaskTable(QWidget):
             action.triggered.connect(
                 lambda: self._postprocess_task(non_running_ids)
             )
+            menu.addSeparator()
             has_items = True
+
+        action_panel = menu.addAction("📈 Панель графиков...")
+        action_panel.triggered.connect(lambda: self._plot_panel(task_ids))
+        has_items = True
+
+        if done_ids:
+            self._add_selected_export_actions(menu, done_ids)
 
         if done_ids:
             action = menu.addAction(f"🏷 Экспорт в Label Studio ({len(done_ids)})...")

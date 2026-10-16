@@ -125,6 +125,26 @@ def _build_layer_bounds(
     return bounds
 
 
+def assign_depth_layers(depths, layer_bounds, profile_bottom=None):
+    """Назначает слой, продолжая последний доступный слой ниже профиля CTD."""
+    result = pd.Series("", index=depths.index, dtype=object)
+    valid_layers = sorted(
+        (
+            (name, bounds) for name, bounds in layer_bounds.items()
+            if bounds is not None and np.isfinite(bounds).all() and bounds[1] > bounds[0]
+        ),
+        key=lambda item: item[1][0],
+    )
+    for index, (name, (top, bottom)) in enumerate(valid_layers):
+        last = index == len(valid_layers) - 1
+        mask = (depths >= top) & ((depths <= bottom) if last else (depths < bottom))
+        if last:
+            limit = profile_bottom if profile_bottom is not None else bottom
+            mask |= (depths > limit) & (depths >= top)
+        result.loc[mask & np.isfinite(depths)] = name
+    return result
+
+
 def export_layer_density_csv(
     output_path: str,
     station_name: str,
@@ -196,13 +216,19 @@ def export_layer_density_csv(
     }.issubset(tracks_df.columns)
     if "object_depth_m" in tracks_df.columns:
         tracks_df["object_depth_m"] = to_numeric_series(tracks_df["object_depth_m"])
+        tracks_df["object_depth_m"] = tracks_df["object_depth_m"].where(
+            np.isfinite(tracks_df["object_depth_m"])
+        )
         tracks_df = tracks_df.dropna(subset=["object_depth_m"])
     else:
         tracks_df = tracks_df.iloc[0:0]
     if "track_id" in tracks_df.columns and "class_name" in tracks_df.columns:
         tracks_df = tracks_df.drop_duplicates(subset=["class_name", "track_id"])
 
-    existing_layers = [name for name in LAYER_NAMES if layer_bounds[name] is not None]
+    depths = tracks_df.get("object_depth_m", pd.Series(dtype=float))
+    assigned_layers = assign_depth_layers(depths, layer_bounds, end_depth)
+    # Границы и средние CTD сохраняются по измерениям; глубокие организмы
+    # учитываются в последнем слое без экстраполяции самих границ.
     for row, layer_name in zip(rows, LAYER_NAMES):
         bounds = layer_bounds[layer_name]
         if bounds is None:
@@ -215,10 +241,7 @@ def export_layer_density_csv(
                 ctd_df, depth_col, source_col, top, bottom
             )
 
-        is_last = layer_name == existing_layers[-1]
-        depths = tracks_df.get("object_depth_m", pd.Series(dtype=float))
-        in_layer = (depths >= top) & ((depths <= bottom) if is_last else (depths < bottom))
-        layer_tracks = tracks_df[in_layer]
+        layer_tracks = tracks_df[assigned_layers == layer_name]
         for species_name, output_name in SPECIES_COLUMNS.items():
             area = (
                 pleurobrachia_cross_section_area_m2

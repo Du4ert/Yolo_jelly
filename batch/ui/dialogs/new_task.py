@@ -498,6 +498,7 @@ class NewTaskDialog(QDialog):
                 "generate_tracks_ctd_csv": self.pp_chk_tracks_ctd_csv.isChecked(),
                 "tracks_ctd_columns": self.pp_edit_tracks_ctd_columns.text().strip() or "6,11,12,16",
                 "tracks_ctd_all_parameters": self.pp_chk_tracks_ctd_all.isChecked(),
+                "tracks_ctd_extrapolate": self.pp_chk_tracks_ctd_extrapolate.isChecked(),
                 "ctd_layer_parameters": (
                     self.pp_edit_ctd_layer_parameters.text().strip()
                     or "Tav:6,Sav:7,Chlav:12"
@@ -773,6 +774,19 @@ class NewTaskDialog(QDialog):
         tracks_ctd_layout.addWidget(self.pp_chk_tracks_ctd_all)
         tracks_ctd_layout.addStretch()
         layout.addWidget(tracks_ctd_indent)
+
+        extrapolate_indent = QWidget()
+        extrapolate_layout = QHBoxLayout(extrapolate_indent)
+        extrapolate_layout.setContentsMargins(20, 0, 0, 0)
+        self.pp_chk_tracks_ctd_extrapolate = QCheckBox("Экстраполировать CTD")
+        self.pp_chk_tracks_ctd_extrapolate.setToolTip(
+            "Для CSV треков: глубже профиля CTD использовать последние доступные значения.\n"
+            "Если выключено, поля CTD пустые. Последний доступный слой назначается всегда."
+        )
+        self.pp_chk_tracks_ctd_csv.toggled.connect(self.pp_chk_tracks_ctd_extrapolate.setEnabled)
+        extrapolate_layout.addWidget(self.pp_chk_tracks_ctd_extrapolate)
+        extrapolate_layout.addStretch()
+        layout.addWidget(extrapolate_indent)
 
         # === Параметры ===
         params_label = QLabel("Параметры:")

@@ -660,6 +660,7 @@ class Worker(QThread):
             generate_tracks_ctd_csv=params.get("generate_tracks_ctd_csv", False),
             tracks_ctd_all_parameters=params.get("tracks_ctd_all_parameters", False),
             tracks_ctd_columns=tracks_ctd_columns,
+            tracks_ctd_extrapolate=params.get("tracks_ctd_extrapolate", False),
         )
 
         if not result.success:
@@ -1104,6 +1105,7 @@ class Worker(QThread):
             analysis_params["generate_tracks_ctd_csv"] = params.get("generate_tracks_ctd_csv", False)
             analysis_params["tracks_ctd_columns"] = params.get("tracks_ctd_columns", "6,11,12,16")
             analysis_params["tracks_ctd_all_parameters"] = params.get("tracks_ctd_all_parameters", False)
+            analysis_params["tracks_ctd_extrapolate"] = params.get("tracks_ctd_extrapolate", False)
             analysis_params["generate_layer_density_csv"] = params.get(
                 "generate_layer_density_csv", True
             )

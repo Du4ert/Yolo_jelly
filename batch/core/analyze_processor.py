@@ -87,6 +87,7 @@ class AnalyzeProcessor:
         generate_tracks_ctd_csv: bool = False,
         tracks_ctd_all_parameters: bool = False,
         tracks_ctd_columns: Optional[List[int]] = None,
+        tracks_ctd_extrapolate: bool = False,
     ) -> AnalyzeResult:
         """
         Запускает анализ данных.
@@ -264,6 +265,7 @@ class AnalyzeProcessor:
                     ),
                     ctd_columns=tracks_ctd_columns,
                     all_parameters=tracks_ctd_all_parameters,
+                    extrapolate=tracks_ctd_extrapolate,
                 )
                 filename = f"{video_name}_tracks_ctd.csv" if video_name else "tracks_ctd.csv"
                 result.tracks_ctd_csv_path = str(output_path / filename)
