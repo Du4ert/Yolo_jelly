@@ -881,6 +881,27 @@ class Repository:
             )
             return list(session.scalars(stmt).unique())
 
+    def get_completed_tasks_by_ids(self, task_ids: List[int]) -> List[Task]:
+        """Возвращает выбранные завершённые задачи со связанными данными."""
+        from sqlalchemy.orm import joinedload
+
+        if not task_ids:
+            return []
+
+        with self.get_session() as session:
+            stmt = (
+                select(Task)
+                .where(Task.id.in_(task_ids))
+                .where(Task.status == TaskStatus.DONE)
+                .options(
+                    joinedload(Task.video_file).joinedload(VideoFile.dive),
+                    joinedload(Task.outputs),
+                    joinedload(Task.subtasks),
+                )
+                .order_by(Task.position, Task.id)
+            )
+            return list(session.scalars(stmt).unique())
+
     def delete_task(self, task_id: int) -> bool:
         """Удаляет задачу."""
         with self.get_session() as session:

@@ -1,5 +1,5 @@
 """
-Экспорт данных экспедиции — собирает данные из volume.csv всех задач в сводную таблицу CSV.
+Экспорт данных, треков и слоёв экспедиции или выбранных задач в CSV.
 """
 
 import csv
@@ -81,9 +81,18 @@ def parse_volume_csv(filepath: str) -> dict[str, str]:
     return data
 
 
-def collect_expedition_data(repo, catalog_id: int) -> list[dict[str, Any]]:
+def _get_export_tasks(repo, catalog_id: Optional[int], task_ids: Optional[list[int]]):
+    """Выбирает завершённые задачи экспедиции или явно заданного выделения."""
+    if task_ids is not None:
+        return repo.get_completed_tasks_by_ids(task_ids)
+    return repo.get_tasks_by_catalog(catalog_id)
+
+
+def collect_expedition_data(
+    repo, catalog_id: Optional[int], task_ids: Optional[list[int]] = None,
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    tasks = repo.get_tasks_by_catalog(catalog_id)
+    tasks = _get_export_tasks(repo, catalog_id, task_ids)
     for task in tasks:
         dive = task.video_file.dive if task.video_file else None
         dive_name = dive.name if dive else "???"
@@ -108,8 +117,11 @@ def collect_expedition_data(repo, catalog_id: int) -> list[dict[str, Any]]:
     return rows
 
 
-def export_expedition_csv(repo, catalog_id: int, output_path: str) -> tuple[int, int]:
-    rows = collect_expedition_data(repo, catalog_id)
+def export_expedition_csv(
+    repo, catalog_id: Optional[int], output_path: str,
+    task_ids: Optional[list[int]] = None,
+) -> tuple[int, int]:
+    rows = collect_expedition_data(repo, catalog_id, task_ids)
     rows_with_data = sum(
         1 for r in rows
         if r.get("total_volume_m3", 0) != 0
@@ -143,19 +155,26 @@ def _format_track_id(track_id: Any) -> str:
     return value
 
 
-def collect_expedition_tracks(repo, catalog_id: int) -> tuple[list[dict[str, Any]], list[str], int]:
-    """Собирает строки из _track_sizes.csv всех задач экспедиции."""
-    catalog = repo.get_catalog(catalog_id)
-    expedition_name = catalog.name if catalog else "???"
+def collect_expedition_tracks(
+    repo, catalog_id: Optional[int], task_ids: Optional[list[int]] = None,
+) -> tuple[list[dict[str, Any]], list[str], int]:
+    """Собирает строки из _track_sizes.csv экспедиции или выбранных задач."""
+    expedition_names: dict[Optional[int], str] = {}
 
     rows: list[dict[str, Any]] = []
     columns: list[str] = ["u_track_id"]
     files_with_data = 0
 
-    tasks = repo.get_tasks_by_catalog(catalog_id)
+    tasks = _get_export_tasks(repo, catalog_id, task_ids)
     for task in tasks:
         dive = task.video_file.dive if task.video_file else None
         dive_name = dive.name if dive else "???"
+
+        source_catalog_id = dive.catalog_id if task_ids is not None and dive else catalog_id
+        if source_catalog_id not in expedition_names:
+            catalog = repo.get_catalog(source_catalog_id) if source_catalog_id is not None else None
+            expedition_names[source_catalog_id] = catalog.name if catalog else "???"
+        expedition_name = expedition_names[source_catalog_id]
 
         track_sizes_output = repo.get_task_output_by_type(task.id, OutputType.TRACK_SIZES_CSV)
         track_sizes_path = track_sizes_output.filepath if track_sizes_output else None
@@ -191,20 +210,24 @@ def collect_expedition_tracks(repo, catalog_id: int) -> tuple[list[dict[str, Any
     return rows, columns, files_with_data
 
 
-def export_expedition_tracks_csv(repo, catalog_id: int, output_path: str) -> tuple[int, int, int]:
-    rows, columns, files_with_data = collect_expedition_tracks(repo, catalog_id)
+def export_expedition_tracks_csv(
+    repo, catalog_id: Optional[int], output_path: str,
+    task_ids: Optional[list[int]] = None,
+) -> tuple[int, int, int]:
+    rows, columns, files_with_data = collect_expedition_tracks(repo, catalog_id, task_ids)
 
     with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
 
-    return len(repo.get_tasks_by_catalog(catalog_id)), files_with_data, len(rows)
+    return len(_get_export_tasks(repo, catalog_id, task_ids)), files_with_data, len(rows)
 
 
 def collect_expedition_layers(
     repo,
-    catalog_id: int,
+    catalog_id: Optional[int],
+    task_ids: Optional[list[int]] = None,
 ) -> tuple[list[dict[str, Any]], list[str], int, int]:
     """Собирает строки layers.csv, включая каждый файл погружения один раз."""
     rows: list[dict[str, Any]] = []
@@ -212,7 +235,7 @@ def collect_expedition_layers(
     files_with_data = 0
     dive_ids: set[int] = set()
 
-    tasks = repo.get_tasks_by_catalog(catalog_id)
+    tasks = _get_export_tasks(repo, catalog_id, task_ids)
     total_dive_ids = {
         task.video_file.dive.id
         for task in tasks
@@ -257,12 +280,13 @@ def collect_expedition_layers(
 
 def export_expedition_layers_csv(
     repo,
-    catalog_id: int,
+    catalog_id: Optional[int],
     output_path: str,
+    task_ids: Optional[list[int]] = None,
 ) -> tuple[int, int, int]:
     """Объединяет layers.csv всех погружений экспедиции в один CSV."""
     rows, columns, files_with_data, total_dives = collect_expedition_layers(
-        repo, catalog_id
+        repo, catalog_id, task_ids
     )
 
     with open(output_path, "w", newline="", encoding="utf-8-sig") as f:

@@ -626,6 +626,7 @@ class TaskTable(QWidget):
             if task.enable_tracking:
                 action_verify = menu.addAction("🔍 Проверить треки...")
                 action_verify.triggered.connect(lambda: self._verify_tracks(task_id))
+            self._add_selected_export_actions(menu, [task_id])
             menu.addSeparator()
         
         # Редактирование
@@ -731,6 +732,24 @@ class TaskTable(QWidget):
     def _export_expedition_layers(self, catalog_id: int):
         from ..dialogs.expedition_export_dialog import export_expedition_layers
         export_expedition_layers(self, self.repo, catalog_id)
+
+    def _add_selected_export_actions(self, menu: QMenu, task_ids: list[int]):
+        """Добавляет экспорт данных, треков и слоёв выбранных задач."""
+        from ..dialogs.expedition_export_dialog import (
+            export_expedition_data, export_expedition_tracks, export_expedition_layers,
+        )
+
+        for title, exporter in (
+            ("📊 Экспорт данных выбранных погружений...", export_expedition_data),
+            ("📍 Экспорт треков выбранных погружений...", export_expedition_tracks),
+            ("▤ Экспорт слоёв выбранных погружений...", export_expedition_layers),
+        ):
+            action = menu.addAction(title)
+            action.triggered.connect(
+                lambda checked=False, export=exporter: export(
+                    self, self.repo, task_ids=task_ids
+                )
+            )
 
     def _retry_subtask(self, subtask_id: int):
         """Повторяет подзадачу."""
@@ -839,6 +858,9 @@ class TaskTable(QWidget):
         action_panel = menu.addAction("📈 Панель графиков...")
         action_panel.triggered.connect(lambda: self._plot_panel(task_ids))
         has_items = True
+
+        if done_ids:
+            self._add_selected_export_actions(menu, done_ids)
 
         if non_running_ids:
             action = menu.addAction(

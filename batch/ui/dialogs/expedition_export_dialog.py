@@ -1,19 +1,36 @@
 """
-Диалог экспорта данных экспедиции — открывает Save As и вызывает сбор CSV.
+Диалоги экспорта экспедиции или выбранных задач — сохранение и сбор CSV.
 """
 
 from PyQt6.QtWidgets import QFileDialog, QMessageBox
 
 
-def export_expedition_data(parent, repo, catalog_id: int) -> None:
+def _get_export_scope(repo, catalog_id, task_ids):
+    """Возвращает имя файла, описание выборки и сообщение для пустой выборки."""
+    if task_ids is not None:
+        return (
+            "selected_dives",
+            "выбранных погружений",
+            "Среди выбранных задач нет завершённых.",
+        )
     catalog = repo.get_catalog(catalog_id)
     if not catalog:
-        return
+        return None
+    return catalog.name, f'экспедиции «{catalog.name}»', "В экспедиции нет завершённых задач."
 
-    default_name = f"{catalog.name}_summary.csv"
+
+def export_expedition_data(
+    parent, repo, catalog_id: int | None = None, task_ids: list[int] | None = None,
+) -> None:
+    scope = _get_export_scope(repo, catalog_id, task_ids)
+    if scope is None:
+        return
+    name, description, empty_message = scope
+
+    default_name = f"{name}_summary.csv"
     filepath, _ = QFileDialog.getSaveFileName(
         parent,
-        f'Экспорт экспедиции «{catalog.name}»',
+        f"Экспорт {description}",
         default_name,
         "CSV (*.csv)",
     )
@@ -23,13 +40,13 @@ def export_expedition_data(parent, repo, catalog_id: int) -> None:
     try:
         from ...core.expedition_exporter import export_expedition_csv
 
-        total, with_data = export_expedition_csv(repo, catalog_id, filepath)
+        total, with_data = export_expedition_csv(repo, catalog_id, filepath, task_ids)
 
         if total == 0:
             QMessageBox.information(
                 parent,
                 "Экспорт",
-                "В экспедиции нет завершённых задач.",
+                empty_message,
             )
         elif total == with_data:
             QMessageBox.information(
@@ -53,15 +70,18 @@ def export_expedition_data(parent, repo, catalog_id: int) -> None:
         )
 
 
-def export_expedition_tracks(parent, repo, catalog_id: int) -> None:
-    catalog = repo.get_catalog(catalog_id)
-    if not catalog:
+def export_expedition_tracks(
+    parent, repo, catalog_id: int | None = None, task_ids: list[int] | None = None,
+) -> None:
+    scope = _get_export_scope(repo, catalog_id, task_ids)
+    if scope is None:
         return
+    name, description, empty_message = scope
 
-    default_name = f"{catalog.name}_tracks.csv"
+    default_name = f"{name}_tracks.csv"
     filepath, _ = QFileDialog.getSaveFileName(
         parent,
-        f'Экспорт треков экспедиции «{catalog.name}»',
+        f"Экспорт треков {description}",
         default_name,
         "CSV (*.csv)",
     )
@@ -71,13 +91,15 @@ def export_expedition_tracks(parent, repo, catalog_id: int) -> None:
     try:
         from ...core.expedition_exporter import export_expedition_tracks_csv
 
-        total, files_with_data, rows_count = export_expedition_tracks_csv(repo, catalog_id, filepath)
+        total, files_with_data, rows_count = export_expedition_tracks_csv(
+            repo, catalog_id, filepath, task_ids
+        )
 
         if total == 0:
             QMessageBox.information(
                 parent,
                 "Экспорт треков",
-                "В экспедиции нет завершённых задач.",
+                empty_message,
             )
         elif rows_count == 0:
             QMessageBox.information(
@@ -99,15 +121,18 @@ def export_expedition_tracks(parent, repo, catalog_id: int) -> None:
         )
 
 
-def export_expedition_layers(parent, repo, catalog_id: int) -> None:
-    catalog = repo.get_catalog(catalog_id)
-    if not catalog:
+def export_expedition_layers(
+    parent, repo, catalog_id: int | None = None, task_ids: list[int] | None = None,
+) -> None:
+    scope = _get_export_scope(repo, catalog_id, task_ids)
+    if scope is None:
         return
+    name, description, empty_message = scope
 
-    default_name = f"{catalog.name}_layers.csv"
+    default_name = f"{name}_layers.csv"
     filepath, _ = QFileDialog.getSaveFileName(
         parent,
-        f'Экспорт слоёв экспедиции «{catalog.name}»',
+        f"Экспорт слоёв {description}",
         default_name,
         "CSV (*.csv)",
     )
@@ -118,14 +143,14 @@ def export_expedition_layers(parent, repo, catalog_id: int) -> None:
         from ...core.expedition_exporter import export_expedition_layers_csv
 
         total, files_with_data, rows_count = export_expedition_layers_csv(
-            repo, catalog_id, filepath
+            repo, catalog_id, filepath, task_ids
         )
 
         if total == 0:
             QMessageBox.information(
                 parent,
                 "Экспорт слоёв",
-                "В экспедиции нет завершённых задач.",
+                empty_message,
             )
         elif rows_count == 0:
             QMessageBox.information(
