@@ -796,8 +796,12 @@ class VerifyDialog(QDialog):
         self._table.setHorizontalHeaderLabels(columns)
         self._table.horizontalHeader().moveSection(9, 3)
         self._table.horizontalHeaderItem(9).setToolTip(
-            "К выбранному фрагменту (или треку): Δt + расстояние центров в диагоналях "
-            "средней рамки + (1 − IoU). Меньше — ближе. Подробности — в подсказке ячейки."
+            "Относительно выбранного элемента. Для треков всех классов сравниваются "
+            "последний кадр более раннего и первый кадр более позднего трека; "
+            "общий диапазон кадров отмечается как «Пересечение». "
+            "Для фрагментов — прежнее сравнение с ближайшими по времени рамками "
+            "того же класса. Оценка: Δt + расстояние центров в диагоналях средней "
+            "рамки + (1 − IoU). Меньше — ближе."
         )
 
         self._table.setSelectionBehavior(
@@ -919,13 +923,8 @@ class VerifyDialog(QDialog):
         reference = min(fragments, key=self._chronological_key) if fragments else next(
             (t for t in selected if t is self._selected_track), selected[0] if selected else None,
         )
-        # Обычная проверка с отключёнными фрагментами не требует дополнительного
-        # прохода по CSV на каждом выборе. Для обычных треков оценка включается
-        # нажатием на заголовок «Близость».
-        if self._track_filter.currentData() == "tracks" and self._sort_column != 9 and not force:
-            reference = None
         key = (reference.track_id if reference else None, tuple(self._snapshot_state().items()))
-        if key == self._proximity_cache_key:
+        if key == self._proximity_cache_key and not force:
             return
         self._proximity_cache_key = key
         self._proximity_reference_id = reference.track_id if reference else None
@@ -934,7 +933,12 @@ class VerifyDialog(QDialog):
             by_id = {t.track_id: t for t in self._tracks}
             targets = {t.track_id for t in self._tracks
                        if t is not reference and not t.deleted and t.merged_into_track_id is None
-                       and t.effective_class_id == reference.effective_class_id}
+                       and (not reference.is_candidate and not t.is_candidate
+                            or t.effective_class_id == reference.effective_class_id)}
+            endpoint_track_ids = None
+            if not reference.is_candidate:
+                endpoint_track_ids = {t.track_id for t in self._tracks
+                                      if t.track_id in targets and not t.is_candidate}
             track_ids = {}
             orphan_ids = {}
             row_targets = {}
@@ -954,6 +958,7 @@ class VerifyDialog(QDialog):
                         reference_df = self._load_detections_for_track(reference.track_id)
                     self._proximity_scores = load_track_proximity(
                         self._detections_csv, reference_df, track_ids, orphan_ids, row_targets,
+                        endpoint_track_ids=endpoint_track_ids,
                     )
                 except Exception as e:
                     self._table.horizontalHeaderItem(9).setToolTip(f"Не удалось оценить близость: {e}")
@@ -968,10 +973,24 @@ class VerifyDialog(QDialog):
         result = self._proximity_scores.get(track.track_id)
         if track.track_id == self._proximity_reference_id:
             text, tooltip = "Опорный", "Положение этого элемента используется для сравнения."
+        elif result and "overlap_frames" in result:
+            first, last = result["overlap_frames"]
+            text = "Пересечение"
+            tooltip = (
+                f"С треком {self._proximity_reference_id}: общий диапазон кадров {first}–{last}.\n"
+                "Треки существуют одновременно — это могут быть разные объекты рядом.\n"
+                "Числовая близость по крайним кадрам не рассчитывается."
+            )
         elif result:
             text = f"{result['score']:.2f}"
+            frame_details = (
+                f"Кадр этого трека: {result['target_frame']}; "
+                f"кадр опорного: {result['reference_frame']}\n"
+                f"Разрыв по кадрам: {result['frame_gap']}\n"
+            ) if "target_frame" in result else ""
             tooltip = (
                 f"К элементу {self._proximity_reference_id}:\n"
+                f"{frame_details}"
                 f"Разрыв по времени: {result['time_gap_s']:.3f} с\n"
                 f"Расстояние центров (нормированные координаты): {result['center_distance']:.4f}\n"
                 f"Перекрытие рамок IoU: {result['iou']:.3f}\n"
@@ -2589,11 +2608,6 @@ class VerifyDialog(QDialog):
 
     def _update_visible_tracks(self):
         mode = self._track_filter.currentData()
-        self._table.setColumnHidden(9, mode == "tracks")
-        if mode == "tracks" and self._sort_column == 9:
-            self._sort_column = 8
-            self._sort_reverse = False
-            self._table.horizontalHeader().setSortIndicator(8, Qt.SortOrder.AscendingOrder)
         self._group_children = {}
         self._group_depth = {}
         known_ids = {t.track_id for t in self._tracks}
@@ -2626,6 +2640,16 @@ class VerifyDialog(QDialog):
         key = key_map.get(self._sort_column)
         if key is not None:
             self._visible_tracks.sort(key=key, reverse=self._sort_reverse)
+        if self._sort_column == 9:
+            # Опорный элемент всегда первый; пересечения и отсутствие данных
+            # идут после числовых оценок при обоих направлениях сортировки.
+            def proximity_group(track):
+                if track.track_id == self._proximity_reference_id:
+                    return 0
+                result = self._proximity_scores.get(track.track_id, {})
+                return 1 if "score" in result else 2 if "overlap_frames" in result else 3
+
+            self._visible_tracks.sort(key=proximity_group)
         rows = []
         visited = set()
 

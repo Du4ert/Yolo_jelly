@@ -366,15 +366,34 @@ def _bbox_iou(a, b) -> float:
     return intersection / (aw * ah + bw * bh - intersection)
 
 
+def _bbox_proximity(a, b) -> Optional[dict]:
+    """Пространственно-временная оценка для двух конкретных детекций."""
+    columns = ["timestamp_s", "x_center", "y_center", "width", "height"]
+    values = [float(row[col]) for row in (a, b) for col in columns]
+    if not np.isfinite(values).all() or any(values[i] <= 0 for i in (3, 4, 8, 9)):
+        return None
+    distance = float(np.hypot(b["x_center"] - a["x_center"],
+                              b["y_center"] - a["y_center"]))
+    diagonal = float(np.hypot((b["width"] + a["width"]) / 2,
+                              (b["height"] + a["height"]) / 2))
+    iou = _bbox_iou(a, b)
+    dt = abs(float(b["timestamp_s"]) - float(a["timestamp_s"]))
+    return {"score": dt + distance / diagonal + (1 - iou), "time_gap_s": dt,
+            "center_distance": distance, "iou": iou}
+
+
 def load_track_proximity(path: str, reference: pd.DataFrame,
                          track_ids: Dict[int, int], orphan_ids: Dict[int, int],
                          row_targets: Optional[dict] = None,
-                         detections: Optional[pd.DataFrame] = None) -> dict:
+                         detections: Optional[pd.DataFrame] = None,
+                         endpoint_track_ids: Optional[set] = None) -> dict:
     """Сравнивает концы выбранного фрагмента с ближайшими по времени рамками.
 
     Оценка: разрыв в секундах + расстояние в диагоналях средней рамки + (1 - IoU).
     Меньше — ближе. Это подсказка для ручного объединения, а не решение трекера.
     Словари переводят исходные ID и номера строк без ID в актуальные ID окна.
+    Для endpoint_track_ids сравниваются только встречные крайние кадры;
+    пересекающиеся диапазоны возвращаются отдельно, без числовой оценки.
     """
     if reference.empty or (detections is None and (not path or not os.path.exists(path))):
         return {}
@@ -382,6 +401,9 @@ def load_track_proximity(path: str, reference: pd.DataFrame,
     anchors = reference.iloc[[0, -1]].drop_duplicates()
     best = [{} for _ in range(len(anchors))]
     columns = ["track_id", "timestamp_s", "x_center", "y_center", "width", "height"]
+    endpoints = {}
+    if endpoint_track_ids:
+        columns.append("frame")
     chunks = (detections,) if detections is not None else pd.read_csv(path, usecols=columns, chunksize=50000)
     for chunk in chunks:
         ids = chunk["track_id"].map(track_ids)
@@ -391,6 +413,19 @@ def load_track_proximity(path: str, reference: pd.DataFrame,
             override = chunk.index.isin(row_targets)
             ids.loc[override] = chunk.index.to_series().loc[override].map(row_targets)
         chunk = chunk.assign(_target_id=ids).dropna(subset=["_target_id"])
+        if endpoint_track_ids:
+            targets = chunk[chunk["_target_id"].isin(endpoint_track_ids)]
+            for tid, group in targets.groupby("_target_id"):
+                ordered = group.sort_values(["frame", "timestamp_s"], kind="stable")
+                first, last = ordered.iloc[0].copy(), ordered.iloc[-1].copy()
+                previous = endpoints.get(int(tid))
+                if previous is not None:
+                    if previous[0]["frame"] <= first["frame"]:
+                        first = previous[0]
+                    if previous[1]["frame"] >= last["frame"]:
+                        last = previous[1]
+                endpoints[int(tid)] = (first, last)
+            chunk = chunk[~chunk["_target_id"].isin(endpoint_track_ids)]
         geometry = chunk[["timestamp_s", "x_center", "y_center", "width", "height"]]
         chunk = chunk[np.isfinite(geometry).all(axis=1)
                       & (chunk["width"] > 0) & (chunk["height"] > 0)].copy()
@@ -404,22 +439,32 @@ def load_track_proximity(path: str, reference: pd.DataFrame,
             nearest = chunk[chunk["_dt"] == chunk.groupby("_target_id")["_dt"].transform("min")]
             for tid, group in nearest.groupby("_target_id"):
                 for _, row in group.iterrows():
-                    distance = float(np.hypot(row["x_center"] - anchor["x_center"],
-                                              row["y_center"] - anchor["y_center"]))
-                    diagonal = float(np.hypot((row["width"] + anchor["width"]) / 2,
-                                              (row["height"] + anchor["height"]) / 2))
-                    iou = _bbox_iou(anchor, row)
-                    dt = float(row["_dt"])
-                    score = dt + distance / diagonal + (1 - iou)
-                    result = {"score": score, "time_gap_s": dt,
-                              "center_distance": distance, "iou": iou}
+                    result = _bbox_proximity(anchor, row)
+                    if result is None:
+                        continue
                     previous = best[anchor_idx].get(int(tid))
-                    if previous is None or (dt, score) < (previous["time_gap_s"], previous["score"]):
+                    if previous is None or (result["time_gap_s"], result["score"]) < (
+                            previous["time_gap_s"], previous["score"]):
                         best[anchor_idx][int(tid)] = result
     results = {}
     for endpoint in best:
         for tid, result in endpoint.items():
             if tid not in results or result["score"] < results[tid]["score"]:
+                results[tid] = result
+    if endpoints:
+        ordered_reference = reference.sort_values(["frame", "timestamp_s"], kind="stable")
+        ref_first, ref_last = ordered_reference.iloc[0], ordered_reference.iloc[-1]
+        for tid, (first, last) in endpoints.items():
+            overlap_start = max(int(ref_first["frame"]), int(first["frame"]))
+            overlap_end = min(int(ref_last["frame"]), int(last["frame"]))
+            if overlap_start <= overlap_end:
+                results[tid] = {"overlap_frames": (overlap_start, overlap_end)}
+                continue
+            anchor, row = (ref_first, last) if last["frame"] < ref_first["frame"] else (ref_last, first)
+            result = _bbox_proximity(anchor, row)
+            if result is not None:
+                result.update(reference_frame=int(anchor["frame"]), target_frame=int(row["frame"]),
+                              frame_gap=abs(int(anchor["frame"]) - int(row["frame"])))
                 results[tid] = result
     return results
 
