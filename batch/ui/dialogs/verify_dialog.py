@@ -35,7 +35,7 @@ from PyQt6.QtWidgets import (
     QGraphicsScene,
 )
 from PyQt6.QtCore import Qt, QTimer, QUrl, QEvent, pyqtSignal, QPointF, QRectF, QItemSelectionModel
-from PyQt6.QtGui import QPen, QColor, QBrush, QPalette, QMouseEvent
+from PyQt6.QtGui import QPen, QColor, QBrush, QPalette, QMouseEvent, QWheelEvent
 
 try:
     from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
@@ -74,12 +74,125 @@ HIGHLIGHT_FLASH_MS = 400
 
 class _ClickableGraphicsView(QGraphicsView):
     clicked = pyqtSignal(QPointF)
+    zoomChanged = pyqtSignal(float)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._zoom_factor = 1.0
+        self._video_rect = QRectF()
+        self._focus = QPointF()
+        self._pan_position = None
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
+        self.setToolTip(
+            "Колесо мыши — увеличить область под указателем (до 16×).\n"
+            "Правая кнопка + перетаскивание — переместить изображение.\n"
+            "Левый клик — выбрать трек. «Весь кадр» — сбросить увеличение."
+        )
+
+    def fit_video_rect(self, rect: QRectF):
+        """Повторно вписывает кадр, сохраняя масштаб и центр выбранной области."""
+        if not rect.isValid() or self.viewport().width() <= 0 or self.viewport().height() <= 0:
+            return
+        if rect != self._video_rect:
+            self._zoom_factor = 1.0
+            self._focus = rect.center()
+            self._video_rect = QRectF(rect)
+        focus = QPointF(self._focus) if self._zoom_factor > 1.0 else rect.center()
+        self.setSceneRect(rect)
+        self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
+        self.scale(self._zoom_factor, self._zoom_factor)
+        self.centerOn(focus)
+        self._remember_focus()
+        self.zoomChanged.emit(self._zoom_factor)
+
+    def reset_zoom(self):
+        self._zoom_factor = 1.0
+        self._pan_position = None
+        self.fit_video_rect(self._video_rect)
+
+    def _remember_focus(self):
+        self._focus = self.mapToScene(self.viewport().rect().center())
+        self._update_cursor()
+
+    def _update_cursor(self):
+        if self._pan_position is None:
+            if self._zoom_factor > 1.0:
+                self.setCursor(Qt.CursorShape.CrossCursor)
+            else:
+                self.unsetCursor()
+
+    def wheelEvent(self, event: QWheelEvent):
+        if not self._video_rect.isValid():
+            event.ignore()
+            return
+        delta = event.angleDelta().y() or event.pixelDelta().y()
+        if not delta:
+            event.accept()
+            return
+        steps = max(-8.0, min(8.0, delta / 120.0))
+        factor = max(1.0, min(16.0, self._zoom_factor * 1.25 ** steps))
+        if factor == 1.0:
+            self.reset_zoom()
+        elif factor != self._zoom_factor:
+            # Выбор точки выполняется в координатах сцены, поэтому рамки и
+            # обработчик левого клика продолжают соответствовать исходному кадру.
+            position = event.position().toPoint()
+            before = self.mapToScene(position)
+            self.scale(factor / self._zoom_factor, factor / self._zoom_factor)
+            self._zoom_factor = factor
+            after = self.mapToScene(position)
+            center = self.mapToScene(self.viewport().rect().center())
+            self.centerOn(center + before - after)
+            self._remember_focus()
+            self.zoomChanged.emit(factor)
+        event.accept()
 
     def mousePressEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.RightButton:
+            if self._zoom_factor > 1.0:
+                self._pan_position = event.position().toPoint()
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
+        if self._pan_position is not None:
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             scene_pos = self.mapToScene(event.pos())
             self.clicked.emit(scene_pos)
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent):
+        if self._pan_position is not None:
+            if event.buttons() & Qt.MouseButton.RightButton:
+                position = event.position().toPoint()
+                offset = self.mapToScene(self._pan_position) - self.mapToScene(position)
+                center = self.mapToScene(self.viewport().rect().center())
+                self.centerOn(center + offset)
+                self._pan_position = position
+                self._remember_focus()
+                event.accept()
+                return
+            self._pan_position = None
+            self._remember_focus()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.RightButton:
+            self._pan_position = None
+            self._remember_focus()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def focusOutEvent(self, event):
+        self._pan_position = None
+        self._update_cursor()
+        super().focusOutEvent(event)
+
+    def contextMenuEvent(self, event):
+        event.accept()
 
 
 class VerifyDialog(QDialog):
@@ -438,6 +551,7 @@ class VerifyDialog(QDialog):
             )
             self._graphics_view.installEventFilter(self)
             self._graphics_view.clicked.connect(self._on_video_clicked)
+            self._graphics_view.zoomChanged.connect(self._on_video_zoom_changed)
             right_layout.addWidget(self._graphics_view)
         else:
             self._graphics_view = None
@@ -502,6 +616,26 @@ class VerifyDialog(QDialog):
         controls.addWidget(self._btn_fwd)
 
         right_layout.addLayout(controls)
+
+        view_controls = QHBoxLayout()
+        view_controls.addWidget(QLabel("Скорость:"))
+        self._playback_rate_combo = QComboBox()
+        for label, rate in (("1×", 1.0), ("0,5×", 0.5), ("0,25×", 0.25)):
+            self._playback_rate_combo.addItem(label, rate)
+        self._playback_rate_combo.setEnabled(False)
+        self._playback_rate_combo.setToolTip("Скорость воспроизведения всего видео и выбранного трека")
+        self._playback_rate_combo.currentIndexChanged.connect(self._on_playback_rate_changed)
+        view_controls.addWidget(self._playback_rate_combo)
+        view_controls.addStretch(1)
+        self._zoom_label = QLabel("Масштаб: 1×")
+        self._zoom_label.setToolTip("Масштаб относительно полного кадра, вписанного в окно")
+        view_controls.addWidget(self._zoom_label)
+        self._btn_reset_zoom = QPushButton("Весь кадр")
+        self._btn_reset_zoom.setEnabled(False)
+        self._btn_reset_zoom.setToolTip("Сбросить увеличение и положение изображения")
+        self._btn_reset_zoom.clicked.connect(self._reset_video_zoom)
+        view_controls.addWidget(self._btn_reset_zoom)
+        right_layout.addLayout(view_controls)
 
         # Информация о выбранном треке
         self._track_info_label = QLabel()
@@ -878,6 +1012,7 @@ class VerifyDialog(QDialog):
         self._player.setVideoOutput(self._video_item)
 
         self._player.setSource(QUrl.fromLocalFile(self._video_path))
+        self._player.setPlaybackRate(float(self._playback_rate_combo.currentData()))
 
         self._player.durationChanged.connect(self._on_duration_changed)
         self._player.positionChanged.connect(self._on_position_changed)
@@ -898,6 +1033,7 @@ class VerifyDialog(QDialog):
         self._btn_back.setEnabled(True)
         self._btn_fwd.setEnabled(True)
         self._time_slider.setEnabled(True)
+        self._playback_rate_combo.setEnabled(True)
 
         self._schedule_fit_video()
 
@@ -956,14 +1092,25 @@ class VerifyDialog(QDialog):
         try:
             self._video_item.setSize(ns)
             self._scene.setSceneRect(self._video_item.boundingRect())
-            self._graphics_view.fitInView(
-                self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio
-            )
+            self._graphics_view.fit_video_rect(self._video_item.boundingRect())
             self._last_fit_state = fit_state
         finally:
             self._fitting = False
 
     # ── video slots ──────────────────────────────────────────────────
+
+    def _on_playback_rate_changed(self, index: int):
+        if self._player:
+            self._player.setPlaybackRate(float(self._playback_rate_combo.currentData()))
+
+    def _reset_video_zoom(self):
+        if self._graphics_view:
+            self._graphics_view.reset_zoom()
+
+    def _on_video_zoom_changed(self, factor: float):
+        text = f"{factor:.2f}".rstrip("0").rstrip(".").replace(".", ",")
+        self._zoom_label.setText(f"Масштаб: {text}×")
+        self._btn_reset_zoom.setEnabled(factor > 1.0)
 
     def _on_duration_changed(self, ms: int):
         self._time_slider.setRange(0, ms)
