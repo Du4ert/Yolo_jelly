@@ -53,6 +53,7 @@ class TrackInfo:
     detached_rows: tuple = ()
     detached_signature: str = ""
     detached_owner_ids: tuple = ()
+    auto_glued: bool = False
 
     @property
     def is_candidate(self) -> bool:
@@ -93,6 +94,8 @@ class TrackInfo:
             return "Подтверждён"
         if self.new_class_id is not None:
             return f"→ {CLASS_NAMES.get(self.new_class_id, str(self.new_class_id))}"
+        if self.auto_glued:
+            return "Автосклейка"
         if self.fragment_rows:
             return "Новый трек"
         return "OK"
@@ -162,6 +165,8 @@ def load_verified(verified_csv_path: str) -> Dict[int, dict]:
             "fragment_signature": str(row.get("fragment_signature", "")),
             "fragment_assigned": bool(row["fragment_assigned"])
             if pd.notna(row.get("fragment_assigned")) else False,
+            "auto_glued": bool(row["auto_glued"])
+            if pd.notna(row.get("auto_glued")) else False,
             "track_snapshot": json.loads(row["track_snapshot"])
             if pd.notna(row.get("track_snapshot")) else None,
         }
@@ -194,6 +199,7 @@ def save_verified(
                 "fragment_rows": json.dumps(t.fragment_rows) if t.fragment_rows else None,
                 "fragment_signature": t.fragment_signature or None,
                 "fragment_assigned": t.fragment_assigned,
+                "auto_glued": t.auto_glued,
                 "track_snapshot": json.dumps(asdict(t), ensure_ascii=False)
                 if t.merged_into_track_id is not None or t.detached_rows or t.merged_member_ids else None,
                 "verified_at": now,
@@ -202,7 +208,7 @@ def save_verified(
     pd.DataFrame(rows, columns=[
         "track_id", "original_class_id", "original_class_name", "deleted",
         "new_class_id", "confirmed", "merged_into_track_id", "fragment_rows",
-        "fragment_signature", "fragment_assigned", "track_snapshot", "verified_at",
+        "fragment_signature", "fragment_assigned", "auto_glued", "track_snapshot", "verified_at",
     ]).to_csv(vp, index=False)
     return vp
 
@@ -362,20 +368,22 @@ def _bbox_iou(a, b) -> float:
 
 def load_track_proximity(path: str, reference: pd.DataFrame,
                          track_ids: Dict[int, int], orphan_ids: Dict[int, int],
-                         row_targets: Optional[dict] = None) -> dict:
+                         row_targets: Optional[dict] = None,
+                         detections: Optional[pd.DataFrame] = None) -> dict:
     """Сравнивает концы выбранного фрагмента с ближайшими по времени рамками.
 
     Оценка: разрыв в секундах + расстояние в диагоналях средней рамки + (1 - IoU).
     Меньше — ближе. Это подсказка для ручного объединения, а не решение трекера.
     Словари переводят исходные ID и номера строк без ID в актуальные ID окна.
     """
-    if reference.empty or not path or not os.path.exists(path):
+    if reference.empty or (detections is None and (not path or not os.path.exists(path))):
         return {}
     reference = reference.sort_values("timestamp_s")
     anchors = reference.iloc[[0, -1]].drop_duplicates()
     best = [{} for _ in range(len(anchors))]
     columns = ["track_id", "timestamp_s", "x_center", "y_center", "width", "height"]
-    for chunk in pd.read_csv(path, usecols=columns, chunksize=50000):
+    chunks = (detections,) if detections is not None else pd.read_csv(path, usecols=columns, chunksize=50000)
+    for chunk in chunks:
         ids = chunk["track_id"].map(track_ids)
         missing = chunk["track_id"].isna()
         ids.loc[missing] = chunk.index.to_series().loc[missing].map(orphan_ids)
@@ -416,6 +424,85 @@ def load_track_proximity(path: str, reference: pd.DataFrame,
     return results
 
 
+def plan_fragment_gluing(path: str, tracks: List[TrackInfo], threshold: float,
+                        attach_to_tracks: bool) -> tuple:
+    """Планирует склейку без изменения состояния; CSV читается один раз.
+
+    Ближайшие пары фрагментов объединяются в связные группы. Для каждой группы
+    выбирается ближайший исходный трек того же класса в пределах порога.
+    """
+    if not np.isfinite(threshold) or threshold < 0:
+        raise ValueError("Порог близости должен быть конечным неотрицательным числом.")
+    signature = detection_file_signature(path)
+    if any((t.fragment_rows and t.fragment_signature != signature)
+           or (t.detached_rows and t.detached_signature != signature) for t in tracks):
+        raise ValueError("CSV изменился. Откройте окно проверки заново перед автосклейкой.")
+    data = pd.read_csv(path)
+    ids = data["track_id"].dropna()
+    max_id = max(0, max((t.track_id for t in tracks), default=0),
+                 int(ids.max()) if not ids.empty else 0)
+    active = [t for t in tracks if not t.deleted and t.merged_into_track_id is None
+              and t.effective_class_id in CLASS_NAMES and (t.is_candidate or attach_to_tracks)]
+    references = {
+        t.track_id: load_verification_track_detections(path, tracks, t.track_id, detections=data)
+        for t in active
+    }
+    plans = []
+    for class_id in sorted({t.effective_class_id for t in active if t.is_candidate}):
+        members = [t for t in active if t.effective_class_id == class_id]
+        fragments = [t for t in members if t.is_candidate and not references[t.track_id].empty]
+        regular = [t for t in members if not t.is_candidate and not references[t.track_id].empty]
+        if not fragments:
+            continue
+        fragment_data = pd.concat([
+            references[t.track_id].assign(track_id=t.track_id) for t in fragments
+        ])
+        parent = {t.track_id: t.track_id for t in fragments}
+
+        def root(tid):
+            while parent[tid] != tid:
+                parent[tid] = parent[parent[tid]]
+                tid = parent[tid]
+            return tid
+
+        edges = {}
+        for fragment in fragments:
+            scores = load_track_proximity(
+                path, references[fragment.track_id],
+                {t.track_id: t.track_id for t in fragments if t is not fragment}, {},
+                detections=fragment_data,
+            )
+            for tid, result in scores.items():
+                if result["score"] <= threshold:
+                    pair = tuple(sorted((fragment.track_id, tid)))
+                    edges[pair] = min(edges.get(pair, float("inf")), result["score"])
+        for (left, right), score in sorted(edges.items(), key=lambda entry: (entry[1], entry[0])):
+            parent[root(right)] = root(left)
+        groups = {}
+        for fragment in fragments:
+            groups.setdefault(root(fragment.track_id), []).append(fragment.track_id)
+        regular_data = pd.concat([
+            references[t.track_id].assign(track_id=t.track_id) for t in regular
+        ]) if regular else pd.DataFrame()
+        for group in groups.values():
+            target = None
+            if regular:
+                reference = pd.concat([references[tid] for tid in group])
+                scores = load_track_proximity(
+                    path, reference, {t.track_id: t.track_id for t in regular}, {},
+                    detections=regular_data,
+                )
+                suitable = [(result["score"], tid) for tid, result in scores.items()
+                            if result["score"] <= threshold]
+                if suitable:
+                    target = min(suitable)[1]
+            if target is not None or len(group) > 1:
+                plans.append((target, group))
+    if detection_file_signature(path) != signature:
+        raise ValueError("CSV изменился во время чтения. Повторно откройте окно проверки.")
+    return plans, max_id
+
+
 def load_track_detections(detections_csv_path: str, track_id: int,
                           source_ids: Optional[tuple] = None) -> pd.DataFrame:
     """Загружает детекции одного трека из _detections.csv."""
@@ -435,13 +522,14 @@ def load_track_detections(detections_csv_path: str, track_id: int,
     return pd.concat(chunks, ignore_index=True)
 
 
-def load_verification_track_detections(path: str, tracks: List[TrackInfo], track_id: int) -> pd.DataFrame:
+def load_verification_track_detections(path: str, tracks: List[TrackInfo], track_id: int,
+                                      detections: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """Представление детекций с учётом ещё не применённых объединений и отсоединений.
 
     Индекс сохраняет номера строк исходного CSV для обратимых назначений.
     """
     by_id = {t.track_id: t for t in tracks}
-    if track_id not in by_id or not path or not os.path.exists(path):
+    if track_id not in by_id or (detections is None and (not path or not os.path.exists(path))):
         return pd.DataFrame()
     routes = {}
     for track in tracks:
@@ -473,7 +561,8 @@ def load_verification_track_detections(path: str, tracks: List[TrackInfo], track
     selected = by_id[track_id]
     collect(selected)
     chunks = []
-    for chunk in pd.read_csv(path, chunksize=50000):
+    source = (detections,) if detections is not None else pd.read_csv(path, chunksize=50000)
+    for chunk in source:
         ids = chunk["track_id"].map(routes)
         overrides = chunk.index.to_series().map(row_destinations)
         ids = overrides.combine_first(ids)

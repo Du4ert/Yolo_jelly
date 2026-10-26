@@ -11,6 +11,7 @@ import shutil
 import tempfile
 import math
 import weakref
+from copy import deepcopy
 from pathlib import Path
 from typing import Optional, List, Dict
 
@@ -35,8 +36,12 @@ from PyQt6.QtWidgets import (
     QGraphicsView,
     QGraphicsScene,
     QToolTip,
+    QCheckBox,
+    QDoubleSpinBox,
+    QDialogButtonBox,
+    QProgressDialog,
 )
-from PyQt6.QtCore import Qt, QTimer, QUrl, QEvent, pyqtSignal, QPointF, QRectF, QItemSelectionModel, QSizeF
+from PyQt6.QtCore import Qt, QTimer, QThread, QUrl, QEvent, pyqtSignal, QPointF, QRectF, QItemSelectionModel, QSizeF
 from PyQt6.QtGui import QPen, QColor, QBrush, QPalette, QMouseEvent, QWheelEvent, QPixmap
 
 from batch.core.video_frame_reader import VideoFrameReader
@@ -69,11 +74,35 @@ from verify_detections import (
     load_verification_track_detections,
     refresh_track_statistics,
     detection_file_signature,
+    plan_fragment_gluing,
 )
 from constants import CLASS_NAMES
 
 HIGHLIGHT_COLOR = QColor(255, 255, 0, 200)
 HIGHLIGHT_FLASH_MS = 400
+
+
+class _AutoGlueProgress(QProgressDialog):
+    """Расчёт завершается до закрытия модального окна, в том числе по Escape."""
+
+    def reject(self):
+        pass
+
+
+class _AutoGlueWorker(QThread):
+    """Расчёт плана в фоне; состояние диалога изменяется только после успеха."""
+
+    def __init__(self, path, tracks, threshold, attach, parent=None):
+        super().__init__(parent)
+        self._args = (path, deepcopy(tracks), threshold, attach)
+        self.result = None
+        self.error = None
+
+    def run(self):
+        try:
+            self.result = plan_fragment_gluing(*self._args)
+        except Exception as e:
+            self.error = str(e)
 
 
 class _ClickableGraphicsView(QGraphicsView):
@@ -474,6 +503,7 @@ class VerifyDialog(QDialog):
                 t.deleted = verified[t.track_id]["deleted"]
                 t.new_class_id = verified[t.track_id]["new_class_id"]
                 t.confirmed = verified[t.track_id].get("confirmed", False)
+                t.auto_glued = verified[t.track_id].get("auto_glued", False)
                 t.merged_into_track_id = verified[t.track_id].get("merged_into_track_id")
                 snapshot = verified[t.track_id].get("track_snapshot")
                 if snapshot:
@@ -591,6 +621,13 @@ class VerifyDialog(QDialog):
         fragment_buttons.addWidget(self._btn_create_track)
         fragment_buttons.addWidget(self._btn_attach_fragment)
         left_layout.addLayout(fragment_buttons)
+        self._btn_auto_glue = QPushButton("Автосклейка…")
+        self._btn_auto_glue.setToolTip(
+            "Склеить фрагменты без ID одного класса по порогу близости. "
+            "Новые треки отмечаются бирюзовым цветом."
+        )
+        self._btn_auto_glue.clicked.connect(self._on_auto_glue)
+        left_layout.addWidget(self._btn_auto_glue)
         hint = QLabel("Для присоединения включите общий список и выделите через Ctrl "
                       "фрагмент и трек, затем нажмите «Объединить». Колонка «Близость» "
                       "учитывает время, положение и перекрытие рамок; меньше — ближе.")
@@ -831,6 +868,7 @@ class VerifyDialog(QDialog):
                 t.is_archive, t.group_parent_id, t.merged_member_ids,
                 t.detached_from_track_id, t.detached_rows,
                 t.detached_parent_id, t.detached_signature, t.detached_owner_ids,
+                t.auto_glued,
             )
             for t in self._tracks
         }
@@ -1051,6 +1089,10 @@ class VerifyDialog(QDialog):
                 item.setForeground(QBrush(QColor(200, 150, 0)))
             elif track.is_candidate:
                 item.setForeground(QBrush(QColor(220, 160, 70)))
+            elif track.auto_glued:
+                item.setBackground(QBrush(QColor(100, 170, 175, 40)))
+            if track.auto_glued:
+                item.setToolTip("Создан из фрагментов без ID автоматической склейкой.")
             self._table.setItem(row, col, item)
         name = self._table.item(row, 0)
         indent = "    " * self._group_depth.get(track.track_id, 0)
@@ -2081,6 +2123,107 @@ class VerifyDialog(QDialog):
     def _on_attach_fragment(self):
         self._on_merge_tracks()
 
+    def _on_auto_glue(self):
+        if not any(t.is_candidate and not t.deleted and t.merged_into_track_id is None
+                   and t.effective_class_id in CLASS_NAMES for t in self._tracks):
+            QMessageBox.information(self, "Автосклейка", "Нет фрагментов без ID для склейки.")
+            return
+        settings = QDialog(self)
+        settings.setWindowTitle("Автосклейка")
+        layout = QVBoxLayout(settings)
+        threshold_row = QHBoxLayout()
+        threshold_row.addWidget(QLabel("Порог близости:"))
+        threshold = QDoubleSpinBox()
+        threshold.setRange(0.0, 1000000.0)
+        threshold.setDecimals(3)
+        threshold.setSingleStep(0.1)
+        threshold.setValue(0.5)
+        threshold.setToolTip("Та же оценка, что в колонке «Близость». Склейка при оценке ≤ порога.")
+        threshold_row.addWidget(threshold)
+        layout.addLayout(threshold_row)
+        attach = QCheckBox("Склеить с треком")
+        attach.setToolTip("Присоединять к ближайшему треку того же класса в пределах порога.")
+        layout.addWidget(attach)
+        help_label = QLabel(
+            "Обрабатываются все фрагменты без ID одного класса независимо от фильтра. "
+            "Связанные близкими парами фрагменты образуют группу. Новые группы получают "
+            "ID и метку «Автосклейка»; одиночные фрагменты остаются без ID, "
+            "если не присоединены к существующему треку."
+        )
+        help_label.setWordWrap(True)
+        layout.addWidget(help_label)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Склеить")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
+        buttons.accepted.connect(settings.accept)
+        buttons.rejected.connect(settings.reject)
+        layout.addWidget(buttons)
+        if settings.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        if self._player:
+            self._pause_playback()
+        self._proximity_timer.stop()
+        progress = _AutoGlueProgress("Расчёт близости фрагментов…", "", 0, 0, self)
+        progress.setWindowTitle("Автосклейка")
+        progress.setCancelButton(None)
+        progress.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.CustomizeWindowHint
+                                | Qt.WindowType.WindowTitleHint)
+        progress.setAutoClose(False)
+        worker = _AutoGlueWorker(
+            self._detections_csv, self._tracks, threshold.value(), attach.isChecked(), self,
+        )
+        worker.finished.connect(progress.accept)
+        QTimer.singleShot(0, worker.start)
+        progress.exec()
+        worker.wait()
+        if worker.error is not None:
+            QMessageBox.warning(self, "Автосклейка", f"Не удалось выполнить склейку:\n{worker.error}")
+            worker.deleteLater()
+            return
+        plans, max_id = worker.result
+        worker.deleteLater()
+        if not plans:
+            QMessageBox.information(self, "Автосклейка", "В пределах порога подходящих групп не найдено.")
+            return
+
+        by_id = {t.track_id: t for t in self._tracks}
+        created = attached = 0
+        last_target = None
+        for target_id, fragment_ids in plans:
+            fragments = [by_id[tid] for tid in fragment_ids]
+            if target_id is None:
+                target = min(fragments, key=self._chronological_key)
+                max_id += 1
+                target.track_id = max_id
+                target.fragment_assigned = True
+                target.auto_glued = True
+                selected = fragments
+                created += 1
+            else:
+                target = by_id[target_id]
+                selected = [target] + fragments
+                attached += len(fragments)
+            self._merge_track_group(target, selected)
+            last_target = target
+
+        self._index_assigned_rows()
+        self._proximity_cache_key = None
+        self._proximity_scores = {}
+        self._proximity_reference_id = None
+        self._update_modified_from_baseline()
+        self._selected_track = last_target
+        self._rebuild_table(seek_to_first=False)
+        if self._player:
+            self._refresh_overlays()
+        QMessageBox.information(
+            self, "Автосклейка",
+            f"Создано новых треков: {created}.\n"
+            f"Фрагментов присоединено к существующим трекам: {attached}.",
+        )
+
     def _on_detach_track(self):
         selected = self._selected_tracks()
         if len(selected) != 1 or selected[0].merged_into_track_id is None:
@@ -2263,6 +2406,18 @@ class VerifyDialog(QDialog):
 
         # Фрагмент может появиться раньше трека, но ID цели всегда сохраняется.
         target = min((t for t in selected if not t.is_candidate), key=self._chronological_key)
+        self._merge_track_group(target, selected)
+        self._update_modified_from_baseline()
+        self._selected_track = target
+        self._expanded_tracks.discard(target.track_id)
+        self._table.clearSelection()
+        self._rebuild_table()
+
+        if self._player:
+            self._refresh_overlays()
+
+    def _merge_track_group(self, target: TrackInfo, selected: List[TrackInfo]):
+        """Общее изменение состава группы для ручного и автоматического объединения."""
         for source in selected:
             if source is target:
                 continue
@@ -2295,14 +2450,6 @@ class VerifyDialog(QDialog):
         self._apply_merged_stats(target, selected)
         self._track_detections.clear()
         self._confirmed_detections.pop(target.track_id, None)
-        self._update_modified_from_baseline()
-        self._selected_track = target
-        self._expanded_tracks.discard(target.track_id)
-        self._table.clearSelection()
-        self._rebuild_table()
-
-        if self._player:
-            self._refresh_overlays()
 
     # ── confirm / apply / sort ────────────────────────────────────────
 
