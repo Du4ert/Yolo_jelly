@@ -757,6 +757,7 @@ class VerifyDialog(QDialog):
         ]
         self._table.setColumnCount(len(columns))
         self._table.setHorizontalHeaderLabels(columns)
+        self._table.horizontalHeader().moveSection(9, 3)
         self._table.horizontalHeaderItem(9).setToolTip(
             "К выбранному фрагменту (или треку): Δt + расстояние центров в диагоналях "
             "средней рамки + (1 − IoU). Меньше — ближе. Подробности — в подсказке ячейки."
@@ -2441,6 +2442,11 @@ class VerifyDialog(QDialog):
 
     def _update_visible_tracks(self):
         mode = self._track_filter.currentData()
+        self._table.setColumnHidden(9, mode == "tracks")
+        if mode == "tracks" and self._sort_column == 9:
+            self._sort_column = 8
+            self._sort_reverse = False
+            self._table.horizontalHeader().setSortIndicator(8, Qt.SortOrder.AscendingOrder)
         self._group_children = {}
         self._group_depth = {}
         known_ids = {t.track_id for t in self._tracks}
