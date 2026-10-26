@@ -9,6 +9,7 @@ import os
 import sys
 import shutil
 import tempfile
+import math
 from pathlib import Path
 from typing import Optional, List, Dict
 
@@ -33,7 +34,7 @@ from PyQt6.QtWidgets import (
     QGraphicsView,
     QGraphicsScene,
 )
-from PyQt6.QtCore import Qt, QTimer, QUrl, QEvent, pyqtSignal, QPointF, QRectF
+from PyQt6.QtCore import Qt, QTimer, QUrl, QEvent, pyqtSignal, QPointF, QRectF, QItemSelectionModel
 from PyQt6.QtGui import QPen, QColor, QBrush, QPalette, QMouseEvent
 
 try:
@@ -53,13 +54,17 @@ sys.path.insert(0, str(ROOT_DIR / "src"))
 from verify_detections import (
     load_tracks,
     load_verified,
-    load_track_detections,
     load_frame_detections,
     apply_changes,
     save_verified,
     verified_csv_path,
     TrackInfo,
     VerificationResult,
+    load_untracked_fragments,
+    load_track_proximity,
+    load_verification_track_detections,
+    refresh_track_statistics,
+    detection_file_signature,
 )
 from constants import CLASS_NAMES
 
@@ -84,6 +89,10 @@ class VerifyDialog(QDialog):
         super().__init__(parent)
         self._task = task
         self._tracks: List[TrackInfo] = []
+        self._visible_tracks: List[TrackInfo] = []
+        self._expanded_tracks = set()
+        self._group_children = {}
+        self._group_depth = {}
         self._track_detections: Dict[int, pd.DataFrame] = {}
         self._deleted_detections: Dict[int, pd.DataFrame] = {}
         self._confirmed_detections: Dict[int, pd.DataFrame] = {}
@@ -102,11 +111,21 @@ class VerifyDialog(QDialog):
         self._last_fit_state = None
         self._track_play_active = False
         self._highlight_active = False
-        self._sort_column = -1
+        self._sort_column = 8
         self._sort_reverse = False
         self._verified_backup = None
         self._baseline_state: Dict[int, tuple] = {}
         self._closing = False
+        self._fragment_data = pd.DataFrame()
+        self._fragment_by_row = {}
+        self._detached_by_row = {}
+        self._proximity_scores = {}
+        self._proximity_cache_key = None
+        self._proximity_reference_id = None
+        self._proximity_timer = QTimer(self)
+        self._proximity_timer.setSingleShot(True)
+        self._proximity_timer.setInterval(150)
+        self._proximity_timer.timeout.connect(self._refresh_proximity)
 
         self._resolve_paths()
         self._backup_verified()
@@ -116,9 +135,11 @@ class VerifyDialog(QDialog):
         self._setup_video()
         self._setup_flash_timer()
 
-        if self._tracks:
+        if self._visible_tracks:
             self._table.selectRow(0)
             self._on_track_selected(0)
+        else:
+            self._clear_track_selection()
 
     # ── paths ────────────────────────────────────────────────────────
 
@@ -198,32 +219,106 @@ class VerifyDialog(QDialog):
         self._deleted_detections.clear()
         self._confirmed_detections.clear()
         self._selected_track = None
+        self._fragment_data = pd.DataFrame()
+        self._fragment_by_row = {}
+        self._detached_by_row = {}
+        self._proximity_scores = {}
+        self._proximity_cache_key = None
+        self._proximity_reference_id = None
 
         if not self._tracks_csv or not os.path.exists(self._tracks_csv):
             return
 
         self._tracks = load_tracks(self._tracks_csv)
         verified = load_verified(self._verified_csv)
+        loaded_ids = {t.track_id for t in self._tracks}
+        pending_detaches = {tid: state["track_snapshot"] for tid, state in verified.items()
+                            if state.get("track_snapshot", {}) and state["track_snapshot"].get("detached_rows")}
+        signature = detection_file_signature(self._detections_csv) if pending_detaches else None
+        valid_detaches = {tid for tid, snapshot in pending_detaches.items()
+                          if snapshot.get("detached_signature") == signature
+                          and set(snapshot.get("detached_owner_ids") or (
+                              snapshot.get("detached_from_track_id"),)).issubset(loaded_ids)}
+        planned_ids = valid_detaches | {tid for tid, state in verified.items()
+                                       if tid > 0 and state.get("fragment_assigned")}
+        for tid, state in verified.items():
+            snapshot = state.get("track_snapshot")
+            if (snapshot and tid not in loaded_ids and (
+                    tid in valid_detaches or snapshot.get("is_archive")
+                    and not snapshot.get("detached_rows")
+                    and state.get("merged_into_track_id") in loaded_ids | planned_ids)):
+                snapshot = dict(snapshot)
+                snapshot["fragment_rows"] = tuple(snapshot.get("fragment_rows", ()))
+                snapshot["merged_member_ids"] = tuple(snapshot.get("merged_member_ids", ()))
+                snapshot["detached_rows"] = tuple(snapshot.get("detached_rows", ()))
+                snapshot["detached_owner_ids"] = tuple(snapshot.get("detached_owner_ids", ()))
+                self._tracks.append(TrackInfo(**snapshot))
+                loaded_ids.add(tid)
+        if set(pending_detaches) - valid_detaches:
+            QMessageBox.warning(self, "Отсоединение частей",
+                                "CSV изменился: сохранённые отсоединения, не соответствующие "
+                                "исходному файлу, не восстановлены. Повторите их по текущим данным.")
+
+        preserved_groups = {state["fragment_rows"]: state["fragment_signature"]
+                            for state in verified.values() if state.get("fragment_rows")
+                            and not state.get("fragment_assigned")}
+        fragments, self._fragment_data = load_untracked_fragments(self._detections_csv, preserved_groups)
+        saved_fragments = {
+            state["fragment_rows"]: (tid, state)
+            for tid, state in verified.items() if state.get("fragment_rows") and tid not in pending_detaches
+            and not (state.get("track_snapshot") or {}).get("is_archive")
+        }
+        restored = set()
+        occupied = {t.track_id for t in self._tracks}
+        for fragment in fragments:
+            saved = saved_fragments.get(fragment.fragment_rows)
+            if saved and saved[1]["fragment_signature"] == fragment.fragment_signature:
+                tid, state = saved
+                if tid not in occupied:
+                    fragment.track_id = tid
+                    fragment.fragment_assigned = state["fragment_assigned"]
+                    restored.add(fragment.fragment_rows)
+            if fragment.track_id in occupied:
+                fragment.track_id = min(-1, min(occupied, default=0) - 1)
+            occupied.add(fragment.track_id)
+        self._tracks.extend(fragments)
+        self._index_assigned_rows()
+        if set(saved_fragments) - restored:
+            QMessageBox.warning(
+                self, "Назначения фрагментов",
+                "Исходные данные изменились. Часть сохранённых назначений фрагментов "
+                "не восстановлена. Проверьте фрагменты без ID и назначьте их заново.",
+            )
 
         for t in self._tracks:
-            if t.track_id in verified:
+            if t.track_id in verified and (
+                not t.fragment_rows or t.fragment_rows in restored or t.detached_rows
+            ):
                 t.deleted = verified[t.track_id]["deleted"]
                 t.new_class_id = verified[t.track_id]["new_class_id"]
                 t.confirmed = verified[t.track_id].get("confirmed", False)
                 t.merged_into_track_id = verified[t.track_id].get("merged_into_track_id")
+                snapshot = verified[t.track_id].get("track_snapshot")
+                if snapshot:
+                    t.merged_member_ids = tuple(snapshot.get("merged_member_ids", ()))
+                    t.group_parent_id = snapshot.get("group_parent_id")
 
         self._refresh_merged_track_stats()
+        if valid_detaches:
+            affected = set(valid_detaches)
+            for track in self._tracks:
+                if track.detached_rows:
+                    affected.update((track.detached_from_track_id, track.detached_parent_id,
+                                     track.merged_into_track_id, track.group_parent_id))
+                    affected.update(track.detached_owner_ids)
+            self._refresh_statistics(affected)
 
         if self._detections_csv:
             for t in self._tracks:
                 if t.deleted:
-                    self._deleted_detections[t.track_id] = load_track_detections(
-                        self._detections_csv, t.track_id
-                    )
+                    self._deleted_detections[t.track_id] = self._load_detections_for_track(t.track_id)
                 if t.confirmed:
-                    self._confirmed_detections[t.track_id] = load_track_detections(
-                        self._detections_csv, t.track_id
-                    )
+                    self._confirmed_detections[t.track_id] = self._load_detections_for_track(t.track_id)
 
     # ── UI ───────────────────────────────────────────────────────────
 
@@ -253,9 +348,23 @@ class VerifyDialog(QDialog):
         )
         left_layout.addWidget(self._task_status_label)
 
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(QLabel("Показывать:"))
+        self._track_filter = QComboBox()
+        self._track_filter.addItem("Только треки с ID", "tracks")
+        self._track_filter.addItem("Треки и фрагменты без ID", "all")
+        self._track_filter.addItem("Только фрагменты без ID", "fragments")
+        self._track_filter.setToolTip(
+            "Неназначенные фрагменты не препятствуют завершению проверки треков. "
+            "По умолчанию список упорядочен по времени появления."
+        )
+        filter_layout.addWidget(self._track_filter)
+        left_layout.addLayout(filter_layout)
+
         self._table = QTableWidget()
         self._setup_table()
         left_layout.addWidget(self._table)
+        self._track_filter.currentIndexChanged.connect(self._on_filter_changed)
 
         # Кнопки действий над треками
         btn_layout = QHBoxLayout()
@@ -274,6 +383,13 @@ class VerifyDialog(QDialog):
         self._btn_merge.clicked.connect(self._on_merge_tracks)
         btn_layout.addWidget(self._btn_merge)
 
+        self._btn_detach = QPushButton("Отсоединить")
+        self._btn_detach.setEnabled(False)
+        self._btn_detach.setToolTip("Выберите один вложенный трек или фрагмент. "
+                                    "Подгруппа отсоединяется вместе со своим составом.")
+        self._btn_detach.clicked.connect(self._on_detach_track)
+        btn_layout.addWidget(self._btn_detach)
+
         self._class_combo = QComboBox()
         self._class_combo.setEnabled(False)
         for cid in sorted(CLASS_NAMES.keys()):
@@ -283,6 +399,26 @@ class VerifyDialog(QDialog):
         btn_layout.addWidget(self._class_combo)
 
         left_layout.addLayout(btn_layout)
+        fragment_buttons = QHBoxLayout()
+        self._btn_create_track = QPushButton("Создать трек из фрагмента")
+        self._btn_attach_fragment = QPushButton("Присоединить выбранные фрагменты")
+        self._btn_create_track.setEnabled(False)
+        self._btn_attach_fragment.setEnabled(False)
+        self._btn_create_track.clicked.connect(self._on_create_fragment_track)
+        self._btn_attach_fragment.clicked.connect(self._on_attach_fragment)
+        self._btn_merge.setToolTip(
+            "Выделите через Ctrl трек с ID и один или несколько фрагментов без ID "
+            "одного класса. Сохранится ID выбранного трека."
+        )
+        self._btn_attach_fragment.setToolTip(self._btn_merge.toolTip())
+        fragment_buttons.addWidget(self._btn_create_track)
+        fragment_buttons.addWidget(self._btn_attach_fragment)
+        left_layout.addLayout(fragment_buttons)
+        hint = QLabel("Для присоединения включите общий список и выделите через Ctrl "
+                      "фрагмент и трек, затем нажмите «Объединить». Колонка «Близость» "
+                      "учитывает время, положение и перекрытие рамок; меньше — ближе.")
+        hint.setWordWrap(True)
+        left_layout.addWidget(hint)
         splitter.addWidget(left)
 
         # Правая панель: видео + контролы
@@ -408,9 +544,15 @@ class VerifyDialog(QDialog):
             "Глубина (м)",
             "Детекций",
             "Conf",
+            "Начало (с)",
+            "Близость",
         ]
         self._table.setColumnCount(len(columns))
         self._table.setHorizontalHeaderLabels(columns)
+        self._table.horizontalHeaderItem(9).setToolTip(
+            "К выбранному фрагменту (или треку): Δt + расстояние центров в диагоналях "
+            "средней рамки + (1 − IoU). Меньше — ближе. Подробности — в подсказке ячейки."
+        )
 
         self._table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
@@ -424,7 +566,7 @@ class VerifyDialog(QDialog):
         self._table.verticalHeader().setVisible(False)
         self._table.horizontalHeader().setStretchLastSection(True)
 
-        self._table.cellClicked.connect(self._on_track_selected)
+        self._table.cellClicked.connect(self._on_table_cell_clicked)
         self._table.itemSelectionChanged.connect(self._on_selection_changed)
         self._table.horizontalHeader().sectionClicked.connect(self._on_sort)
 
@@ -439,8 +581,10 @@ class VerifyDialog(QDialog):
         )
         self._table.setPalette(palette)
 
-        self._table.setRowCount(len(self._tracks))
-        for row, track in enumerate(self._tracks):
+        self._update_visible_tracks()
+        self._table.horizontalHeader().setSortIndicator(8, Qt.SortOrder.AscendingOrder)
+        self._table.setRowCount(len(self._visible_tracks))
+        for row, track in enumerate(self._visible_tracks):
             self._set_track_row(row, track)
 
         self._table.resizeColumnsToContents()
@@ -455,9 +599,12 @@ class VerifyDialog(QDialog):
 
     def _has_pending_data_changes(self) -> bool:
         return any(
-            t.deleted
-            or t.merged_into_track_id is not None
-            or (t.new_class_id is not None and t.new_class_id != t.class_id)
+            t.detached_rows or not t.is_candidate and not t.is_archive and (
+                t.deleted
+                or t.merged_into_track_id is not None
+                or (t.new_class_id is not None and t.new_class_id != t.class_id)
+                or t.fragment_assigned
+            )
             for t in self._tracks
         )
 
@@ -471,22 +618,31 @@ class VerifyDialog(QDialog):
                 t.new_class_id,
                 bool(t.confirmed),
                 t.merged_into_track_id,
+                t.fragment_assigned,
+                t.is_archive, t.group_parent_id, t.merged_member_ids,
+                t.detached_from_track_id, t.detached_rows,
+                t.detached_parent_id, t.detached_signature, t.detached_owner_ids,
             )
             for t in self._tracks
         }
 
     def _update_modified_from_baseline(self):
         self._set_modified(self._snapshot_state() != self._baseline_state)
+        self._update_merge_button()
+        self._proximity_timer.start()
 
     def _selected_tracks(self) -> List[TrackInfo]:
         rows = sorted({idx.row() for idx in self._table.selectionModel().selectedRows()})
-        return [self._tracks[row] for row in rows if 0 <= row < len(self._tracks)]
+        return [self._visible_tracks[row] for row in rows if 0 <= row < len(self._visible_tracks)]
 
     def _can_merge_selected_tracks(self) -> bool:
         selected = self._selected_tracks()
         if len(selected) < 2:
             return False
         if any(t.deleted or t.merged_into_track_id is not None for t in selected):
+            return False
+        regular = [t for t in selected if not t.is_candidate]
+        if not regular or (any(t.is_candidate for t in selected) and len(regular) != 1):
             return False
         class_ids = {t.effective_class_id for t in selected}
         return len(class_ids) == 1
@@ -495,22 +651,110 @@ class VerifyDialog(QDialog):
         if not hasattr(self, "_btn_merge"):
             return
         self._btn_merge.setEnabled(self._can_merge_selected_tracks())
+        if hasattr(self, "_btn_attach_fragment"):
+            self._btn_attach_fragment.setEnabled(
+                self._can_merge_selected_tracks() and any(t.is_candidate for t in self._selected_tracks())
+            )
+        if hasattr(self, "_btn_detach"):
+            selected = self._selected_tracks()
+            self._btn_detach.setEnabled(len(selected) == 1 and selected[0].merged_into_track_id is not None)
 
     def _on_selection_changed(self):
         self._update_merge_button()
+        self._proximity_timer.start()
+
+    def _refresh_proximity(self, force: bool = False):
+        selected = [t for t in self._selected_tracks()
+                    if not t.deleted and t.merged_into_track_id is None]
+        fragments = [t for t in selected if t.is_candidate]
+        reference = min(fragments, key=self._chronological_key) if fragments else next(
+            (t for t in selected if t is self._selected_track), selected[0] if selected else None,
+        )
+        # Обычная проверка с отключёнными фрагментами не требует дополнительного
+        # прохода по CSV на каждом выборе. Для обычных треков оценка включается
+        # нажатием на заголовок «Близость».
+        if self._track_filter.currentData() == "tracks" and self._sort_column != 9 and not force:
+            reference = None
+        key = (reference.track_id if reference else None, tuple(self._snapshot_state().items()))
+        if key == self._proximity_cache_key:
+            return
+        self._proximity_cache_key = key
+        self._proximity_reference_id = reference.track_id if reference else None
+        self._proximity_scores = {}
+        if reference is not None:
+            by_id = {t.track_id: t for t in self._tracks}
+            targets = {t.track_id for t in self._tracks
+                       if t is not reference and not t.deleted and t.merged_into_track_id is None
+                       and t.effective_class_id == reference.effective_class_id}
+            track_ids = {}
+            orphan_ids = {}
+            row_targets = {}
+            for track in self._tracks:
+                root_id = track.merged_into_track_id if track.merged_into_track_id is not None else track.track_id
+                row_targets.update((idx, root_id if root_id in targets else None) for idx in track.detached_rows)
+                if root_id not in targets or root_id not in by_id:
+                    continue
+                if track.fragment_rows:
+                    orphan_ids.update((idx, root_id) for idx in track.fragment_rows)
+                else:
+                    track_ids[track.track_id] = root_id
+            if track_ids or orphan_ids:
+                try:
+                    reference_df = self._track_detections.get(reference.track_id)
+                    if reference_df is None:
+                        reference_df = self._load_detections_for_track(reference.track_id)
+                    self._proximity_scores = load_track_proximity(
+                        self._detections_csv, reference_df, track_ids, orphan_ids, row_targets,
+                    )
+                except Exception as e:
+                    self._table.horizontalHeaderItem(9).setToolTip(f"Не удалось оценить близость: {e}")
+        blocked = self._table.blockSignals(True)
+        for row, track in enumerate(self._visible_tracks):
+            self._set_proximity_cell(row, track)
+        self._table.blockSignals(blocked)
+        if self._sort_column == 9:
+            self._rebuild_table(seek_to_first=False)
+
+    def _set_proximity_cell(self, row: int, track: TrackInfo):
+        result = self._proximity_scores.get(track.track_id)
+        if track.track_id == self._proximity_reference_id:
+            text, tooltip = "Опорный", "Положение этого элемента используется для сравнения."
+        elif result:
+            text = f"{result['score']:.2f}"
+            tooltip = (
+                f"К элементу {self._proximity_reference_id}:\n"
+                f"Разрыв по времени: {result['time_gap_s']:.3f} с\n"
+                f"Расстояние центров (нормированные координаты): {result['center_distance']:.4f}\n"
+                f"Перекрытие рамок IoU: {result['iou']:.3f}\n"
+                "Меньшая оценка означает большую пространственно-временную близость."
+            )
+        else:
+            text, tooltip = "—", "Нет подходящих данных для сравнения с выбранным элементом."
+        item = QTableWidgetItem(text)
+        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        item.setToolTip(tooltip)
+        self._table.setItem(row, 9, item)
 
     def _refresh_merged_track_stats(self):
-        for target_id in sorted(
-            {t.merged_into_track_id for t in self._tracks if t.merged_into_track_id is not None}
-        ):
-            target = next((t for t in self._tracks if t.track_id == target_id), None)
-            if target is None:
-                continue
-            merged_tracks = [
-                t for t in self._tracks
-                if t.track_id == target_id or t.merged_into_track_id == target_id
-            ]
-            self._apply_merged_stats(target, merged_tracks)
+        children = {}
+        for track in self._tracks:
+            if track.merged_into_track_id is not None:
+                parent = track.group_parent_id if track.group_parent_id is not None else track.merged_into_track_id
+                children.setdefault(parent, []).append(track)
+        visited = set()
+
+        def refresh(target):
+            if target.track_id in visited or target.is_archive:
+                return
+            visited.add(target.track_id)
+            pending = [t for t in children.get(target.track_id, []) if not t.is_archive]
+            for child in pending:
+                refresh(child)
+            if pending:
+                self._apply_merged_stats(target, [target] + pending)
+
+        for track in self._tracks:
+            refresh(track)
 
     def _apply_merged_stats(self, target: TrackInfo, tracks: List[TrackInfo]):
         first = min(tracks, key=lambda t: t.first_frame)
@@ -556,15 +800,6 @@ class VerifyDialog(QDialog):
         self._baseline_state = self._snapshot_state()
         self._set_modified(False)
 
-        if self._tracks:
-            self._table.selectRow(0)
-            self._on_track_selected(0)
-        else:
-            self._btn_delete.setEnabled(False)
-            self._btn_confirm.setEnabled(False)
-            self._class_combo.setEnabled(False)
-            self._track_info_label.setText("")
-
         if self._player:
             self._update_delete_crosses(self._player.position())
             self._update_confirm_marks(self._player.position())
@@ -579,7 +814,7 @@ class VerifyDialog(QDialog):
         frame_str = f"{track.first_frame}–{track.last_frame}"
 
         values = [
-            str(track.track_id),
+            f"Фрагмент {abs(track.track_id)}" if track.track_id < 0 else str(track.track_id),
             track.effective_class_name,
             track.status_text,
             frame_str,
@@ -587,6 +822,7 @@ class VerifyDialog(QDialog):
             depth_str,
             str(track.detections_count),
             f"{track.avg_confidence:.2f}",
+            f"{track.first_timestamp_s:.3f}",
         ]
 
         for col, val in enumerate(values):
@@ -603,7 +839,22 @@ class VerifyDialog(QDialog):
                 item.setBackground(QBrush(QColor(60, 180, 60)))
             elif track.new_class_id is not None:
                 item.setForeground(QBrush(QColor(200, 150, 0)))
+            elif track.is_candidate:
+                item.setForeground(QBrush(QColor(220, 160, 70)))
             self._table.setItem(row, col, item)
+        name = self._table.item(row, 0)
+        indent = "    " * self._group_depth.get(track.track_id, 0)
+        if track.track_id in self._group_children:
+            arrow = "▼" if track.track_id in self._expanded_tracks else "▶"
+            name.setText(f"{indent}{arrow} {values[0]} ({len(self._group_children[track.track_id])})")
+            name.setToolTip("Нажмите на ID, чтобы развернуть или свернуть состав объединённого трека.")
+            font = name.font()
+            font.setBold(True)
+            name.setFont(font)
+        elif track.merged_into_track_id is not None:
+            name.setText(indent + "↳ " + values[0])
+            name.setToolTip(f"Часть объединённого трека #{track.merged_into_track_id}; не отдельный трек.")
+        self._set_proximity_cell(row, track)
 
     # ── video setup ──────────────────────────────────────────────────
 
@@ -953,9 +1204,39 @@ class VerifyDialog(QDialog):
     def _load_detections_for_track(self, track_id: int):
         if not self._detections_csv:
             return None
-        df = load_track_detections(self._detections_csv, track_id)
+        df = load_verification_track_detections(self._detections_csv, self._tracks, track_id)
         self._track_detections[track_id] = df
         return df
+
+    def _refresh_statistics(self, track_ids):
+        track_ids = set(track_ids)
+        by_id = {t.track_id: t for t in self._tracks}
+        for tid in list(track_ids):
+            visited = set()
+            while tid in by_id and tid not in visited:
+                visited.add(tid)
+                track_ids.add(tid)
+                track = by_id[tid]
+                tid = track.group_parent_id if track.group_parent_id is not None else track.merged_into_track_id
+        self._track_detections.clear()
+        self._deleted_detections.clear()
+        self._confirmed_detections.clear()
+        for track in self._tracks:
+            if track.track_id in track_ids:
+                refresh_track_statistics(track, self._load_detections_for_track(track.track_id))
+        for track in self._tracks:
+            if track.deleted or track.confirmed:
+                data = self._track_detections.get(track.track_id)
+                if data is None:
+                    data = self._load_detections_for_track(track.track_id)
+                if track.deleted:
+                    self._deleted_detections[track.track_id] = data
+                if track.confirmed:
+                    self._confirmed_detections[track.track_id] = data
+
+    def _index_assigned_rows(self):
+        self._fragment_by_row = {idx: t for t in self._tracks for idx in t.fragment_rows}
+        self._detached_by_row = {idx: t for t in self._tracks for idx in t.detached_rows}
 
     # ── play controls ────────────────────────────────────────────────
 
@@ -1049,11 +1330,25 @@ class VerifyDialog(QDialog):
 
     # ── track actions ────────────────────────────────────────────────
 
+    def _on_table_cell_clicked(self, row: int, column: int):
+        self._on_track_selected(row)
+        if row < 0 or row >= len(self._visible_tracks):
+            return
+        track = self._visible_tracks[row]
+        modifiers = QApplication.keyboardModifiers()
+        if (column == 0 and track.track_id in self._group_children
+                and not modifiers & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)):
+            if track.track_id in self._expanded_tracks:
+                self._expanded_tracks.remove(track.track_id)
+            else:
+                self._expanded_tracks.add(track.track_id)
+            self._rebuild_table(seek_to_first=False)
+
     def _on_track_selected(self, row: int, seek_to_first: bool = True):
-        if row < 0 or row >= len(self._tracks):
+        if row < 0 or row >= len(self._visible_tracks):
             return
 
-        self._selected_track = self._tracks[row]
+        self._selected_track = self._visible_tracks[row]
 
         self._btn_delete.setEnabled(True)
         self._btn_delete.setText(
@@ -1062,8 +1357,11 @@ class VerifyDialog(QDialog):
             else "🗑 Удалить трек"
         )
         is_merged_source = self._selected_track.merged_into_track_id is not None
-        self._btn_delete.setEnabled(not is_merged_source)
-        self._btn_confirm.setEnabled(not self._selected_track.deleted and not is_merged_source)
+        is_candidate = self._selected_track.is_candidate
+        self._btn_create_track.setEnabled(is_candidate)
+        self._update_merge_button()
+        self._btn_delete.setEnabled(not is_merged_source and not is_candidate)
+        self._btn_confirm.setEnabled(not self._selected_track.deleted and not is_merged_source and not is_candidate)
         self._btn_confirm.setText(
             "✘ Отменить подтверждение"
             if self._selected_track.confirmed
@@ -1079,8 +1377,12 @@ class VerifyDialog(QDialog):
 
         # Информация о треке
         t = self._selected_track
+        if t.track_id < 0:
+            title = f"Фрагмент {abs(t.track_id)}" + (" без ID" if t.is_candidate else "")
+        else:
+            title = f"Трек #{t.track_id}"
         self._track_info_label.setText(
-            f"Трек #{t.track_id}  |  {t.effective_class_name}  |  "
+            f"{title}  |  {t.effective_class_name}  |  "
             f"Кадры {t.first_frame}–{t.last_frame} ({t.frame_span})  |  "
             f"{t.duration_s} с  |  "
             f"{t.detections_count} детекций  |  "
@@ -1092,6 +1394,7 @@ class VerifyDialog(QDialog):
             first_ms = int(t.first_timestamp_s * 1000)
             self._seek_to(first_ms)
         self._update_track_button()
+        self._proximity_timer.start()
 
     def _on_video_clicked(self, scene_pos: QPointF):
         if not self._player or not self._video_item or not self._detections_csv:
@@ -1111,14 +1414,29 @@ class VerifyDialog(QDialog):
         if frame_df.empty:
             return
 
-        best_track_id = None
-        best_dist = float("inf")
+        candidates = []
+        known_tracks = {t.track_id: t for t in self._tracks}
+        visible_ids = {t.track_id for t in self._visible_tracks}
 
         for _, row in frame_df.iterrows():
+            if int(row["_detection_row"]) in self._detached_by_row:
+                track = self._detached_by_row[int(row["_detection_row"])]
+            elif pd.isna(row["track_id"]):
+                track = self._fragment_by_row.get(int(row["_detection_row"]))
+            else:
+                track = known_tracks.get(int(row["track_id"]))
+            if track is None:
+                continue
+            if track.merged_into_track_id is not None:
+                track = known_tracks.get(track.merged_into_track_id, track)
+            if track.track_id not in visible_ids:
+                continue
             xc = float(row["x_center"])
             yc = float(row["y_center"])
             bw = float(row["width"])
             bh = float(row["height"])
+            if not all(math.isfinite(v) for v in (xc, yc, bw, bh)) or bw <= 0 or bh <= 0:
+                continue
 
             bx = (xc - bw / 2) * scene_w
             by = (yc - bh / 2) * scene_h
@@ -1126,28 +1444,15 @@ class VerifyDialog(QDialog):
             bbox_h = bh * scene_h
             bbox = QRectF(bx, by, bbox_w, bbox_h)
 
-            if bbox.contains(scene_pos):
-                tid = int(row["track_id"])
-                for row_idx, t in enumerate(self._tracks):
-                    if t.track_id == tid:
-                        self._table.selectRow(row_idx)
-                        self._on_track_selected(row_idx, seek_to_first=False)
-                        self._update_highlight(self._player.position())
-                        self._update_delete_crosses(self._player.position())
-                        self._update_confirm_marks(self._player.position())
-                        return
-            else:
-                cx = bx + bbox_w / 2
-                cy = by + bbox_h / 2
-                dx = scene_pos.x() - cx
-                dy = scene_pos.y() - cy
-                dist = dx * dx + dy * dy
-                if dist < best_dist:
-                    best_dist = dist
-                    best_track_id = int(row["track_id"])
+            dt = abs(float(row["timestamp_s"]) - current_sec)
+            dist = (scene_pos.x() - xc * scene_w) ** 2 + (scene_pos.y() - yc * scene_h) ** 2
+            # Внутри рамок приоритет у ближайшего по времени кадра.
+            key = (0, dt, bbox_w * bbox_h) if bbox.contains(scene_pos) else (1, dist, dt)
+            candidates.append((key, track.track_id))
 
-        if best_track_id is not None:
-            for row_idx, t in enumerate(self._tracks):
+        if candidates:
+            best_track_id = min(candidates)[1]
+            for row_idx, t in enumerate(self._visible_tracks):
                 if t.track_id == best_track_id:
                     self._table.selectRow(row_idx)
                     self._on_track_selected(row_idx, seek_to_first=False)
@@ -1156,8 +1461,143 @@ class VerifyDialog(QDialog):
                     self._update_confirm_marks(self._player.position())
                     return
 
+    def _on_create_fragment_track(self):
+        track = self._selected_track
+        if not track or not track.is_candidate:
+            return
+        # Учитываем и ID детекций, отсутствующих в таблице треков.
+        max_id = max((t.track_id for t in self._tracks), default=0)
+        try:
+            for chunk in pd.read_csv(self._detections_csv, usecols=["track_id"], chunksize=50000):
+                ids = chunk["track_id"].dropna()
+                if not ids.empty:
+                    max_id = max(max_id, int(ids.max()))
+        except Exception as e:
+            QMessageBox.critical(self, "Создать трек", f"Не удалось прочитать ID детекций:\n{e}")
+            return
+        old_id = track.track_id
+        track.track_id = max(0, max_id) + 1
+        if track.detached_rows:
+            track.merged_member_ids = (track.track_id,)
+        track.fragment_assigned = True
+        self._track_detections.pop(old_id, None)
+        self._update_modified_from_baseline()
+        self._rebuild_table()
+
+    def _on_attach_fragment(self):
+        self._on_merge_tracks()
+
+    def _on_detach_track(self):
+        selected = self._selected_tracks()
+        if len(selected) != 1 or selected[0].merged_into_track_id is None:
+            return
+        source = selected[0]
+        by_id = {t.track_id: t for t in self._tracks}
+        class_id = by_id[source.merged_into_track_id].effective_class_id
+        ancestors = []
+        parent = source.group_parent_id if source.group_parent_id is not None else source.merged_into_track_id
+        seen = set()
+        while parent in by_id and parent not in seen:
+            seen.add(parent)
+            ancestors.append(by_id[parent])
+            current = by_id[parent]
+            parent = current.group_parent_id if current.group_parent_id is not None else current.merged_into_track_id
+        descendants = []
+        for track in self._tracks:
+            if track is source:
+                continue
+            parent = track.group_parent_id if track.group_parent_id is not None else track.merged_into_track_id
+            visited = set()
+            while parent in by_id and parent not in visited:
+                if parent == source.track_id:
+                    descendants.append(track)
+                    break
+                visited.add(parent)
+                current = by_id[parent]
+                parent = current.group_parent_id if current.group_parent_id is not None else current.merged_into_track_id
+        try:
+            signature = detection_file_signature(self._detections_csv)
+            if any((t.detached_rows and t.detached_signature != signature)
+                   or (t.fragment_rows and t.fragment_signature != signature) for t in self._tracks):
+                raise ValueError("CSV изменился. Откройте окно проверки заново перед отсоединением.")
+            data = load_verification_track_detections(self._detections_csv, self._tracks, source.track_id)
+            if data.empty:
+                raise ValueError("Для выбранной части не найдены детекции в исходном CSV.")
+            ancestor_data = {
+                t.track_id: load_verification_track_detections(self._detections_csv, self._tracks, t.track_id)
+                for t in ancestors
+            }
+            if detection_file_signature(self._detections_csv) != signature:
+                raise ValueError("CSV изменился во время чтения. Повторно откройте окно проверки.")
+        except Exception as e:
+            QMessageBox.warning(self, "Отсоединить", f"Не удалось отсоединить часть:\n{e}")
+            return
+
+        members = set(source.merged_member_ids or (source.track_id,))
+        for track in descendants:
+            members.update(track.merged_member_ids or (track.track_id,))
+        if source.is_archive:
+            rows = tuple(int(idx) for idx in data.index)
+            row_set = set(rows)
+            for track in self._tracks:
+                if track is not source and track.detached_rows:
+                    track.detached_rows = tuple(idx for idx in track.detached_rows if idx not in row_set)
+                    if not track.detached_rows:
+                        track.detached_from_track_id = None
+                        track.detached_parent_id = None
+                        track.detached_signature = ""
+                        track.detached_owner_ids = ()
+            if source.detached_from_track_id is None:
+                source.detached_from_track_id = int(data["track_id"].dropna().iloc[0])
+                source.detached_parent_id = (source.group_parent_id if source.group_parent_id is not None
+                                             else source.merged_into_track_id)
+            source.detached_rows = rows
+            source.detached_signature = signature
+            source.detached_owner_ids = tuple(sorted(int(tid) for tid in data["track_id"].dropna().unique()))
+            if source.track_id < 0:
+                source.fragment_rows = rows
+                source.fragment_signature = signature
+        source.merged_into_track_id = None
+        source.group_parent_id = None
+        source.deleted = False
+        source.confirmed = False
+        source.new_class_id = class_id if class_id != source.class_id else None
+        if source.track_id < 0:
+            source.fragment_assigned = False
+        for child in descendants:
+            child.merged_into_track_id = source.track_id
+        for ancestor in ancestors:
+            ancestor.confirmed = False
+            if ancestor.merged_member_ids:
+                ancestor.merged_member_ids = tuple(sorted(set(ancestor.merged_member_ids) - members))
+        self._index_assigned_rows()
+        self._selected_track = source
+        self._table.clearSelection()
+        self._clear_visual_marks()
+        self._track_detections.clear()
+        self._track_detections[source.track_id] = data
+        refresh_track_statistics(source, data)
+        self._deleted_detections.pop(source.track_id, None)
+        self._confirmed_detections.pop(source.track_id, None)
+        for ancestor in ancestors:
+            remaining = ancestor_data[ancestor.track_id].drop(index=data.index, errors="ignore")
+            refresh_track_statistics(ancestor, remaining)
+            self._track_detections[ancestor.track_id] = remaining
+            self._confirmed_detections.pop(ancestor.track_id, None)
+            if ancestor.deleted:
+                self._deleted_detections[ancestor.track_id] = remaining
+        self._update_modified_from_baseline()
+        if source.is_candidate and self._track_filter.currentData() == "tracks":
+            blocked = self._track_filter.blockSignals(True)
+            self._track_filter.setCurrentIndex(self._track_filter.findData("all"))
+            self._track_filter.blockSignals(blocked)
+        self._rebuild_table()
+        if self._player:
+            self._update_delete_crosses(self._player.position())
+            self._update_confirm_marks(self._player.position())
+
     def _toggle_delete(self):
-        if not self._selected_track or self._selected_track.merged_into_track_id is not None:
+        if not self._selected_track or self._selected_track.is_candidate or self._selected_track.merged_into_track_id is not None:
             return
 
         self._selected_track.deleted = not self._selected_track.deleted
@@ -1223,14 +1663,34 @@ class VerifyDialog(QDialog):
             QMessageBox.warning(
                 self,
                 "Объединить",
-                "Выберите два или более не удалённых трека одного класса.",
+                "Выберите трек с ID и один или несколько фрагментов без ID одного класса.\n"
+                "Для объединения обычных треков выберите два или более трека одного класса.",
             )
             return
 
-        target = min(selected, key=lambda t: (t.first_frame, t.track_id))
+        # Фрагмент может появиться раньше трека, но ID цели всегда сохраняется.
+        target = min((t for t in selected if not t.is_candidate), key=self._chronological_key)
+        for source in selected:
+            if source is target:
+                continue
+            members = set(source.merged_member_ids or (source.track_id,))
+            for child in self._tracks:
+                if child.merged_into_track_id == source.track_id:
+                    members.update(child.merged_member_ids or (child.track_id,))
+            source.merged_member_ids = tuple(sorted(members))
+        source_ids = {t.track_id for t in selected if t is not target}
+        # Переносим и ранее присоединённые фрагменты, не создавая цепочки слияний.
+        for track in self._tracks:
+            if track.merged_into_track_id in source_ids:
+                if track.group_parent_id is None:
+                    track.group_parent_id = track.merged_into_track_id
+                track.merged_into_track_id = target.track_id
         for track in selected:
             if track.track_id == target.track_id:
                 continue
+            if track.is_candidate:
+                track.fragment_assigned = True
+            track.group_parent_id = target.track_id
             track.merged_into_track_id = target.track_id
             track.new_class_id = None
             track.confirmed = False
@@ -1240,14 +1700,13 @@ class VerifyDialog(QDialog):
 
         target.confirmed = False
         self._apply_merged_stats(target, selected)
+        self._track_detections.clear()
+        self._confirmed_detections.pop(target.track_id, None)
         self._update_modified_from_baseline()
+        self._selected_track = target
+        self._expanded_tracks.discard(target.track_id)
+        self._table.clearSelection()
         self._rebuild_table()
-
-        for row, track in enumerate(self._tracks):
-            if track.track_id == target.track_id:
-                self._table.selectRow(row)
-                self._on_track_selected(row)
-                break
 
         if self._player:
             self._update_delete_crosses(self._player.position())
@@ -1258,6 +1717,7 @@ class VerifyDialog(QDialog):
     def _on_confirm(self):
         if (
             not self._selected_track
+            or self._selected_track.is_candidate
             or self._selected_track.deleted
             or self._selected_track.merged_into_track_id is not None
         ):
@@ -1361,16 +1821,51 @@ class VerifyDialog(QDialog):
             f"Всего треков: {result.total_tracks}\n"
             f"Удалено: {result.deleted_count}\n"
             f"Изменён класс: {result.changed_class_count}\n"
-            f"Объединено: {result.merged_count}",
+            f"Объединено: {result.merged_count}\n"
+            f"Отсоединено от применённых групп: {result.detached_count}",
         )
 
     def _on_sort(self, column: int):
+        if column == 9:
+            self._proximity_timer.stop()
+            self._refresh_proximity(force=True)
         if column == self._sort_column:
             self._sort_reverse = not self._sort_reverse
         else:
             self._sort_column = column
             self._sort_reverse = False
 
+        self._table.horizontalHeader().setSortIndicator(
+            self._sort_column,
+            Qt.SortOrder.DescendingOrder if self._sort_reverse else Qt.SortOrder.AscendingOrder,
+        )
+        self._rebuild_table()
+
+    @staticmethod
+    def _chronological_key(track: TrackInfo):
+        return (
+            track.first_frame, track.first_timestamp_s,
+            track.fragment_rows[0] if track.fragment_rows else -1, track.track_id,
+        )
+
+    def _update_visible_tracks(self):
+        mode = self._track_filter.currentData()
+        self._group_children = {}
+        self._group_depth = {}
+        known_ids = {t.track_id for t in self._tracks}
+        for track in self._tracks:
+            if track.merged_into_track_id is not None:
+                parent = track.group_parent_id if track.group_parent_id in known_ids else track.merged_into_track_id
+                self._group_children.setdefault(parent, []).append(track)
+        self._visible_tracks = [
+            t for t in self._tracks
+            if t.merged_into_track_id is None and (
+                mode == "all" or (t.is_candidate if mode == "fragments" else not t.is_candidate)
+            )
+        ]
+        # Стабильный порядок появления используется и при совпадении значений
+        # выбранной пользователем колонки сортировки.
+        self._visible_tracks.sort(key=self._chronological_key)
         key_map = {
             0: lambda t: t.track_id,
             1: lambda t: t.effective_class_name.lower(),
@@ -1380,63 +1875,116 @@ class VerifyDialog(QDialog):
             5: lambda t: t.first_depth_m or 0.0,
             6: lambda t: t.detections_count,
             7: lambda t: t.avg_confidence,
+            8: lambda t: t.first_timestamp_s,
+            9: lambda t: -1 if t.track_id == self._proximity_reference_id else
+                self._proximity_scores.get(t.track_id, {}).get("score", float("inf")),
         }
-        key = key_map.get(column, lambda t: t.track_id)
+        key = key_map.get(self._sort_column)
+        if key is not None:
+            self._visible_tracks.sort(key=key, reverse=self._sort_reverse)
+        rows = []
+        visited = set()
 
-        self._tracks.sort(key=key, reverse=self._sort_reverse)
+        def append_group(track, depth):
+            if track.track_id in visited:
+                return
+            visited.add(track.track_id)
+            self._group_depth[track.track_id] = depth
+            rows.append(track)
+            if track.track_id in self._expanded_tracks:
+                for child in sorted(self._group_children.get(track.track_id, []), key=self._chronological_key):
+                    append_group(child, depth + 1)
 
-        self._table.horizontalHeader().setSortIndicator(
-            self._sort_column,
-            Qt.SortOrder.DescendingOrder if self._sort_reverse else Qt.SortOrder.AscendingOrder,
-        )
+        for track in self._visible_tracks:
+            append_group(track, 0)
+        self._visible_tracks = rows
 
-        self._rebuild_table()
+    def _on_filter_changed(self, index: int):
+        self._rebuild_table(seek_to_first=False)
 
-        if self._tracks:
-            self._table.selectRow(0)
-            self._on_track_selected(0)
+    def _clear_track_selection(self):
+        self._proximity_timer.stop()
+        self._selected_track = None
+        self._table.clearSelection()
+        self._table.setCurrentCell(-1, -1)
+        self._track_play_active = False
+        self._highlight_active = False
+        if self._highlight_rect:
+            self._highlight_rect.setVisible(False)
+        for button in (self._btn_delete, self._btn_confirm, self._btn_create_track,
+                       self._btn_attach_fragment, self._btn_merge, self._btn_detach):
+            button.setEnabled(False)
+        self._class_combo.setEnabled(False)
+        self._track_info_label.setText("Нет элементов для выбранного фильтра.")
+        self._update_track_button()
 
-    def _rebuild_table(self):
+    def _rebuild_table(self, seek_to_first: bool = True):
         selected_track_id = self._selected_track.track_id if self._selected_track else None
+        selected_ids = {t.track_id for t in self._selected_tracks()}
+        if selected_track_id is not None:
+            selected_ids.add(selected_track_id)
 
-        self._table.setRowCount(len(self._tracks))
-        for row, track in enumerate(self._tracks):
+        blocked = self._table.blockSignals(True)
+        self._table.clearSelection()
+        self._table.setCurrentCell(-1, -1)
+        self._update_visible_tracks()
+        self._table.setRowCount(len(self._visible_tracks))
+        for row, track in enumerate(self._visible_tracks):
             self._set_track_row(row, track)
 
         self._table.resizeColumnsToContents()
-
-        if selected_track_id is not None:
-            for row, track in enumerate(self._tracks):
-                if track.track_id == selected_track_id:
-                    self._table.selectRow(row)
-                    self._on_track_selected(row)
-                    break
+        selected_row = next((row for row, track in enumerate(self._visible_tracks)
+                             if track.track_id == selected_track_id), None)
+        row = selected_row if selected_row is not None else next(
+            (i for i, t in enumerate(self._visible_tracks) if t.track_id in selected_ids), 0,
+        )
+        if self._visible_tracks:
+            selection = self._table.selectionModel()
+            flags = QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows
+            selected_rows = [i for i, t in enumerate(self._visible_tracks) if t.track_id in selected_ids]
+            for selected in selected_rows or [row]:
+                selection.select(self._table.model().index(selected, 0), flags)
+            selection.setCurrentIndex(self._table.model().index(row, 0),
+                                      QItemSelectionModel.SelectionFlag.NoUpdate)
+        self._table.blockSignals(blocked)
+        if self._visible_tracks:
+            self._on_track_selected(
+                row, seek_to_first=seek_to_first or selected_row is None,
+            )
+            self._update_merge_button()
+        else:
+            self._clear_track_selection()
+        if self._player:
+            self._update_highlight(self._player.position())
 
         self._update_task_status_label()
 
     def _select_next_unconfirmed(self):
         current_row = self._table.currentRow()
-        n = len(self._tracks)
+        n = len(self._visible_tracks)
 
         for offset in range(1, n):
             idx = (current_row + offset) % n
-            t = self._tracks[idx]
-            if not t.confirmed and not t.deleted and t.merged_into_track_id is None:
+            t = self._visible_tracks[idx]
+            if not t.is_candidate and not t.confirmed and not t.deleted and t.merged_into_track_id is None:
                 self._table.selectRow(idx)
                 self._on_track_selected(idx)
                 return
 
     def _compute_task_status(self) -> str:
-        if not self._tracks:
+        tracks = [t for t in self._tracks if not t.is_candidate]
+        if not tracks:
             return ""
+        if any(t.fragment_assigned or t.detached_rows for t in self._tracks):
+            return "В работе"
 
         resolved = sum(
-            1 for t in self._tracks
+            1 for t in tracks
             if t.confirmed or t.deleted or t.merged_into_track_id is not None
         )
         if resolved == 0:
             return ""
-        if resolved == len(self._tracks):
+        if resolved == len(tracks):
             return "Подтверждено"
         return "В работе"
 
@@ -1457,6 +2005,13 @@ class VerifyDialog(QDialog):
         else:
             self._task_status_label.setText("")
             self._task_status_label.setStyleSheet("")
+
+        candidates = sum(t.is_candidate for t in self._tracks)
+        if candidates:
+            text = self._task_status_label.text()
+            self._task_status_label.setText(
+                (text + "  |  " if text else "") + f"Фрагментов без ID: {candidates}"
+            )
 
         self.setWindowTitle(
             f"Проверка треков — задача #{self._task.id}"
