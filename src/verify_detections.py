@@ -510,8 +510,9 @@ def load_frame_detections(
     detections_csv_path: str,
     timestamp_s: float,
     tolerance_s: float = 0.15,
+    frame_index: Optional[int] = None,
 ) -> pd.DataFrame:
-    """Загружает все детекции на заданный момент времени из _detections.csv."""
+    """Загружает детекции по точному номеру кадра либо по времени с допуском."""
     if not os.path.exists(detections_csv_path):
         return pd.DataFrame()
 
@@ -520,9 +521,14 @@ def load_frame_detections(
 
     chunks = []
     for chunk in pd.read_csv(detections_csv_path, chunksize=50000):
-        if chunk["timestamp_s"].min() > t_max:
-            break
-        mask = (chunk["timestamp_s"] >= t_min) & (chunk["timestamp_s"] <= t_max)
+        if frame_index is not None:
+            if chunk["frame"].min() > frame_index:
+                break
+            mask = chunk["frame"] == frame_index
+        else:
+            if chunk["timestamp_s"].min() > t_max:
+                break
+            mask = (chunk["timestamp_s"] >= t_min) & (chunk["timestamp_s"] <= t_max)
         if mask.any():
             selected = chunk[mask].copy()
             selected["_detection_row"] = selected.index

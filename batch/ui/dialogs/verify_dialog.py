@@ -10,6 +10,7 @@ import sys
 import shutil
 import tempfile
 import math
+import weakref
 from pathlib import Path
 from typing import Optional, List, Dict
 
@@ -33,12 +34,15 @@ from PyQt6.QtWidgets import (
     QFrame,
     QGraphicsView,
     QGraphicsScene,
+    QToolTip,
 )
-from PyQt6.QtCore import Qt, QTimer, QUrl, QEvent, pyqtSignal, QPointF, QRectF, QItemSelectionModel
-from PyQt6.QtGui import QPen, QColor, QBrush, QPalette, QMouseEvent, QWheelEvent
+from PyQt6.QtCore import Qt, QTimer, QUrl, QEvent, pyqtSignal, QPointF, QRectF, QItemSelectionModel, QSizeF
+from PyQt6.QtGui import QPen, QColor, QBrush, QPalette, QMouseEvent, QWheelEvent, QPixmap
+
+from batch.core.video_frame_reader import VideoFrameReader
 
 try:
-    from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+    from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput, QMediaMetaData
     from PyQt6.QtMultimediaWidgets import (
         QVideoWidget,
         QGraphicsVideoItem,
@@ -84,11 +88,18 @@ class _ClickableGraphicsView(QGraphicsView):
         self._pan_position = None
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
-        self.setToolTip(
-            "Колесо мыши — увеличить область под указателем (до 16×).\n"
-            "Правая кнопка + перетаскивание — переместить изображение.\n"
-            "Левый клик — выбрать трек. «Весь кадр» — сбросить увеличение."
-        )
+        self.setToolTip("")
+        self.viewport().setToolTip("")
+
+    def viewportEvent(self, event):
+        if event.type() in (QEvent.Type.Enter, QEvent.Type.ToolTip):
+            QToolTip.hideText()
+        if event.type() == QEvent.Type.ToolTip:
+            # Подсказки над видеоповерхностью заменены постоянной строкой:
+            # отдельное окно tooltip может отображаться чёрным прямоугольником.
+            event.accept()
+            return True
+        return super().viewportEvent(event)
 
     def fit_video_rect(self, rect: QRectF):
         """Повторно вписывает кадр, сохраняя масштаб и центр выбранной области."""
@@ -207,6 +218,7 @@ class VerifyDialog(QDialog):
         self._group_children = {}
         self._group_depth = {}
         self._track_detections: Dict[int, pd.DataFrame] = {}
+        self._frame_indices = {}
         self._deleted_detections: Dict[int, pd.DataFrame] = {}
         self._confirmed_detections: Dict[int, pd.DataFrame] = {}
         self._delete_crosses: Dict[int, tuple] = {}
@@ -218,6 +230,38 @@ class VerifyDialog(QDialog):
         self._graphics_view = None
         self._scene = None
         self._video_item = None
+        self._manual_frame_item = None
+        self._frame_reader = None
+        self._reader_ready = False
+        self._reader_failed = False
+        self._handling_video_error = False
+        self._video_fps = None
+        self._video_frame_count = 0
+        self._decoder_size = QSizeF()
+        self._manual_mode = False
+        self._requested_frame = None
+        self._pending_frame = None
+        self._pending_seek_ms = None
+        self._displayed_frame = None
+        self._last_displayed_frame = None
+        self._displayed_ms = 0.0
+        self._last_native_pts = None
+        self._request_revision = 0
+        self._resume_target_frame = None
+        self._play_when_frame_ready = False
+        self._resume_timer = QTimer(self)
+        self._resume_timer.setSingleShot(True)
+        self._resume_timer.setInterval(2000)
+        self._resume_timer.timeout.connect(self._finish_native_resume)
+        self._playback_requested = False
+        self._track_play_id = None
+        self._track_end_frame = None
+        self._track_end_ms = None
+        self._track_stop_timer = QTimer(self)
+        self._track_stop_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._track_stop_timer.setInterval(10)
+        self._track_stop_timer.timeout.connect(self._check_track_end)
+        self._close_finished = False
         self._highlight_rect = None
         self._fitting = False
         self._fit_pending = False
@@ -247,6 +291,7 @@ class VerifyDialog(QDialog):
         self._setup_ui()
         self._setup_video()
         self._setup_flash_timer()
+        self._table.currentCellChanged.connect(self._on_table_current_changed)
 
         if self._visible_tracks:
             self._table.selectRow(0)
@@ -287,6 +332,25 @@ class VerifyDialog(QDialog):
         if self._closing:
             return
         self._closing = True
+        self._cancel_playback_request()
+        self._proximity_timer.stop()
+        self._resume_timer.stop()
+        if hasattr(self, "_flash_timer"):
+            self._flash_timer.stop()
+        if self._player:
+            self._player.stop()
+        if self._frame_reader and self._frame_reader.isRunning():
+            self.setEnabled(False)
+            self._frame_reader.finished.connect(self._finish_reject)
+            self._frame_reader.stop()
+            if self._frame_reader.isRunning():
+                return
+        self._finish_reject()
+
+    def _finish_reject(self):
+        if self._close_finished:
+            return
+        self._close_finished = True
         self._restore_backup(cleanup=True)
         super().reject()
 
@@ -541,7 +605,7 @@ class VerifyDialog(QDialog):
 
         if HAS_MULTIMEDIA and self._video_path:
             self._graphics_view = _ClickableGraphicsView()
-            self._graphics_view.setStyleSheet("background: black;")
+            self._graphics_view.setBackgroundBrush(QBrush(QColor("black")))
             self._graphics_view.setFrameShape(QFrame.Shape.NoFrame)
             self._graphics_view.setHorizontalScrollBarPolicy(
                 Qt.ScrollBarPolicy.ScrollBarAlwaysOff
@@ -567,9 +631,9 @@ class VerifyDialog(QDialog):
         # Контролы воспроизведения
         controls = QHBoxLayout()
 
-        self._btn_track_play = QPushButton("▶")
-        self._btn_track_play.setFixedWidth(36)
-        self._btn_track_play.setToolTip("Воспроизвести трек")
+        self._btn_track_play = QPushButton("▶ Трек")
+        self._btn_track_play.setFixedWidth(90)
+        self._btn_track_play.setToolTip("Воспроизвести только выбранный трек / поставить на паузу")
         self._btn_track_play.setEnabled(False)
         self._btn_track_play.setStyleSheet(
             "QPushButton { background-color: #E07000; color: white;"
@@ -581,9 +645,9 @@ class VerifyDialog(QDialog):
         self._btn_track_play.clicked.connect(self._on_track_play_click)
         controls.addWidget(self._btn_track_play)
 
-        self._btn_play = QPushButton("▶")
-        self._btn_play.setFixedWidth(36)
-        self._btn_play.setToolTip("Play / Pause — всё видео")
+        self._btn_play = QPushButton("▶ Видео")
+        self._btn_play.setFixedWidth(90)
+        self._btn_play.setToolTip("Воспроизвести всё видео / поставить на паузу")
         self._btn_play.setEnabled(False)
         self._btn_play.clicked.connect(self._toggle_play)
         controls.addWidget(self._btn_play)
@@ -626,6 +690,9 @@ class VerifyDialog(QDialog):
         self._playback_rate_combo.setToolTip("Скорость воспроизведения всего видео и выбранного трека")
         self._playback_rate_combo.currentIndexChanged.connect(self._on_playback_rate_changed)
         view_controls.addWidget(self._playback_rate_combo)
+        self._frame_label = QLabel("Кадр: —")
+        self._frame_label.setToolTip("Номер показанного кадра с нуля, как в колонке frame CSV")
+        view_controls.addWidget(self._frame_label)
         view_controls.addStretch(1)
         self._zoom_label = QLabel("Масштаб: 1×")
         self._zoom_label.setToolTip("Масштаб относительно полного кадра, вписанного в окно")
@@ -636,6 +703,13 @@ class VerifyDialog(QDialog):
         self._btn_reset_zoom.clicked.connect(self._reset_video_zoom)
         view_controls.addWidget(self._btn_reset_zoom)
         right_layout.addLayout(view_controls)
+
+        video_help = QLabel(
+            "Колесо — масштаб до 16×; ПКМ + перетаскивание — перемещение. "
+            "ЛКМ — выделить трек без перемотки. «Весь кадр» — сброс масштаба."
+        )
+        video_help.setWordWrap(True)
+        right_layout.addWidget(video_help)
 
         # Информация о выбранном треке
         self._track_info_label = QLabel()
@@ -798,6 +872,8 @@ class VerifyDialog(QDialog):
         self._proximity_timer.start()
 
     def _refresh_proximity(self, force: bool = False):
+        if self._closing:
+            return
         selected = [t for t in self._selected_tracks()
                     if not t.deleted and t.merged_into_track_id is None]
         fragments = [t for t in selected if t.is_candidate]
@@ -935,8 +1011,7 @@ class VerifyDialog(QDialog):
         self._set_modified(False)
 
         if self._player:
-            self._update_delete_crosses(self._player.position())
-            self._update_confirm_marks(self._player.position())
+            self._refresh_overlays()
 
     def _set_track_row(self, row: int, track: TrackInfo):
         depth_str = ""
@@ -1004,6 +1079,10 @@ class VerifyDialog(QDialog):
             lambda *_: self._schedule_fit_video()
         )
         self._scene.addItem(self._video_item)
+        self._manual_frame_item = self._scene.addPixmap(QPixmap())
+        self._manual_frame_item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
+        self._manual_frame_item.setZValue(0.5)
+        self._manual_frame_item.setVisible(False)
 
         self._player = QMediaPlayer()
         self._audio = QAudioOutput()
@@ -1011,13 +1090,12 @@ class VerifyDialog(QDialog):
         self._audio.setVolume(0.5)
         self._player.setVideoOutput(self._video_item)
 
-        self._player.setSource(QUrl.fromLocalFile(self._video_path))
-        self._player.setPlaybackRate(float(self._playback_rate_combo.currentData()))
-
         self._player.durationChanged.connect(self._on_duration_changed)
         self._player.positionChanged.connect(self._on_position_changed)
         self._player.playbackStateChanged.connect(self._on_state_changed)
+        self._player.mediaStatusChanged.connect(self._on_media_status_changed)
         self._player.errorOccurred.connect(self._on_video_error)
+        self._video_item.videoSink().videoFrameChanged.connect(self._on_native_frame)
 
         # Прямоугольник подсветки (bbox)
         pen = QPen(HIGHLIGHT_COLOR)
@@ -1030,10 +1108,17 @@ class VerifyDialog(QDialog):
 
         self._btn_play.setEnabled(True)
         self._btn_track_play.setEnabled(True)
-        self._btn_back.setEnabled(True)
-        self._btn_fwd.setEnabled(True)
         self._time_slider.setEnabled(True)
         self._playback_rate_combo.setEnabled(True)
+
+        self._player.setSource(QUrl.fromLocalFile(self._video_path))
+        self._player.setPlaybackRate(float(self._playback_rate_combo.currentData()))
+        self._frame_reader = VideoFrameReader(self._video_path, self)
+        self._frame_reader.metadataReady.connect(self._on_reader_metadata)
+        self._frame_reader.frameReady.connect(self._on_manual_frame)
+        self._frame_reader.failed.connect(self._on_reader_error)
+        QApplication.instance().aboutToQuit.connect(self._stop_frame_reader_on_quit)
+        self._frame_reader.start()
 
         self._schedule_fit_video()
 
@@ -1043,10 +1128,11 @@ class VerifyDialog(QDialog):
         self._flash_timer.start(HIGHLIGHT_FLASH_MS)
 
     def _flash_tick(self):
+        if self._closing:
+            return
         if self._highlight_active and self._highlight_rect:
-            self._highlight_rect.setVisible(
-                not self._highlight_rect.isVisible()
-            )
+            playing = self._player and self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+            self._highlight_rect.setVisible(not self._highlight_rect.isVisible() if playing else True)
 
     # ── event filter (auto-fit video on resize) ──────────────────────
 
@@ -1071,12 +1157,13 @@ class VerifyDialog(QDialog):
 
     def _run_scheduled_fit_video(self):
         self._fit_pending = False
-        self._fit_video()
+        if not self._closing:
+            self._fit_video()
 
     def _fit_video(self):
         if self._fitting or not self._video_item:
             return
-        ns = self._video_item.nativeSize()
+        ns = self._video_size()
         if not ns.isValid():
             return
         viewport_size = self._graphics_view.viewport().size()
@@ -1099,8 +1186,257 @@ class VerifyDialog(QDialog):
 
     # ── video slots ──────────────────────────────────────────────────
 
-    def _on_playback_rate_changed(self, index: int):
+    def _video_size(self):
+        native = self._video_item.nativeSize() if self._video_item else QSizeF()
+        return native if native.isValid() else self._decoder_size
+
+    def _on_reader_metadata(self, fps: float, count: int, width: int, height: int):
+        if self._closing:
+            return
+        self._video_fps, self._video_frame_count = fps, count
+        self._decoder_size = QSizeF(width, height)
+        self._reader_ready = True
+        self._btn_back.setEnabled(True)
+        self._btn_fwd.setEnabled(True)
+        if self._time_slider.maximum() <= 0:
+            self._time_slider.setRange(0, round(count * 1000.0 / fps))
+        self._schedule_fit_video()
+        if self._pending_frame is not None:
+            target = self._pending_frame
+            self._pending_frame = None
+            self._seek_to_frame(target, preserve_playback=True)
+        elif self._pending_seek_ms is not None:
+            target = self._pending_seek_ms
+            self._pending_seek_ms = None
+            self._seek_to_frame(round(target * fps / 1000.0), preserve_playback=True)
+        elif not self._manual_mode and self._last_native_pts is not None:
+            self._set_displayed_frame(round(self._last_native_pts * fps / 1_000_000), self._last_native_pts / 1000.0)
+        self._update_track_button()
+
+    def _set_displayed_frame(self, index: int, ms: float):
+        self._displayed_frame = max(0, index)
+        self._last_displayed_frame = self._displayed_frame
+        self._displayed_ms = ms
+        if not self._seeking:
+            blocked = self._time_slider.blockSignals(True)
+            self._time_slider.setValue(round(ms))
+            self._time_slider.blockSignals(blocked)
+        self._update_time_label()
+        self._refresh_overlays()
+        self._check_track_end()
+        self._update_track_button()
+
+    def _refresh_overlays(self):
+        self._update_highlight()
+        self._update_delete_crosses()
+        self._update_confirm_marks()
+
+    def _on_native_frame(self, frame):
+        if self._closing:
+            return
+        if not frame.isValid() or frame.startTime() < 0:
+            self._last_native_pts = None
+            if not self._manual_mode and self._resume_target_frame is None:
+                self._displayed_frame = None
+                self._refresh_overlays()
+                self._update_time_label()
+            return
+        self._last_native_pts = frame.startTime()
+        if self._video_fps is None:
+            fps = frame.surfaceFormat().frameRate()
+            if not math.isfinite(fps) or fps <= 0:
+                value = self._player.metaData().value(QMediaMetaData.Key.VideoFrameRate)
+                fps = float(value) if isinstance(value, (int, float)) else 0.0
+            if math.isfinite(fps) and fps > 0:
+                self._video_fps = fps
+        if self._manual_mode or not self._video_fps:
+            return
+        index = round(frame.startTime() * self._video_fps / 1_000_000)
+        if self._resume_target_frame is not None:
+            if index == self._resume_target_frame:
+                self._finish_native_resume(frame)
+            return
+        self._show_native_frame(frame)
+
+    def _show_native_frame(self, frame):
+        if not frame.isValid() or frame.startTime() < 0 or not self._video_fps:
+            return
+        self._manual_frame_item.setVisible(False)
+        self._video_item.setVisible(True)
+        self._set_displayed_frame(round(frame.startTime() * self._video_fps / 1_000_000),
+                                  frame.startTime() / 1000.0)
+
+    def _freeze_native_frame(self):
+        if self._manual_frame_item.isVisible():
+            return
+        frame = self._video_item.videoSink().videoFrame()
+        if frame.isValid():
+            image = frame.toImage()
+            if not image.isNull():
+                self._manual_frame_item.setPixmap(QPixmap.fromImage(image))
+                self._manual_frame_item.setVisible(True)
+                if frame.startTime() >= 0 and self._video_fps:
+                    self._set_displayed_frame(round(frame.startTime() * self._video_fps / 1_000_000),
+                                              frame.startTime() / 1000.0)
+        self._video_item.setVisible(False)
+        if not self._manual_frame_item.isVisible() or frame.startTime() < 0:
+            self._displayed_frame = None
+            self._refresh_overlays()
+
+    def _on_manual_frame(self, revision: int, index: int, image):
+        if self._closing or revision != self._request_revision or not self._manual_mode:
+            return
+        self._manual_frame_item.setPixmap(QPixmap.fromImage(image))
+        self._decoder_size = QSizeF(image.width(), image.height())
+        self._manual_frame_item.setVisible(True)
+        self._video_item.setVisible(False)
+        self._requested_frame = index
+        self._set_displayed_frame(index, index * 1000.0 / self._video_fps)
+        self._schedule_fit_video()
+        if self._play_when_frame_ready and self._playback_requested:
+            self._play_when_frame_ready = False
+            self._resume_playback()
+
+    def _on_reader_error(self, revision: int, message: str):
+        if self._closing or revision not in (0, self._request_revision):
+            return
+        self._resume_timer.stop()
+        self._resume_target_frame = None
+        self._cancel_playback_request()
+        self._player.pause()
+        self._request_revision += 1
+        self._frame_reader.cancel(self._request_revision)
+        self._requested_frame = self._displayed_frame
+        if revision == 0:
+            self._reader_failed = True
+            self._reader_ready = False
+            self._btn_back.setEnabled(False)
+            self._btn_fwd.setEnabled(False)
+            self._manual_mode = False
+            self._manual_frame_item.setVisible(False)
+            self._video_item.setVisible(True)
+            self._displayed_frame = None
+            self._refresh_overlays()
+            self._on_native_frame(self._video_item.videoSink().videoFrame())
+            ms = self._pending_seek_ms
+            if ms is None and self._selected_track:
+                ms = round(self._selected_track.first_timestamp_s * 1000)
+            self._pending_frame = self._pending_seek_ms = None
+            if ms is not None:
+                self._player.setPosition(ms)
+        self._update_time_label()
+        self._update_track_button()
+        QMessageBox.warning(self, "Покадровый просмотр", message)
+
+    def _cancel_playback_request(self):
+        self._playback_requested = False
+        self._play_when_frame_ready = False
+        self._track_play_active = False
+        self._track_play_id = None
+        self._track_end_frame = None
+        self._track_end_ms = None
+        self._track_stop_timer.stop()
+
+    def _start_playback(self, track=None):
+        self._playback_requested = True
+        self._track_play_active = track is not None
+        self._track_play_id = track.track_id if track else None
+        self._track_end_frame = track.last_frame if track else None
+        self._track_end_ms = track.last_timestamp_s * 1000.0 if track else None
+        if track:
+            self._track_stop_timer.start()
+        else:
+            self._track_stop_timer.stop()
+        self._resume_playback()
+
+    def _resume_playback(self):
+        if self._closing or not self._playback_requested:
+            return
+        if self._manual_mode and (
+            self._pending_frame is not None or self._pending_seek_ms is not None
+            or self._requested_frame != self._displayed_frame
+        ):
+            self._play_when_frame_ready = True
+            self._update_track_button()
+            return
+        self._play_when_frame_ready = False
+        if self._manual_mode and self._displayed_frame is not None and self._video_fps:
+            self._request_revision += 1
+            self._frame_reader.cancel(self._request_revision)
+            self._requested_frame = None
+            self._manual_mode = False
+            self._resume_target_frame = self._displayed_frame
+            self._video_item.setVisible(True)
+            self._resume_timer.start()
+            # Середина интервала исключает округление на предыдущий кадр.
+            self._player.setPosition(round((self._displayed_frame + 0.5) * 1000.0 / self._video_fps))
+            # Даём QGraphicsVideoItem обработать уже поставленные в очередь
+            # сигналы, прежде чем убрать изображение покадрового режима.
+            QTimer.singleShot(0, self._try_native_resume)
+        else:
+            self._manual_mode = False
+            self._video_item.setVisible(True)
+            if self._playback_requested:
+                self._player.play()
+        self._update_track_button()
+
+    def _try_native_resume(self):
+        if self._closing or not self._playback_requested or self._resume_target_frame is None:
+            return
+        frame = self._video_item.videoSink().videoFrame()
+        if (frame.isValid() and frame.startTime() >= 0
+                and round(frame.startTime() * self._video_fps / 1_000_000) == self._resume_target_frame):
+            self._finish_native_resume(frame)
+
+    def _finish_native_resume(self, frame=None):
+        if self._closing or not self._playback_requested or self._resume_target_frame is None:
+            return
+        if frame is None:
+            frame = self._video_item.videoSink().videoFrame()
+        if (not frame.isValid() or frame.startTime() < 0 or not self._video_fps
+                or round(frame.startTime() * self._video_fps / 1_000_000) != self._resume_target_frame):
+            self._track_play_active = False
+            self._pause_playback()
+            QMessageBox.warning(
+                self, "Возврат к воспроизведению",
+                "Проигрыватель не подтвердил переход к выбранному кадру. "
+                "Покадровое изображение сохранено. Попробуйте запустить воспроизведение повторно.",
+            )
+            return
+        self._resume_timer.stop()
+        self._resume_target_frame = None
+        self._show_native_frame(frame)
+        # Обновление кадра может остановить трек. Отложенный запуск не должен
+        # отменять эту остановку или более позднюю команду пользователя.
+        if self._playback_requested and not self._manual_mode and not self._closing:
+            self._player.play()
+
+    def _pause_playback(self):
+        self._cancel_playback_request()
+        if self._resume_target_frame is not None:
+            self._resume_target_frame = None
+            self._resume_timer.stop()
+            self._manual_mode = True
+            self._requested_frame = self._displayed_frame
+        self._player.pause()
+        self._refresh_overlays()
+        self._update_track_button()
+
+    def _stop_frame_reader_on_quit(self):
+        self._closing = True
+        self._cancel_playback_request()
+        self._resume_timer.stop()
+        self._proximity_timer.stop()
+        if hasattr(self, "_flash_timer"):
+            self._flash_timer.stop()
         if self._player:
+            self._player.stop()
+        if self._frame_reader:
+            self._frame_reader.stop()
+            self._frame_reader.wait()
+
+    def _on_playback_rate_changed(self, index: int):
+        if self._player and not self._closing:
             self._player.setPlaybackRate(float(self._playback_rate_combo.currentData()))
 
     def _reset_video_zoom(self):
@@ -1113,64 +1449,120 @@ class VerifyDialog(QDialog):
         self._btn_reset_zoom.setEnabled(factor > 1.0)
 
     def _on_duration_changed(self, ms: int):
+        if self._closing:
+            return
         self._time_slider.setRange(0, ms)
         self._update_time_label()
         self._schedule_fit_video()
 
     def _on_position_changed(self, ms: int):
-        if not self._seeking:
-            self._time_slider.blockSignals(True)
-            self._time_slider.setValue(ms)
-            self._time_slider.blockSignals(False)
-        self._update_time_label()
-        self._update_highlight(ms)
-        self._update_delete_crosses(ms)
-        self._update_confirm_marks(ms)
+        if self._closing:
+            return
+        # Позиция запроса перемотки не подтверждает показ изображения.
+        # Отметки и время обновляются только вместе с фактическим кадром.
         self._check_track_end(ms)
         self._update_track_button()
 
-    def _check_track_end(self, ms: int):
-        if not self._track_play_active or not self._selected_track or not self._player:
+    def _check_track_end(self, position_ms=None):
+        if (self._closing or not self._playback_requested or not self._track_play_active
+                or self._track_end_frame is None or not self._player
+                or self._manual_mode or self._resume_target_frame is not None
+                or self._play_when_frame_ready):
             return
         if self._player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
             return
-        end_ms = int(self._selected_track.last_timestamp_s * 1000)
-        if ms >= end_ms:
-            self._track_play_active = False
-            self._player.pause()
+        if position_ms is None:
+            position_ms = self._player.position()
+        end_ms = (self._track_end_frame * 1000.0 / self._video_fps
+                  if self._video_fps else self._track_end_ms)
+        reached_frame = self._displayed_frame is not None and self._displayed_frame >= self._track_end_frame
+        if reached_frame or (end_ms is not None and position_ms >= end_ms):
+            self._finish_track_playback()
+
+    def _finish_track_playback(self):
+        last_frame = self._track_end_frame
+        self._pause_playback()
+        if self._reader_ready and last_frame is not None:
+            self._seek_to_frame(last_frame)
+
+    def _on_media_status_changed(self, status):
+        if self._closing or status != QMediaPlayer.MediaStatus.EndOfMedia:
+            return
+        if self._manual_mode or self._resume_target_frame is not None:
+            return
+        if self._track_play_active and self._playback_requested:
+            self._finish_track_playback()
+        else:
+            self._cancel_playback_request()
+            self._update_track_button()
 
     def _on_state_changed(self, state):
-        if state == QMediaPlayer.PlaybackState.PlayingState:
-            self._btn_play.setText("⏸")
-        else:
-            self._btn_play.setText("▶")
+        if self._closing:
+            return
+        if state == QMediaPlayer.PlaybackState.PlayingState and (
+            not self._playback_requested or self._manual_mode or self._resume_target_frame is not None
+        ):
+            # Игнорируем запоздавший запуск backend после выбора строки/паузы.
+            self._player.pause()
+            self._update_track_button()
+            return
         self._update_track_button()
+        self._check_track_end()
+        self._refresh_overlays()
 
     def _on_video_error(self, error, error_string):
-        QMessageBox.warning(
-            self, "Ошибка видео", f"Ошибка воспроизведения:\n{error_string}"
-        )
+        if self._closing or self._handling_video_error:
+            return
+        self._handling_video_error = True
+        try:
+            self._track_play_active = False
+            self._pause_playback()
+            QMessageBox.warning(
+                self, "Ошибка видео", f"Ошибка воспроизведения:\n{error_string}"
+            )
+        finally:
+            self._handling_video_error = False
 
     def _on_slider_pressed(self):
+        self._track_play_active = False
+        self._pause_playback()
         self._seeking = True
 
     def _on_slider_released(self):
         self._seeking = False
-        self._player.setPosition(self._time_slider.value())
+        self._seek_to(self._time_slider.value())
 
     def _on_slider_moved(self, value: int):
         self._update_time_label()
 
     # ── highlight ────────────────────────────────────────────────────
 
-    def _update_highlight(self, position_ms: int):
+    def _detection_on_displayed_frame(self, df):
+        if self._displayed_frame is None or df is None or df.empty:
+            return None
+        key = id(df)
+        cached = self._frame_indices.get(key)
+        if cached is None or cached[0]() is not df:
+            self._frame_indices = {k: v for k, v in self._frame_indices.items() if v[0]() is not None}
+            index = pd.Index(df["frame"].to_numpy(copy=True))
+            cached = (weakref.ref(df), index, index.min(), index.max())
+            self._frame_indices[key] = cached
+        if self._displayed_frame < cached[2] or self._displayed_frame > cached[3]:
+            return None
+        try:
+            row = df.iloc[cached[1].get_loc(self._displayed_frame)]
+        except KeyError:
+            return None
+        return row.iloc[0] if isinstance(row, pd.DataFrame) else row
+
+    def _update_highlight(self):
         if not self._highlight_rect or not self._selected_track or not self._video_item:
             self._highlight_active = False
             if self._highlight_rect:
                 self._highlight_rect.setVisible(False)
             return
 
-        native = self._video_item.nativeSize()
+        native = self._video_size()
         if not native.isValid():
             self._highlight_active = False
             self._highlight_rect.setVisible(False)
@@ -1179,28 +1571,11 @@ class VerifyDialog(QDialog):
         scene_w = native.width()
         scene_h = native.height()
 
-        current_sec = position_ms / 1000.0
-
-        t = self._selected_track
-        if current_sec < t.first_timestamp_s or current_sec > t.last_timestamp_s + 0.5:
-            self._highlight_active = False
-            self._highlight_rect.setVisible(False)
-            return
-
-        search_sec = max(t.first_timestamp_s, min(t.last_timestamp_s, current_sec))
-
         df = self._track_detections.get(self._selected_track.track_id)
-        if df is None or df.empty:
+        if df is None:
             df = self._load_detections_for_track(self._selected_track.track_id)
-
-        if df is None or df.empty:
-            self._highlight_active = False
-            self._highlight_rect.setVisible(False)
-            return
-
-        idx = (df["timestamp_s"] - search_sec).abs().idxmin()
-        row = df.loc[idx]
-        if search_sec == current_sec and abs(row["timestamp_s"] - current_sec) > 0.15:
+        row = self._detection_on_displayed_frame(df)
+        if row is None:
             self._highlight_active = False
             self._highlight_rect.setVisible(False)
             return
@@ -1215,20 +1590,22 @@ class VerifyDialog(QDialog):
         w = bw * scene_w
         h = bh * scene_h
 
+        was_active = self._highlight_active
         self._highlight_active = True
         self._highlight_rect.setRect(x, y, w, h)
+        if not was_active or not self._player or self._player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+            self._highlight_rect.setVisible(True)
 
-    def _update_delete_crosses(self, position_ms: int):
+    def _update_delete_crosses(self):
         if not self._video_item:
             return
 
-        native = self._video_item.nativeSize()
+        native = self._video_size()
         if not native.isValid():
             return
 
         scene_w = native.width()
         scene_h = native.height()
-        current_sec = position_ms / 1000.0
 
         deleted_ids = {t.track_id for t in self._tracks if t.deleted}
 
@@ -1240,12 +1617,8 @@ class VerifyDialog(QDialog):
 
         for tid in deleted_ids:
             df = self._deleted_detections.get(tid)
-            if df is None or df.empty:
-                continue
-
-            idx = (df["timestamp_s"] - current_sec).abs().idxmin()
-            row = df.loc[idx]
-            if abs(row["timestamp_s"] - current_sec) > 0.15:
+            row = self._detection_on_displayed_frame(df)
+            if row is None:
                 if tid in self._delete_crosses:
                     line1, line2 = self._delete_crosses[tid]
                     line1.setVisible(False)
@@ -1279,17 +1652,16 @@ class VerifyDialog(QDialog):
             line1.setVisible(True)
             line2.setVisible(True)
 
-    def _update_confirm_marks(self, position_ms: int):
+    def _update_confirm_marks(self):
         if not self._video_item:
             return
 
-        native = self._video_item.nativeSize()
+        native = self._video_size()
         if not native.isValid():
             return
 
         scene_w = native.width()
         scene_h = native.height()
-        current_sec = position_ms / 1000.0
 
         confirmed_ids = {t.track_id for t in self._tracks if t.confirmed}
 
@@ -1301,12 +1673,8 @@ class VerifyDialog(QDialog):
 
         for tid in confirmed_ids:
             df = self._confirmed_detections.get(tid)
-            if df is None or df.empty:
-                continue
-
-            idx = (df["timestamp_s"] - current_sec).abs().idxmin()
-            row = df.loc[idx]
-            if abs(row["timestamp_s"] - current_sec) > 0.15:
+            row = self._detection_on_displayed_frame(df)
+            if row is None:
                 if tid in self._confirm_marks:
                     line1, line2 = self._confirm_marks[tid]
                     line1.setVisible(False)
@@ -1387,86 +1755,141 @@ class VerifyDialog(QDialog):
 
     # ── play controls ────────────────────────────────────────────────
 
+    def _playback_is_active(self):
+        return bool(self._playback_requested or self._player
+                    and self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState)
+
+    def _track_restart_available(self, track):
+        if not self._player or self._playback_is_active():
+            return False
+        current = (self._requested_frame if self._manual_mode and self._requested_frame is not None
+                   else self._displayed_frame)
+        return current is not None and current >= track.last_frame
+
     def _toggle_play(self):
-        if not HAS_MULTIMEDIA or not self._player:
+        if self._closing or not HAS_MULTIMEDIA or not self._player:
             return
-        self._track_play_active = False
-        if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
-            self._player.pause()
+        if self._playback_is_active():
+            self._pause_playback()
         else:
-            self._player.play()
+            current = self._requested_frame if self._manual_mode else self._displayed_frame
+            if self._reader_ready and current is not None and current >= self._video_frame_count - 1:
+                self._seek_to_frame(0)
+            self._start_playback()
 
     def _seek_frame(self, direction: int):
-        if not HAS_MULTIMEDIA or not self._player:
+        if self._closing or not self._reader_ready:
             return
+        self._track_play_active = False
+        if not self._manual_mode:
+            self._manual_mode = True
+            self._player.pause()
+            self._freeze_native_frame()
+        current = self._requested_frame if self._manual_mode and self._requested_frame is not None else self._displayed_frame
+        if current is None:
+            current = self._last_displayed_frame
+        self._seek_to_frame(current + direction if current is not None else 0)
 
-        if self._selected_track:
-            t = self._selected_track
-            fps = t.frame_span / t.duration_s if t.duration_s > 0 else 30.0
-        else:
-            fps = 30.0
-        frame_ms = int(1000.0 / fps)
-
-        new_pos = self._player.position() + direction * frame_ms
-        new_pos = max(0, min(self._player.duration(), new_pos))
-        self._player.setPosition(new_pos)
+    def _seek_to_frame(self, index: int, preserve_playback: bool = False):
+        if not self._player or self._closing:
+            return
+        if not preserve_playback:
+            self._cancel_playback_request()
+        self._resume_timer.stop()
+        self._resume_target_frame = None
+        self._play_when_frame_ready = preserve_playback and self._playback_requested
+        self._manual_mode = True
+        self._player.pause()
+        if not self._reader_ready:
+            self._pending_frame = max(0, index)
+            self._pending_seek_ms = None
+            self._requested_frame = self._pending_frame
+            self._update_time_label()
+            self._update_track_button()
+            return
+        self._freeze_native_frame()
+        self._pending_frame = self._pending_seek_ms = None
+        self._requested_frame = max(0, min(self._video_frame_count - 1, index))
+        self._request_revision += 1
+        self._frame_reader.request_frame(self._request_revision, self._requested_frame)
+        self._update_time_label()
+        self._update_track_button()
 
     def _restart_track(self):
         if not self._selected_track:
             return
-        first_ms = int(self._selected_track.first_timestamp_s * 1000)
-        self._seek_to(first_ms)
+        self._track_play_active = False
+        if self._reader_failed:
+            self._seek_to(round(self._selected_track.first_timestamp_s * 1000))
+        else:
+            self._seek_to_frame(self._selected_track.first_frame)
 
     def _on_track_play_click(self):
-        if not self._selected_track or not self._player:
+        if self._closing or not self._selected_track or not self._player:
+            return
+
+        # Любая кнопка пуска/паузы отменяет текущее или ожидающее проигрывание.
+        # После остановки действие определяется выбранной кнопкой.
+        if self._playback_is_active():
+            self._pause_playback()
             return
 
         t = self._selected_track
-        end_ms = int(t.last_timestamp_s * 1000)
-        pos = self._player.position()
+        if t.first_frame == t.last_frame or self._track_restart_available(t):
+            # «↻ Трек» только возвращает к началу. Для пуска нужен следующий клик.
+            self._restart_track()
+            return
 
-        if self._track_play_active:
-            self._track_play_active = False
-            self._player.pause()
-        elif self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
-            self._track_play_active = True
-            self._player.pause()
-        elif pos >= end_ms:
-            self._track_play_active = False
-            self._btn_track_play.setText("▶")
-            self._seek_to(int(t.first_timestamp_s * 1000))
-        else:
-            self._track_play_active = True
-            self._player.play()
+        current = self._requested_frame if self._manual_mode else self._displayed_frame
+        if current is None or current < t.first_frame or current >= t.last_frame:
+            if self._reader_failed:
+                self._seek_to(round(t.first_timestamp_s * 1000))
+            else:
+                self._seek_to_frame(t.first_frame)
+        self._start_playback(t)
 
     def _update_track_button(self):
+        active = self._playback_is_active()
+        self._btn_play.setText("⏸ Видео" if active else "▶ Видео")
+        self._btn_play.setToolTip("Поставить текущее воспроизведение на паузу" if active
+                                  else "Воспроизвести всё видео с текущей позиции")
         if not self._btn_track_play:
             return
 
         t = self._selected_track
+        self._btn_track_play.setEnabled(bool(self._player and t))
         if not t:
-            self._btn_track_play.setText("▶")
+            self._btn_track_play.setText("▶ Трек")
             return
 
-        end_ms = int(t.last_timestamp_s * 1000)
-
-        if self._track_play_active:
-            self._btn_track_play.setText("⏸")
-        elif (
-            self._player
-            and self._player.playbackState() == QMediaPlayer.PlaybackState.PausedState
-            and self._player.position() >= end_ms
-        ):
-            self._btn_track_play.setText("↻")
+        if active:
+            self._btn_track_play.setText("⏸ Трек")
+            self._btn_track_play.setToolTip("Поставить текущее воспроизведение на паузу")
+        elif self._track_restart_available(t):
+            self._btn_track_play.setText("↻ Трек")
+            self._btn_track_play.setToolTip("Вернуться к первому кадру выбранного трека и оставить на паузе")
         else:
-            self._btn_track_play.setText("▶")
+            self._btn_track_play.setText("▶ Трек")
+            self._btn_track_play.setToolTip("Воспроизвести только выбранный трек")
 
     def _seek_to(self, ms: int):
-        if not HAS_MULTIMEDIA or not self._player:
+        if self._closing or not HAS_MULTIMEDIA or not self._player:
             return
-        ms = max(0, min(ms, self._player.duration()))
-        self._player.setPosition(ms)
-        self._player.pause()
+        if self._reader_failed:
+            self._pause_playback()
+            self._manual_mode = False
+            self._player.setPosition(max(0, min(ms, self._player.duration())))
+        elif self._reader_ready:
+            self._seek_to_frame(round(ms * self._video_fps / 1000.0))
+        else:
+            self._cancel_playback_request()
+            self._manual_mode = True
+            self._player.pause()
+            self._pending_seek_ms = max(0, ms)
+            self._pending_frame = None
+            self._requested_frame = None
+            self._update_time_label()
+            self._update_track_button()
 
     def _update_time_label(self):
         pos = self._time_slider.value()
@@ -1474,14 +1897,31 @@ class VerifyDialog(QDialog):
         self._time_label.setText(
             f"{_format_ms(pos)} / {_format_ms(dur)}"
         )
+        frame = "—" if self._displayed_frame is None else str(self._displayed_frame)
+        total = f" / {self._video_frame_count - 1}" if self._video_frame_count else ""
+        pending = (f" → {self._requested_frame}…" if self._manual_mode and self._requested_frame is not None
+                   and self._requested_frame != self._displayed_frame else "")
+        self._frame_label.setText(f"Кадр: {frame}{total}{pending}")
 
     # ── track actions ────────────────────────────────────────────────
 
+    def _on_table_current_changed(self, row: int, column: int, previous_row: int, previous_column: int):
+        if self._closing or row < 0 or row >= len(self._visible_tracks):
+            return
+        # Обновляем выбор сразу, включая клавиатуру и выделение перетаскиванием,
+        # для которого cellClicked может вообще не поступить.
+        if self._selected_track is not self._visible_tracks[row]:
+            self._on_track_selected(row)
+
     def _on_table_cell_clicked(self, row: int, column: int):
-        self._on_track_selected(row)
-        if row < 0 or row >= len(self._visible_tracks):
+        if self._closing or row < 0 or row >= len(self._visible_tracks):
             return
         track = self._visible_tracks[row]
+        already_seeking_start = (self._selected_track is track and self._manual_mode
+                                 and self._requested_frame == track.first_frame)
+        if already_seeking_start:
+            self._pause_playback()
+        self._on_track_selected(row, seek_to_first=not already_seeking_start)
         modifiers = QApplication.keyboardModifiers()
         if (column == 0 and track.track_id in self._group_children
                 and not modifiers & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)):
@@ -1492,7 +1932,7 @@ class VerifyDialog(QDialog):
             self._rebuild_table(seek_to_first=False)
 
     def _on_track_selected(self, row: int, seek_to_first: bool = True):
-        if row < 0 or row >= len(self._visible_tracks):
+        if self._closing or row < 0 or row >= len(self._visible_tracks):
             return
 
         self._selected_track = self._visible_tracks[row]
@@ -1538,25 +1978,27 @@ class VerifyDialog(QDialog):
 
         if seek_to_first:
             self._track_play_active = False
-            first_ms = int(t.first_timestamp_s * 1000)
-            self._seek_to(first_ms)
+            if self._reader_failed:
+                self._seek_to(round(t.first_timestamp_s * 1000))
+            else:
+                self._seek_to_frame(t.first_frame)
         self._update_track_button()
         self._proximity_timer.start()
 
     def _on_video_clicked(self, scene_pos: QPointF):
-        if not self._player or not self._video_item or not self._detections_csv:
+        if not self._player or not self._video_item or not self._detections_csv or self._displayed_frame is None:
             return
 
-        native = self._video_item.nativeSize()
+        native = self._video_size()
         if not native.isValid():
             return
 
         scene_w = native.width()
         scene_h = native.height()
-        current_sec = self._player.position() / 1000.0
+        current_sec = self._displayed_ms / 1000.0
 
         frame_df = load_frame_detections(
-            self._detections_csv, current_sec, tolerance_s=0.15
+            self._detections_csv, current_sec, frame_index=self._displayed_frame
         )
         if frame_df.empty:
             return
@@ -1601,11 +2043,15 @@ class VerifyDialog(QDialog):
             best_track_id = min(candidates)[1]
             for row_idx, t in enumerate(self._visible_tracks):
                 if t.track_id == best_track_id:
-                    self._table.selectRow(row_idx)
+                    # Программное выделение не должно вызвать обработчик
+                    # currentCellChanged с перемоткой к началу трека.
+                    blocked = self._table.blockSignals(True)
+                    try:
+                        self._table.selectRow(row_idx)
+                    finally:
+                        self._table.blockSignals(blocked)
                     self._on_track_selected(row_idx, seek_to_first=False)
-                    self._update_highlight(self._player.position())
-                    self._update_delete_crosses(self._player.position())
-                    self._update_confirm_marks(self._player.position())
+                    self._refresh_overlays()
                     return
 
     def _on_create_fragment_track(self):
@@ -1740,8 +2186,7 @@ class VerifyDialog(QDialog):
             self._track_filter.blockSignals(blocked)
         self._rebuild_table()
         if self._player:
-            self._update_delete_crosses(self._player.position())
-            self._update_confirm_marks(self._player.position())
+            self._refresh_overlays()
 
     def _toggle_delete(self):
         if not self._selected_track or self._selected_track.is_candidate or self._selected_track.merged_into_track_id is not None:
@@ -1781,7 +2226,7 @@ class VerifyDialog(QDialog):
         self._update_task_status_label()
 
         if self._player:
-            self._update_delete_crosses(self._player.position())
+            self._update_delete_crosses()
 
         if self._selected_track.deleted:
             self._select_next_unconfirmed()
@@ -1856,8 +2301,7 @@ class VerifyDialog(QDialog):
         self._rebuild_table()
 
         if self._player:
-            self._update_delete_crosses(self._player.position())
-            self._update_confirm_marks(self._player.position())
+            self._refresh_overlays()
 
     # ── confirm / apply / sort ────────────────────────────────────────
 
@@ -1896,7 +2340,7 @@ class VerifyDialog(QDialog):
         self._update_task_status_label()
 
         if self._player:
-            self._update_confirm_marks(self._player.position())
+            self._update_confirm_marks()
 
         if self._selected_track.confirmed:
             self._select_next_unconfirmed()
@@ -1986,7 +2430,7 @@ class VerifyDialog(QDialog):
             self._sort_column,
             Qt.SortOrder.DescendingOrder if self._sort_reverse else Qt.SortOrder.AscendingOrder,
         )
-        self._rebuild_table()
+        self._rebuild_table(seek_to_first=False)
 
     @staticmethod
     def _chronological_key(track: TrackInfo):
@@ -2051,6 +2495,8 @@ class VerifyDialog(QDialog):
 
     def _clear_track_selection(self):
         self._proximity_timer.stop()
+        if self._track_play_active:
+            self._pause_playback()
         self._selected_track = None
         self._table.clearSelection()
         self._table.setCurrentCell(-1, -1)
@@ -2102,7 +2548,7 @@ class VerifyDialog(QDialog):
         else:
             self._clear_track_selection()
         if self._player:
-            self._update_highlight(self._player.position())
+            self._update_highlight()
 
         self._update_task_status_label()
 
