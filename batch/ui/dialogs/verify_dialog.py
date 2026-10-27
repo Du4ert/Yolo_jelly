@@ -702,6 +702,13 @@ class VerifyDialog(QDialog):
         self._time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         controls.addWidget(self._time_label)
 
+        self._btn_back_five = QPushButton("−5")
+        self._btn_back_five.setFixedWidth(32)
+        self._btn_back_five.setToolTip("Назад на 5 кадров")
+        self._btn_back_five.setEnabled(False)
+        self._btn_back_five.clicked.connect(lambda: self._seek_frame(-5))
+        controls.addWidget(self._btn_back_five)
+
         self._btn_back = QPushButton("◀")
         self._btn_back.setFixedWidth(32)
         self._btn_back.setToolTip("Предыдущий кадр")
@@ -715,6 +722,13 @@ class VerifyDialog(QDialog):
         self._btn_fwd.setEnabled(False)
         self._btn_fwd.clicked.connect(lambda: self._seek_frame(1))
         controls.addWidget(self._btn_fwd)
+
+        self._btn_fwd_five = QPushButton("+5")
+        self._btn_fwd_five.setFixedWidth(32)
+        self._btn_fwd_five.setToolTip("Вперёд на 5 кадров")
+        self._btn_fwd_five.setEnabled(False)
+        self._btn_fwd_five.clicked.connect(lambda: self._seek_frame(5))
+        controls.addWidget(self._btn_fwd_five)
 
         right_layout.addLayout(controls)
 
@@ -1260,6 +1274,8 @@ class VerifyDialog(QDialog):
         self._reader_ready = True
         self._btn_back.setEnabled(True)
         self._btn_fwd.setEnabled(True)
+        self._btn_back_five.setEnabled(True)
+        self._btn_fwd_five.setEnabled(True)
         if self._time_slider.maximum() <= 0:
             self._time_slider.setRange(0, round(count * 1000.0 / fps))
         self._schedule_fit_video()
@@ -1374,6 +1390,8 @@ class VerifyDialog(QDialog):
             self._reader_ready = False
             self._btn_back.setEnabled(False)
             self._btn_fwd.setEnabled(False)
+            self._btn_back_five.setEnabled(False)
+            self._btn_fwd_five.setEnabled(False)
             self._manual_mode = False
             self._manual_frame_item.setVisible(False)
             self._video_item.setVisible(True)
