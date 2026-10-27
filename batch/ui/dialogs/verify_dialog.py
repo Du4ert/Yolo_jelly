@@ -2175,11 +2175,12 @@ class VerifyDialog(QDialog):
         threshold.setRange(0.0, 1000000.0)
         threshold.setDecimals(3)
         threshold.setSingleStep(0.1)
-        threshold.setValue(1.0)
+        threshold.setValue(1.5)
         threshold.setToolTip("Та же оценка, что в колонке «Близость». Склейка при оценке ≤ порога.")
         threshold_row.addWidget(threshold)
         layout.addLayout(threshold_row)
         attach = QCheckBox("Склеить с треком")
+        attach.setChecked(True)
         attach.setToolTip("Присоединять к ближайшему треку того же класса в пределах порога.")
         layout.addWidget(attach)
         help_label = QLabel(
