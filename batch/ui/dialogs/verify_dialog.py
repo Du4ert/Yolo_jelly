@@ -737,6 +737,7 @@ class VerifyDialog(QDialog):
         self._playback_rate_combo = QComboBox()
         for label, rate in (("1×", 1.0), ("0,5×", 0.5), ("0,25×", 0.25)):
             self._playback_rate_combo.addItem(label, rate)
+        self._playback_rate_combo.setCurrentIndex(self._playback_rate_combo.findData(0.25))
         self._playback_rate_combo.setEnabled(False)
         self._playback_rate_combo.setToolTip("Скорость воспроизведения всего видео и выбранного трека")
         self._playback_rate_combo.currentIndexChanged.connect(self._on_playback_rate_changed)
@@ -2174,7 +2175,7 @@ class VerifyDialog(QDialog):
         threshold.setRange(0.0, 1000000.0)
         threshold.setDecimals(3)
         threshold.setSingleStep(0.1)
-        threshold.setValue(0.5)
+        threshold.setValue(1.0)
         threshold.setToolTip("Та же оценка, что в колонке «Близость». Склейка при оценке ≤ порога.")
         threshold_row.addWidget(threshold)
         layout.addLayout(threshold_row)
