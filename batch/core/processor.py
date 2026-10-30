@@ -468,7 +468,7 @@ class Processor:
             
             # Сохранение статистики треков
             tracks_path = None
-            if self.enable_tracking and track_info:
+            if self.enable_tracking:
                 track_stats = []
                 for tid, info in track_info.items():
                     duration = info['last_timestamp'] - info['first_timestamp']
@@ -509,7 +509,14 @@ class Processor:
                     
                     track_stats.append(stat)
                 
-                track_df = pd.DataFrame(track_stats)
+                # Сохраняем заголовки и при отсутствии треков, в том числе поверх старого файла.
+                track_columns = [
+                    'track_id', 'source_track_id', 'track_uid', 'class_id', 'class_name',
+                    'first_frame', 'last_frame', 'frame_span', 'duration_s',
+                    'first_timestamp_s', 'last_timestamp_s', 'first_depth_m', 'last_depth_m',
+                    'detections_count', 'avg_confidence', 'depth_change_m',
+                ]
+                track_df = pd.DataFrame(track_stats, columns=track_columns)
                 track_df.to_csv(output_paths["tracks"], index=False)
                 tracks_path = output_paths["tracks"]
             

@@ -2569,36 +2569,17 @@ def _calculate_counts_by_class(
     count_tracks_df: Optional[pd.DataFrame] = None,
     tracks_df: Optional[pd.DataFrame] = None,
 ) -> Dict[str, int]:
-    """Считает организмы по таблице треков; detections_df используется только как fallback."""
-    for source_df in (count_tracks_df, tracks_df):
-        if source_df is None or source_df.empty or 'class_name' not in source_df.columns:
+    """Считает только уникальные треки; пустая таблица треков означает ноль организмов."""
+    for source_df in (count_tracks_df, tracks_df, detections_df):
+        if source_df is None or not {'class_name', 'track_id'}.issubset(source_df.columns):
             continue
 
-        df = source_df[source_df['class_name'].notna()].copy()
-        if df.empty:
-            continue
-
-        if 'track_id' in df.columns:
-            df = df[df['track_id'].notna()]
-            if df.empty:
-                continue
-            counts = df.groupby('class_name')['track_id'].nunique()
-        else:
-            counts = df.groupby('class_name').size()
-
+        # Наличие корректной таблицы, даже пустой, исключает переход к другим источникам.
+        df = source_df[source_df['class_name'].notna() & source_df['track_id'].notna()]
+        counts = df.groupby('class_name')['track_id'].nunique()
         return {str(class_name): int(count) for class_name, count in counts.items()}
 
-    counts_by_class = {}
-    for class_name in detections_df['class_name'].dropna().unique():
-        class_df = detections_df[detections_df['class_name'] == class_name]
-        n_tracks = class_df['track_id'].nunique() if 'track_id' in class_df.columns else 0
-
-        if n_tracks == 0 or 'track_id' not in class_df.columns or class_df['track_id'].isna().all():
-            n_tracks = len(class_df)
-
-        counts_by_class[str(class_name)] = int(n_tracks)
-
-    return counts_by_class
+    return {}
 
 
 def _calculate_size_stats_by_class(tracks_df: Optional[pd.DataFrame]) -> Dict[str, Tuple[float, float]]:

@@ -547,7 +547,7 @@ def detect_on_video(
         print(f"\nCSV сохранён: {csv_path}")
         
         # Сохранение статистики по трекам
-        if enable_tracking and len(track_info) > 0:
+        if enable_tracking:
             track_stats = []
             for track_id, info in track_info.items():
                 duration = info['last_timestamp'] - info['first_timestamp']
@@ -591,7 +591,14 @@ def detect_on_video(
                 
                 track_stats.append(stat)
             
-            track_df = pd.DataFrame(track_stats)
+            # Сохраняем заголовки и при отсутствии треков, в том числе поверх старого файла.
+            track_columns = [
+                'track_id', 'source_track_id', 'track_uid', 'class_id', 'class_name',
+                'first_frame', 'last_frame', 'frame_span', 'duration_s',
+                'first_timestamp_s', 'last_timestamp_s', 'first_depth_m', 'last_depth_m',
+                'detections_count', 'avg_confidence', 'depth_change_m',
+            ]
+            track_df = pd.DataFrame(track_stats, columns=track_columns)
             track_csv_path = csv_path.parent / (csv_path.stem + '_tracks.csv')
             track_df.to_csv(track_csv_path, index=False)
             print(f"Статистика треков сохранена: {track_csv_path}")
