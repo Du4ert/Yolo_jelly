@@ -482,6 +482,7 @@ class MainWindow(QMainWindow):
             "trail_length": config.default_detection_params.trail_length,
             "min_track_length": config.default_detection_params.min_track_length,
             "save_video": config.default_detection_params.save_video,
+            "video_bitrate_mbps": config.default_detection_params.video_bitrate_mbps,
         }
         
         task = self.task_manager.add_task(video_id, model_id, ctd_id, **params)

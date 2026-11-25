@@ -24,6 +24,7 @@ class DetectionParams:
     trail_length: int = 30
     min_track_length: int = 3
     save_video: bool = True
+    video_bitrate_mbps: int = 20
     device: str = "auto"
     imgsz: int = 1280
     half: bool = True
@@ -103,6 +104,7 @@ class Config:
                 trail_length=detection_data.get("trail_length", 30),
                 min_track_length=detection_data.get("min_track_length", 3),
                 save_video=detection_data.get("save_video", True),
+                video_bitrate_mbps=detection_data.get("video_bitrate_mbps", 20),
                 device=detection_data.get("device", "auto"),
                 imgsz=detection_data.get("imgsz", 1280),
                 half=detection_data.get("half", True),

@@ -27,6 +27,7 @@ from PyQt6.QtCore import Qt
 
 from ...database import Repository, VideoFile, CTDFile, Model
 from ...core import get_calibration_defaults, get_config, save_config
+from .video_bitrate import VideoBitrateField
 
 
 class NewTaskDialog(QDialog):
@@ -186,6 +187,10 @@ class NewTaskDialog(QDialog):
         
         self.check_save_video = QCheckBox("Сохранять видео с разметкой")
         output_layout.addWidget(self.check_save_video)
+        self.video_bitrate = VideoBitrateField()
+        self.video_bitrate.setEnabled(self.check_save_video.isChecked())
+        self.check_save_video.toggled.connect(self.video_bitrate.setEnabled)
+        output_layout.addWidget(self.video_bitrate)
 
         self.check_export_label_studio = QCheckBox("Экспортировать кадры и разметку для Label Studio")
         self.check_export_label_studio.setToolTip(
@@ -358,6 +363,7 @@ class NewTaskDialog(QDialog):
         self.spin_trail_length.setValue(params.trail_length)
         self.spin_min_track.setValue(params.min_track_length)
         self.check_save_video.setChecked(params.save_video)
+        self.video_bitrate.set_value(params.video_bitrate_mbps)
 
         # GPU / Ускорение
         for i in range(self.combo_device.count()):
@@ -433,6 +439,7 @@ class NewTaskDialog(QDialog):
             "trail_length": self.spin_trail_length.value(),
             "min_track_length": self.spin_min_track.value(),
             "save_video": self.check_save_video.isChecked(),
+            "video_bitrate_mbps": self.video_bitrate.value(),
             "export_label_studio": self.check_export_label_studio.isChecked(),
             "export_ls_interval": self.spin_ls_interval.value(),
             "export_ls_classes": self._get_ls_classes_json() or None,

@@ -267,6 +267,7 @@ def render_size_video(
     output_video: Optional[str] = None,
     verbose: bool = True,
     progress_callback=None,
+    bitrate: str = "20M",
 ) -> str:
     """
     Рендерит видео с информацией о размерах объектов.
@@ -278,6 +279,7 @@ def render_size_video(
         geometry_csv: путь к CSV с данными геометрии (geometry.csv)
         output_video: путь к выходному видео (по умолчанию: добавляется суффикс _sized)
         verbose: выводить ли информацию о прогрессе
+        bitrate: целевой битрейт FFmpeg
     
     Returns:
         Путь к выходному видео
@@ -319,7 +321,7 @@ def render_size_video(
     # Создаём выходное видео
     output_path = Path(output_video)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    out = NvencVideoWriter(str(output_path), fps, frame_width, frame_height)
+    out = NvencVideoWriter(str(output_path), fps, frame_width, frame_height, bitrate=bitrate)
     
     # Группируем детекции по кадрам для быстрого доступа
     frame_detections = df.groupby('frame')

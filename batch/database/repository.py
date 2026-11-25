@@ -66,7 +66,7 @@ class Repository:
         from sqlalchemy import text, inspect
         insp = inspect(self.engine)
 
-        # Колонки GPU-ускорения для таблицы tasks
+        # Дополнительные колонки таблицы tasks
         if 'tasks' in insp.get_table_names():
             existing = {c['name'] for c in insp.get_columns('tasks')}
             migrations = [
@@ -78,6 +78,7 @@ class Repository:
                 ("export_label_studio", "BOOLEAN DEFAULT 0"),
                 ("export_ls_interval", "INTEGER DEFAULT 15"),
                 ("export_ls_classes", "TEXT"),
+                ("video_bitrate_mbps", "INTEGER NOT NULL DEFAULT 20"),
             ]
             with self.engine.begin() as conn:
                 for col_name, col_def in migrations:
@@ -1776,7 +1777,7 @@ class Repository:
             for key in (
                 "conf_threshold", "enable_tracking", "tracker_type",
                 "show_trails", "trail_length", "min_track_length",
-                "device", "imgsz", "half", "save_video",
+                "device", "imgsz", "half", "save_video", "video_bitrate_mbps",
             ):
                 if params.get(key) is not None:
                     setattr(task, key, params[key])

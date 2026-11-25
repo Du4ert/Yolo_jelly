@@ -42,6 +42,7 @@ from ...database import (
     SUBTASK_OUTPUT_TYPES,
 )
 from ...core import TaskManager, get_calibration_defaults, get_config, save_config
+from .video_bitrate import VideoBitrateField
 
 
 # Радио-режимы для каждой операции.
@@ -581,6 +582,10 @@ class PostProcessDialog(QDialog):
         # --- Выход ---
         self.infer_check_save_video = QCheckBox("Сохранять видео с разметкой")
         f_outer.addWidget(self.infer_check_save_video)
+        self.infer_video_bitrate = VideoBitrateField()
+        self.infer_video_bitrate.setEnabled(self.infer_check_save_video.isChecked())
+        self.infer_check_save_video.toggled.connect(self.infer_video_bitrate.setEnabled)
+        f_outer.addWidget(self.infer_video_bitrate)
 
         layout.addWidget(self.infer_fields)
 
@@ -720,6 +725,7 @@ class PostProcessDialog(QDialog):
             self.infer_check_save_video.setChecked(
                 sv if sv is not None else params.save_video
             )
+            self.infer_video_bitrate.set_value(t.video_bitrate_mbps)
         else:
             # Группа задач — используем дефолтные параметры из конфига.
             self.infer_spin_conf.setValue(params.conf_threshold)
@@ -739,6 +745,7 @@ class PostProcessDialog(QDialog):
             self.infer_spin_imgsz.setValue(params.imgsz)
             self.infer_check_half.setChecked(params.half)
             self.infer_check_save_video.setChecked(params.save_video)
+            self.infer_video_bitrate.set_value(params.video_bitrate_mbps)
 
         self._on_infer_tracking_toggled(self.infer_check_tracking.isChecked())
 
@@ -966,6 +973,7 @@ class PostProcessDialog(QDialog):
             "imgsz": self.infer_spin_imgsz.value(),
             "half": self.infer_check_half.isChecked(),
             "save_video": self.infer_check_save_video.isChecked(),
+            "video_bitrate_mbps": self.infer_video_bitrate.value(),
         }
 
         depth_rate = self.infer_spin_depth_rate.value()

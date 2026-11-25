@@ -25,7 +25,7 @@ from collections import defaultdict, Counter
 ROOT_DIR = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(ROOT_DIR / "src"))
 
-from video_utils import ThreadedVideoCapture, NvencVideoWriter
+from video_utils import ThreadedVideoCapture, NvencVideoWriter, resolve_video_bitrate
 from tracking_utils import normalize_track_ids, patch_ultralytics_track_ids, rebuild_track_state
 
 
@@ -136,6 +136,7 @@ class Processor:
         imgsz: int = 1280,
         half: bool = True,
         max_track_gap: int = 60,
+        video_bitrate_mbps: int = 20,
     ):
         self.video_path = video_path
         self.model_path = model_path
@@ -149,6 +150,7 @@ class Processor:
         self.min_track_length = min_track_length
         self.depth_rate = depth_rate
         self.save_video = save_video
+        self.video_bitrate_mbps = video_bitrate_mbps
         self.export_ls_dir = export_ls_dir
         self.export_ls_interval = export_ls_interval
         self.export_ls_classes = export_ls_classes
@@ -208,6 +210,9 @@ class Processor:
         output_paths = self._generate_output_paths()
         
         try:
+            if self.save_video:
+                bitrate = resolve_video_bitrate(self.video_bitrate_mbps, self.video_path)
+
             from ultralytics import YOLO
 
             if self.enable_tracking:
@@ -239,7 +244,7 @@ class Processor:
             # Подготовка выходного видео (NVENC GPU-кодирование если доступно)
             out = None
             if self.save_video:
-                out = NvencVideoWriter(output_paths["video"], fps, width, height)
+                out = NvencVideoWriter(output_paths["video"], fps, width, height, bitrate=bitrate)
             
             # Экспортёр Label Studio
             ls_exporter = None
@@ -583,6 +588,7 @@ class ProcessorFactory:
             min_track_length=task_params.get("min_track_length", 3),
             depth_rate=task_params.get("depth_rate"),
             save_video=task_params.get("save_video", True),
+            video_bitrate_mbps=task_params.get("video_bitrate_mbps", 20),
             export_ls_dir=(
                 task_params.get("export_ls_dir")
                 or os.path.join(dive_folder, "label_studio_export")

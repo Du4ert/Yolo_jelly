@@ -13,6 +13,36 @@ import shutil
 from typing import Optional, Tuple
 
 
+def resolve_video_bitrate(bitrate_mbps: int, original_video: str) -> str:
+    """Возвращает целевой битрейт FFmpeg; 0 означает битрейт видеодорожки оригинала."""
+    if bitrate_mbps > 0:
+        return f"{bitrate_mbps}M"
+    if bitrate_mbps < 0:
+        raise ValueError("Укажите положительный битрейт видео в Мбит/с.")
+
+    error_message = (
+        f"Не удалось определить битрейт исходного видео «{original_video}». "
+        "Убедитесь, что ffprobe доступен в PATH, или задайте битрейт вручную."
+    )
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "V:0",
+                "-show_entries", "stream=bit_rate",
+                "-of", "default=noprint_wrappers=1:nokey=1", "-i", original_video,
+            ],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            check=True, timeout=15,
+        )
+        bitrate_bps = int(result.stdout.strip())
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        raise ValueError(error_message) from exc
+
+    if bitrate_bps <= 0:
+        raise ValueError(error_message)
+    return str(bitrate_bps)
+
+
 class ThreadedVideoCapture:
     """
     Обёртка над cv2.VideoCapture с фоновым чтением кадров.
@@ -126,7 +156,7 @@ class NvencVideoWriter:
             return
 
         reason = "ffmpeg недоступен" if not shutil.which("ffmpeg") else "ffmpeg writer не запустился"
-        print(f"  Видео: {reason}; используется OpenCV mp4v, bitrate не гарантируется")
+        print(f"  Предупреждение: {reason}; используется OpenCV mp4v без контроля битрейта")
         self._start_cv2_fallback(width, height)
 
     def _start_ffmpeg_writer(self, encoder: str) -> bool:
@@ -215,7 +245,10 @@ class NvencVideoWriter:
                     print(f"  Видео: переключение на libx264, bitrate {self._bitrate}")
                     self._proc.stdin.write(frame.tobytes())
                 else:
-                    print("  Видео: переключение на OpenCV mp4v, bitrate не гарантируется")
+                    print(
+                        "  Предупреждение: переключение на OpenCV mp4v; "
+                        "заданный битрейт не гарантируется"
+                    )
                     self._start_cv2_fallback(frame.shape[1], frame.shape[0])
                     self._fallback.write(frame)
         elif self._fallback:

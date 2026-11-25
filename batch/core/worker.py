@@ -143,6 +143,7 @@ class Worker(QThread):
                     "min_track_length": task_data.min_track_length,
                     "depth_rate": task_data.depth_rate,
                     "save_video": task_data.save_video,
+                    "video_bitrate_mbps": task_data.video_bitrate_mbps,
                     "export_label_studio": task_data.export_label_studio,
                     "export_ls_interval": task_data.export_ls_interval,
                     "export_ls_classes": task_data.export_ls_classes,
@@ -382,7 +383,9 @@ class Worker(QThread):
                 result_value, result_text = self._run_size_video_render(
                     detected_video, detections_csv, size_csv, geometry_csv,
                     output_dir, base_name, params, parent_task.id,
-                    progress_callback=on_subtask_progress
+                    progress_callback=on_subtask_progress,
+                    original_video=video.filepath,
+                    video_bitrate_mbps=parent_task.video_bitrate_mbps,
                 )
             elif subtask.subtask_type == SubTaskType.LABEL_STUDIO_EXPORT:
                 result_value, result_text = self._run_label_studio_export(
@@ -804,6 +807,9 @@ class Worker(QThread):
         params: dict,
         task_id: int,
         progress_callback=None,
+        *,
+        original_video: str,
+        video_bitrate_mbps: int,
     ):
         """
         Выполняет подзадачу рендеринга видео с размерами.
@@ -817,6 +823,8 @@ class Worker(QThread):
             base_name: Базовое имя файла
             params: Параметры
             task_id: ID задачи
+            original_video: Путь к исходному видео, не к файлу с детекциями
+            video_bitrate_mbps: Целевой битрейт; 0 — как у оригинала
         """
         from .geometry_processor import SizeVideoRenderProcessor
         
@@ -840,6 +848,8 @@ class Worker(QThread):
             output_video=output_video,
             geometry_csv=effective_geometry_csv,
             progress_callback=progress_callback,
+            original_video=original_video,
+            video_bitrate_mbps=video_bitrate_mbps,
         )
         
         if not result.success:
@@ -1215,6 +1225,7 @@ class Worker(QThread):
                     "min_track_length": task_data.min_track_length,
                     "depth_rate": task_data.depth_rate,
                     "save_video": task_data.save_video,
+                    "video_bitrate_mbps": task_data.video_bitrate_mbps,
                     "export_label_studio": task_data.export_label_studio,
                     "export_ls_interval": task_data.export_ls_interval,
                     "export_ls_classes": task_data.export_ls_classes,
@@ -1226,7 +1237,7 @@ class Worker(QThread):
                 override_keys = (
                     "conf_threshold", "enable_tracking", "tracker_type",
                     "show_trails", "trail_length", "min_track_length",
-                    "device", "imgsz", "half",
+                    "device", "imgsz", "half", "save_video", "video_bitrate_mbps",
                 )
                 for key in override_keys:
                     if params.get(key) is not None:
@@ -1310,6 +1321,8 @@ class Worker(QThread):
                 "device": params.get("device"),
                 "imgsz": params.get("imgsz"),
                 "half": params.get("half"),
+                "save_video": params.get("save_video"),
+                "video_bitrate_mbps": params.get("video_bitrate_mbps"),
             }
             result_stats = {
                 "detections_count": result.detections_count,

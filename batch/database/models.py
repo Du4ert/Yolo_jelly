@@ -239,6 +239,8 @@ class Task(Base):
     min_track_length: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
     depth_rate: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     save_video: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # 0 — использовать битрейт видеодорожки исходного файла.
+    video_bitrate_mbps: Mapped[int] = mapped_column(Integer, default=20, nullable=False)
     export_label_studio: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     export_ls_interval: Mapped[int] = mapped_column(Integer, default=15, nullable=False)
     export_ls_classes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON список классов, null = все

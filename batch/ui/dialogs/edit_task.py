@@ -27,6 +27,7 @@ from PyQt6.QtCore import Qt
 
 from ...database import Repository, Task, TaskStatus
 from ...core import get_config, save_config
+from .video_bitrate import VideoBitrateField
 
 
 class EditTaskDialog(QDialog):
@@ -219,6 +220,11 @@ class EditTaskDialog(QDialog):
         self.check_save_video = QCheckBox("Сохранять видео с разметкой")
         self.check_save_video.setEnabled(self._is_editable)
         output_layout.addWidget(self.check_save_video)
+        self.video_bitrate = VideoBitrateField()
+        self.video_bitrate.setEnabled(False)
+        if self._is_editable:
+            self.check_save_video.toggled.connect(self.video_bitrate.setEnabled)
+        output_layout.addWidget(self.video_bitrate)
 
         self.check_export_label_studio = QCheckBox("Экспортировать кадры и разметку для Label Studio")
         self.check_export_label_studio.setEnabled(self._is_editable)
@@ -389,6 +395,7 @@ class EditTaskDialog(QDialog):
         self.spin_trail_length.setValue(task.trail_length)
         self.spin_min_track.setValue(task.min_track_length)
         self.check_save_video.setChecked(task.save_video)
+        self.video_bitrate.set_value(task.video_bitrate_mbps)
         self.check_export_label_studio.setChecked(task.export_label_studio)
         self.spin_ls_interval.setValue(task.export_ls_interval if task.export_ls_interval else 15)
         # Восстанавливаем выбор классов
@@ -457,6 +464,7 @@ class EditTaskDialog(QDialog):
             "trail_length": self.spin_trail_length.value(),
             "min_track_length": self.spin_min_track.value(),
             "save_video": self.check_save_video.isChecked(),
+            "video_bitrate_mbps": self.video_bitrate.value(),
             "export_label_studio": self.check_export_label_studio.isChecked(),
             "export_ls_interval": self.spin_ls_interval.value(),
             "export_ls_classes": self._get_ls_classes_json() or None,

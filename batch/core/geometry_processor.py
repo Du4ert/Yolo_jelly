@@ -492,7 +492,9 @@ class SizeVideoRenderProcessor:
         size_csv: str,
         output_video: str,
         geometry_csv: Optional[str] = None,
-        progress_callback: Optional[Callable[[int, int], None]] = None
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        video_bitrate_mbps: int = 20,
+        original_video: Optional[str] = None,
     ) -> SizeVideoRenderResult:
         """
         Запускает рендеринг видео с размерами.
@@ -504,6 +506,8 @@ class SizeVideoRenderProcessor:
             output_video: Путь к выходному видео.
             geometry_csv: Путь к CSV с геометрией (опционально).
             progress_callback: Коллбэк прогресса (current_frame, total_frames).
+            video_bitrate_mbps: Целевой битрейт; 0 — как у оригинала.
+            original_video: Путь к оригиналу для определения его битрейта.
             
         Returns:
             SizeVideoRenderResult с результатами.
@@ -513,6 +517,11 @@ class SizeVideoRenderProcessor:
         
         try:
             from render_size_video import render_size_video
+            from video_utils import resolve_video_bitrate
+
+            if video_bitrate_mbps == 0 and not original_video:
+                raise ValueError("Для битрейта «Как у исходного видео» нужен путь к оригиналу.")
+            bitrate = resolve_video_bitrate(video_bitrate_mbps, original_video or input_video)
             
             # Создаём выходную директорию
             os.makedirs(os.path.dirname(os.path.abspath(output_video)), exist_ok=True)
@@ -526,6 +535,7 @@ class SizeVideoRenderProcessor:
                 output_video=output_video,
                 verbose=True,
                 progress_callback=progress_callback,
+                bitrate=bitrate,
             )
             
             processing_time = time.time() - start_time
